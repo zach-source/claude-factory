@@ -11,6 +11,62 @@ const tmp = (name: string) => {
   return d
 }
 
+test('n69b2 AC3 gc server routes preserve both modes and flag orders', () => {
+  const rows: [string[], Record<string, unknown>][] = [
+    [[], {}],
+    [['--days', '7'], { days: '7' }],
+    [['--dry-run'], { dryRun: true }],
+    [['--days', '.5', '--dry-run'], { days: '.5', dryRun: true }],
+    [['--dry-run', '--days', '+1e2'], { days: '+1e2', dryRun: true }],
+    [['--worktrees'], { worktrees: true }],
+    [['--worktrees', '--dry-run'], { worktrees: true, dryRun: true }],
+  ]
+  const flags = ['--worktrees', '--dry-run', '--rig']
+  for (const a of flags)
+    for (const b of flags.filter(f => f !== a)) {
+      const c = flags.find(f => f !== a && f !== b)!
+      rows.push([
+        [a, b, c].flatMap(f => (f === '--rig' ? [f, 'acme'] : [f])),
+        { worktrees: true, dryRun: true, rig: 'acme' },
+      ])
+    }
+  for (const [args, body] of rows) expect(route('gc', args)).toEqual({ method: 'POST', path: '/v1/gc', body })
+})
+
+test('n69b2 AC2 invalid gc forms cause no HTTP request', async () => {
+  const rows = [
+    ['--days'],
+    ['--rig'],
+    ['word'],
+    ['--'],
+    ['--days=7'],
+    ['--unknown'],
+    ['--days', '7', '--days', '8'],
+    ['--dry-run', '--dry-run'],
+    ['--worktrees', '--worktrees'],
+    ['--rig', 'acme'],
+    ['--worktrees', '--days', '7'],
+    ['--worktrees', '--rig', '../acme'],
+    ['--worktrees', '--rig', 'acme', '--rig', 'acme'],
+    ...['0', '-1', 'NaN', 'Infinity', '1e999', ' 7', '7 ', '0x7', '7days', ''].map(v => ['--days', v]),
+  ]
+  let requests = 0
+  const fetchFn = (async () => {
+    requests++
+    throw new Error('unexpected HTTP request')
+  }) as typeof fetch
+  for (const args of rows) {
+    expect(typeof route('gc', args)).toBe('string')
+    expect(
+      await main('gc', args, { FACTORY_SERVER: 'http://127.0.0.1:9' }, fetchFn, {
+        out: () => {},
+        err: () => {},
+      }),
+    ).toBe(1)
+  }
+  expect(requests).toBe(0)
+})
+
 test('serverUrl: https, or http on loopback, an origin only', () => {
   const ok = (u: string) => expect(serverUrl({ FACTORY_SERVER: u })).toHaveProperty('url')
   const no = (u: string) => expect(serverUrl({ FACTORY_SERVER: u })).toHaveProperty('error')

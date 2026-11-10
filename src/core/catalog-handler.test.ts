@@ -70,6 +70,45 @@ const NAMES = [
   'steps.reports',
 ]
 
+test('n69b2 AC1 gc route has no GET mutation or CLI bridge', async () => {
+  const calls: string[] = []
+  const gcPort = new Proxy({} as Port, {
+    get:
+      (_t, key) =>
+      (...args: any[]) => {
+        calls.push(String(key))
+        if (key === 'gcHold') return () => calls.push('release')
+        if (key === 'gcRigs') return ['acme']
+        if (key === 'gcPass') args[2]('plain')
+        if (key === 'gcWorktreesPass') args[2]('worktrees')
+      },
+  })
+  const home = mkdtempSync(join(tmpdir(), 'gc-handler-'))
+  let cliCalls = 0
+  const h = clientHandler({
+    home,
+    port: gcPort,
+    board: () => null,
+    run: async () => {
+      cliCalls++
+      throw new Error('no CLI bridge')
+    },
+  })
+  expect((await get(h, '/v1/gc')).status).toBe(404)
+  expect(calls).toEqual([])
+  for (const [body, out] of [
+    [{}, 'plain\n'],
+    [{ worktrees: true, dryRun: true, rig: 'acme' }, 'worktrees\n'],
+  ] as const) {
+    const r = await post(h, '/v1/gc', body)
+    expect(r.status).toBe(200)
+    expect(await r.json()).toMatchObject({ code: 0, out, err: '' })
+  }
+  expect(calls.filter(c => c === 'gcPass')).toHaveLength(1)
+  expect(calls.filter(c => c === 'gcWorktreesPass')).toHaveLength(1)
+  expect(cliCalls).toBe(0)
+})
+
 describe('GET /v1/catalog', () => {
   test('serves the envelope with the 29 operations', async () => {
     const { h, calls } = setup()

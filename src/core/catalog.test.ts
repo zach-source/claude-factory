@@ -147,6 +147,24 @@ describe('readQuery and readBody', () => {
 })
 
 describe('CATALOG', () => {
+  test('n69b2 AC1 gc has one owner POST operation and four optional inputs', () => {
+    const gc = CATALOG.find(o => o.name === 'gc.run')
+    expect(gc).toMatchObject({
+      route: { method: 'POST', path: '/v1/gc' },
+      output: 'text',
+      rights: 'owner',
+      mutates: true,
+      long: false,
+      since: 1,
+    })
+    expect(gc!.inputs.map(({ name, kind, required }) => [name, kind, required])).toEqual([
+      ['worktrees', 'flag', false],
+      ['dryRun', 'flag', false],
+      ['days', 'text', false],
+      ['rig', 'id', false],
+    ])
+    expect(CATALOG.filter(o => o.route.path === '/v1/gc')).toHaveLength(1)
+  })
   test('has 29 operations: 20 GET and 9 POST', () => {
     expect(CATALOG.length).toBe(29)
     expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(20)

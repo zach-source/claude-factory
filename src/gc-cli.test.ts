@@ -132,6 +132,24 @@ const reset = () => {
 
 const DAY = 24 * 3_600_000
 
+test('n69b2 AC3 AC4 positive decimal forms and flag order retain the preview stamp policy', () => {
+  for (const days of ['7', '+7', '.5', '1.', '1e2']) {
+    for (const args of [
+      ['--days', days, '--dry-run'],
+      ['--dry-run', '--days', days],
+    ]) {
+      reset()
+      const result = factory(['gc', ...args])
+      expect(result.code).toBe(0)
+      expect(result.err).toBe('')
+      expect(result.out).toContain('total: 0 files, 0 B across 0 run(s)')
+      expect(existsSync(join(home, 'gc.stamp'))).toBe(true)
+      expect(existsSync(join(home, 'metrics.jsonl'))).toBe(false)
+      expect(existsSync(join(home, 'gc.log'))).toBe(false)
+    }
+  }
+})
+
 test('--dry-run prints bytes per kind and the run count, and deletes nothing (AC1)', () => {
   reset()
   const id = freshId('ship')
