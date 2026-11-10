@@ -805,7 +805,7 @@ test('every station model id of every factory resolves to a known id', async () 
   const known = [
     'claude-sonnet-5-5[1m]',
     'claude-opus-5-5[1m]',
-    'claude-fable-5-1',
+    'claude-fable-5-2',
     'gpt-6.1-sol',
     'gpt-6-astra',
   ]
