@@ -143,7 +143,7 @@ function init(cfg: BackupCfg) {
   git(cfg, ['symbolic-ref', 'HEAD', `refs/heads/${cfg.branch}`])
   const x = join(GIT_DIR(cfg.ws), 'info')
   mkdirSync(x, { recursive: true })
-  // memory goes in through its own index (snapshotMemory), never as a nested repo or a gitlink
+  // memory uses its own index in snapshot, never a nested repo or a gitlink
   const rules = [...(cfg.excludes ?? EXCLUDES), '/home/memory/']
   writeFileSync(join(x, 'exclude'), rules.join('\n') + '\n')
 }
@@ -151,12 +151,13 @@ function init(cfg: BackupCfg) {
 const PUSH_MS = 600_000
 
 /**
+ * Stage the home before the memory index update can hide racy file changes (ohn03).
  * Put the memory work tree in the main index as plain files. A second index takes the files (the memory
  * .gitignore applies, a nested .git never counts), then its tree replaces home/memory/ in the main index.
  * Only the files leave the VM, so the secret scan of the staged files covers memory too.
  * Also keeps home/memory-dream.at: the time of the last "dream:" commit, for restore. Returns an error text.
  */
-function snapshotMemory(cfg: BackupCfg): string | undefined {
+function snapshot(cfg: BackupCfg): string | undefined {
   const mem = memDir(cfg.ws)
   if (existsSync(join(mem, '.git')) && !gitFenced(mem)) {
     const l = Bun.spawnSync(['git', '-C', mem, 'log', '-1', '--grep=^dream:', '--format=%at'], {
@@ -166,6 +167,8 @@ function snapshotMemory(cfg: BackupCfg): string | undefined {
     const had = existsSync(DREAM_AT(cfg.ws)) ? readFileSync(DREAM_AT(cfg.ws), 'utf8').trim() : ''
     if (l.exitCode === 0 && at && at !== had) writeFileSync(DREAM_AT(cfg.ws), at + '\n')
   }
+  const home = git(cfg, ['add', '-A', '--', ...pathspecs(cfg.ws)])
+  if (!home.ok) return `git add: ${home.err}`
   const rm = git(cfg, ['rm', '-r', '-q', '--cached', '--ignore-unmatch', '--', 'home/memory'])
   if (!rm.ok) return `git rm memory: ${rm.err}`
   if (!existsSync(mem)) return undefined
@@ -468,14 +471,11 @@ export function backup(
         git(cfg, ['reset', '-q'])
       }
     }
-    // memory first: it also writes home/memory-dream.at, which the add below picks up
-    const mem = snapshotMemory(cfg)
+    const mem = snapshot(cfg)
     if (mem) {
       git(cfg, ['reset', '-q'])
       return fail(mem)
     }
-    const add = git(cfg, ['add', '-A', '--', ...pathspecs(cfg.ws)])
-    if (!add.ok) return fail(`git add: ${add.err}`)
     // the staged blobs are what leaves the VM: scan them, not the work tree file
     const raw = git(cfg, ['diff', '--cached', '--raw', '--no-renames', '--diff-filter=d', '-z']).out.split(
       '\0',
