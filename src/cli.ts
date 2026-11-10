@@ -344,6 +344,8 @@ import { cut } from './cut'
 import {
   mainChatKind,
   mainChatRefusal,
+  patrolBdRefusal,
+  patrolRefusal,
   managerSender as managerSenderIn,
   refuseWorker as refuseWorkerIn,
   workerMarker,
@@ -10556,8 +10558,6 @@ async function onceCmd(verb: 'patrol' | 'pm' | 'brief' | 'review', args: string[
   const codex = codexAt >= 0 ? args[codexAt + 1] : isFallback ? fallbackCodexModel() : undefined
   if (codexAt >= 0 && !(codex && CODEX_MODEL.test(codex))) fail('--codex needs a model name')
   if (isFallback && !(codex && CODEX_MODEL.test(codex))) fail('FACTORY_MANAGER_CODEX is not a model name')
-  if (verb === 'patrol' && (codexAt >= 0 || isFallback))
-    fail('the patrol cannot run on codex: codex has no PreToolUse hook, so the Bash guard cannot apply')
   const release = hold(`${verb}.lock`)
   if (!release) return `a ${verb} is already running`
   try {
@@ -10570,7 +10570,7 @@ async function onceCmd(verb: 'patrol' | 'pm' | 'brief' | 'review', args: string[
       gateFacts: async run => JSON.stringify(await gateBriefFacts(run)),
       reviewFacts: key => JSON.stringify(reviewFacts(key)),
     }
-    if (verb === 'patrol') return await patrolOnce(io)
+    if (verb === 'patrol') return await patrolOnce(io, {}, codex)
     return verb === 'pm'
       ? await pmOnce(io, codex)
       : verb === 'brief'
@@ -13490,7 +13490,8 @@ function mainChatGateRefusal(): string | undefined {
   const why = import.meta.main
     ? (otherRunRefusal(cmd, args, process.env) ??
       workerVerbRefusal(cmd, args, process.env) ??
-      mainChatGateRefusal())
+      mainChatGateRefusal() ??
+      patrolRefusal(cmd, args, process.env))
     : undefined
   if (why) {
     console.error(why)
@@ -13731,6 +13732,13 @@ if (import.meta.main && !outboxCmd)
       case 'patrol-guard':
         await patrolGuard()
         break
+      case 'patrol-bd': {
+        // the bd shim of a codex patrol (src/once.ts): refuse a write, else run the real bd
+        const why = patrolBdRefusal(args)
+        if (why) fail(why)
+        const bdBin = process.env.FACTORY_REAL_BD || 'bd'
+        process.exit(await Bun.spawn([bdBin, ...args], { stdio: ['inherit', 'inherit', 'inherit'] }).exited)
+      }
       case 'lease': {
         refuseWorker('lease', true)
         if (args[0] === 'release' && args.length === 1) {
