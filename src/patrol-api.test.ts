@@ -718,6 +718,58 @@ test('1ocuv AC1 AC2 real TLS checks raw targets and duplicate headers before app
   }
 })
 
+for (const layout of ['incomplete header', 'initial body', 'later body'])
+  test(`1ocuv AC2 raw socket refuses overflow in ${layout}`, async () => {
+    const t = setup()
+    await t.acquire()
+    t.clear()
+    let calls = 0
+    let response = ''
+    const socket = Object.assign(new EventEmitter(), {
+      setTimeout() {
+        return this
+      },
+      end(data: string) {
+        response += data
+        socket.emit('close')
+        return this
+      },
+      destroy() {
+        socket.emit('close')
+        return this
+      },
+    })
+    serveSocket(
+      socket as unknown as Socket,
+      async (req, _ip, method) => {
+        calls++
+        return t.handle(req, method)
+      },
+      30_000,
+      { bodyMax: 4096, validTarget: target => target === '/v1/patrol/lease/acquire' },
+    )
+    const body = JSON.stringify({ epoch: t.epoch })
+    const head = `POST /v1/patrol/lease/acquire HTTP/1.1\r\nHost: localhost\r\nAuthorization: Patrol ${token}\r\nContent-Type: application/json\r\nIdempotency-Key: fresh-key\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n`
+    try {
+      if (layout === 'incomplete header') {
+        socket.emit('data', Buffer.from(head.slice(0, -2) + 'x'.repeat(16 * 1024)))
+      } else if (layout === 'initial body') {
+        socket.emit('data', Buffer.from(head + body + 'x'))
+      } else {
+        socket.emit('data', Buffer.from(head + body.slice(0, -1)))
+        expect(response).toBe('')
+        socket.emit('data', Buffer.from(body.slice(-1) + 'x'))
+      }
+      expect(response).toBe(
+        'HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: 27\r\nconnection: close\r\n\r\n{"error":"invalid_request"}',
+      )
+      expect(calls).toBe(0)
+      t.zero()
+    } finally {
+      socket.destroy()
+    }
+  })
+
 test('1ocuv AC2 the read deadline also bounds a socket that sends partial headers', async () => {
   let destroyed = false
   let calls = 0
