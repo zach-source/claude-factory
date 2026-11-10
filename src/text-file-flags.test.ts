@@ -465,6 +465,7 @@ test('0s5e file mode fails closed on malformed argv and memory option payloads',
       argv.slice(0, -1),
       [...argv, argv[flag]!, path],
       [...argv, '--unknown'],
+      [...argv, '--unknown', 'value'],
       [...argv, 'extra', 'words'],
       ...(argv[flag] === '--summary-file' || (argv[0] === 'rig' && argv[1] === 'add')
         ? []
@@ -478,7 +479,7 @@ test('0s5e file mode fails closed on malformed argv and memory option payloads',
   for (const payload of ['--anyway', '--rig', '--summary-file']) {
     const outbox = join(dir, 'outbox.jsonl')
     expect(
-      factory([...ADD, '--summary-file', txt('flag.md', payload)], {
+      factory([...ADD, '--summary-file', txt('flag.md', payload), 'A body that cannot become the summary'], {
         FACTORY_OUTBOX: outbox,
         FACTORY_FROM: 'implement',
       }).code,
@@ -487,6 +488,24 @@ test('0s5e file mode fails closed on malformed argv and memory option payloads',
   }
   expect(events()).toEqual([])
   expect(notes()).toEqual([])
+})
+
+test('0s5e file mode requires IDs first and refuses a flag as a path', () => {
+  makeRun('r1')
+  expect(Bun.spawnSync(['git', 'init', '-q', wt]).exitCode).toBe(0)
+  const scratch = join(wt, '.scratch')
+  mkdirSync(scratch)
+  writeFileSync(join(scratch, '--unknown'), 'literal')
+  const ok = txt('ok.md', 'literal')
+  for (const argv of consumers(ok)) {
+    const at = argv.findIndex(w => w.endsWith('-file'))
+    const flag = argv[at]!
+    const reordered = [flag, ok, ...argv.slice(0, at), ...argv.slice(at + 2)]
+    const badId = factory(reordered, {}, scratch)
+    expect(badId.code).not.toBe(0)
+    const badPath = factory([...argv.slice(0, at + 1), '--unknown'], {}, scratch)
+    expect(badPath.code).not.toBe(0)
+  }
 })
 
 test('0s5e file mode accepts confined paths and exactly 100 KiB', () => {
