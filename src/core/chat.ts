@@ -1,18 +1,9 @@
 // The manager chat of the core: one conversation file for each id, one model turn at a time.
 import { createHash, randomBytes } from 'node:crypto'
-import {
-  appendFileSync,
-  closeSync,
-  openSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs'
-import { join, resolve } from 'node:path'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { connect, createServer, type Server } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { line } from '../../mod/hooks/view'
 import { appendUsage, type ModelResult } from '../once'
 import { stepPrompt } from '../steps'
@@ -82,7 +73,39 @@ export const queue = new Map<string, Promise<void>>()
 
 const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex')
 const HASH = /^[0-9a-f]{64}$/
-const NONCE = /^[0-9a-f]{32}$/
+const SOCK = /^\/[A-Za-z0-9._/-]{1,100}$/
+
+/** the one-use count of an approval, in this process: the hook asks, and the first right hash gets yes */
+function approvalServer(hash: string): Promise<{ path: string; server: Server }> {
+  const path = join(tmpdir(), `fcg-${randomBytes(12).toString('hex')}.sock`)
+  let used = false
+  const server = createServer(c => {
+    c.setEncoding('utf8')
+    c.once('data', d => {
+      const yes = !used && String(d).trim() === hash
+      if (yes) used = true
+      c.end(yes ? 'yes' : 'no')
+    })
+    c.on('error', () => {})
+  })
+  return new Promise((res, rej) => {
+    server.once('error', rej)
+    server.listen(path, () => res({ path, server }))
+  })
+}
+
+/** ask the core for the one use; any failure is no */
+const askUse = (path: string, hash: string) =>
+  new Promise<boolean>(res => {
+    let out = ''
+    const c = connect(path)
+    c.setEncoding('utf8')
+    c.setTimeout(5000, () => c.destroy())
+    c.on('data', d => (out += d))
+    c.on('error', () => res(false))
+    c.on('close', () => res(out === 'yes'))
+    c.write(hash)
+  })
 
 /** a model can leave a half line: write a newline first, so the next turn stays readable */
 const append = (path: string, t: Turn) => {
@@ -126,15 +149,13 @@ export function send(
       const session = sessionOf(turns)
       const command = a.approve === undefined ? undefined : approved(turns, a.approve)
       mkdirSync(join(ctx.home, 'conversations'), { recursive: true })
-      const file = join(resolve(ctx.home), 'conversations', `${a.id}.approve`)
       let hook = `'${CLI}' chat-guard`
-      const nonce = randomBytes(16).toString('hex')
-      const used = join(resolve(ctx.home), 'conversations', `${a.id}.${nonce}.used`)
+      let server: Server | undefined
       if (command !== undefined) {
         const hash = sha(command)
-        rmSync(file, { force: true })
-        writeFileSync(file, hash, { mode: 0o600, flag: 'wx' })
-        hook += ` ${a.id} ${hash} ${nonce}`
+        const s = await approvalServer(hash)
+        server = s.server
+        hook += ` ${hash} ${s.path}`
       }
       try {
         append(path, {
@@ -193,11 +214,7 @@ export function send(
         appendUsage(ctx.home, 'chat', res.usage)
         return out
       } finally {
-        if (command !== undefined)
-          try {
-            rmSync(file, { recursive: true, force: true })
-            rmSync(used, { recursive: true, force: true })
-          } catch {}
+        server?.close()
       }
     }
     // the stored tail never rejects: a failed turn reaches only its own caller
@@ -216,11 +233,13 @@ export function send(
   })
 }
 
-/** the body of `factory chat-guard [<id> <sha256> <nonce>]`: every result but allow gives code 2; the three words are the approval of one asked command */
-export function guardHook(stdin: string, home = '', args: string[] = []): { code: number; err: string } {
-  const bad =
-    args.length !== 0 &&
-    !(args.length === 3 && CONVERSATION.test(args[0]!) && HASH.test(args[1]!) && NONCE.test(args[2]!))
+/**
+ * the body of `factory chat-guard [<sha256> <socket>]`: every result but allow gives code 2.
+ * The two words are the approval of one asked command: the core process counts the use on its socket.
+ * ponytail: a model that runs a script can still bind its own socket or kill the core's. Upgrade: the sandbox (see claude-factory-xrbpw).
+ */
+export async function guardHook(stdin: string, args: string[] = []): Promise<{ code: number; err: string }> {
+  const bad = args.length !== 0 && !(args.length === 2 && HASH.test(args[0]!) && SOCK.test(args[1]!))
   if (bad) return { code: 2, err: 'bad chat-guard arguments\n' }
   let command: unknown
   try {
@@ -230,18 +249,8 @@ export function guardHook(stdin: string, home = '', args: string[] = []): { code
   const v = check(command, 'manager')
   if (v.decision === 'allow') return { code: 0, err: '' }
   if (v.decision === 'deny') return { code: 2, err: v.reason + '\n' }
-  if (args.length === 3 && sha(command) === args[1]) {
-    const dir = join(resolve(home), 'conversations')
-    try {
-      if (readFileSync(join(dir, `${args[0]}.approve`), 'utf8') === args[1]) {
-        // the exclusive create is the one use: the model can write the .approve file again, but cannot unmake this one
-        // ponytail: the model can learn the nonce from its hook argv and delete this file. Upgrade: a counter in the core.
-        closeSync(openSync(join(dir, `${args[0]}.${args[2]}.used`), 'wx', 0o600))
-        unlinkSync(join(dir, `${args[0]}.approve`))
-        return { code: 0, err: '' }
-      }
-    } catch {}
-  }
+  if (args.length === 2 && sha(command) === args[0] && (await askUse(args[1]!, args[0]!)))
+    return { code: 0, err: '' }
   return {
     code: 2,
     err: `${v.question}\nthe person must approve this command; a chat turn cannot run it: tell the person\n`,
