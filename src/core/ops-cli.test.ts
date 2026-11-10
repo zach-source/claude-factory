@@ -3,7 +3,7 @@
 // The goldens come from origin/main f80d1fe0, before the move. The same bytes must hold after it.
 // The fixtures copy gatebrief-cli.test.ts: a run `r1` at a gate and a run `r2` at `verify`.
 import { afterAll, beforeAll, expect, test } from 'bun:test'
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
@@ -384,6 +384,16 @@ test('rigs.list hides every param value', () => {
   expect(a!.body).not.toContain('zqsecret')
   for (const k of ['tier', 'FOO', 'API_KEY', 'empty']) expect(a!.body).toContain(`param ${k}: <hidden>`)
   expect(a!.body).not.toContain('small')
+})
+
+test('rig reads by the CLI and the API leave the stored rigs unchanged', () => {
+  const files = ['rigs.json', 'linear-sync.json'].map(f => join(H2, f))
+  const read = () => files.map(f => readFileSync(f, 'utf8'))
+  const before = read()
+  expect(before[0]).toContain('zqsecret')
+  serverGet(H2, ['/v1/rigs', '/v1/rigs'])
+  Bun.spawnSync([CLI, 'rig', 'list'], { env: cleanEnv(H2), timeout: 30_000 })
+  expect(read()).toEqual(before)
 })
 
 test('a refusal of the server holds the CLI stderr line', () => {
