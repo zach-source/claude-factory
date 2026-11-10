@@ -40,6 +40,8 @@ test('route: the closed table', () => {
     ['status', [], g('/v1/status')],
     ['status', ['r1'], g('/v1/status?run=r1')],
     ['prs', [], g('/v1/prs')],
+    ['tick', ['--board', '--slim'], g('/v1/board?slim=1')],
+    ['snapshot', ['--views', 'board,decisions'], g('/v1/snapshot?views=board,decisions')],
     ['backlog', [], g('/v1/backlog')],
     ['decisions', [], g('/v1/decisions')],
     ['decisions', ['list'], g('/v1/decisions')],
@@ -100,6 +102,8 @@ test('route: denied forms are a string, and local commands stay local', () => {
   const denied: [string, string[]][] = [
     ['tick', ['x']],
     ['prs', ['x']],
+    ['snapshot', ['--views']],
+    ['snapshot', ['--views', 'a/b']],
     ['stop', ['now']],
     ['metrics', ['--bogus']],
     ['metrics', ['--rig']],

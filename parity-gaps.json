@@ -148,5 +148,17 @@
     "station": "all",
     "bead": "claude-factory-gf16e.12",
     "reason": "the deny hook fails open when it cannot start"
+  },
+  {
+    "op": "snapshot.show",
+    "frontEnd": "claude-mod",
+    "bead": "claude-factory-hpmc.30",
+    "reason": "the Claude mod polls the board and the decisions in separate calls"
+  },
+  {
+    "op": "snapshot.show",
+    "frontEnd": "web",
+    "bead": "claude-factory-hpmc.30",
+    "reason": "the web UI polls the board and the decisions in separate calls; /v1/snapshot serves it"
   }
 ]
