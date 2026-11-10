@@ -43,6 +43,9 @@ test('ksx5 AC1: the substitution window escapes every control', SLOW, async () =
   expect(q).toContain('\\x1b\\r\\u202e$(id)\\n')
   expect(q).toContain('characters not shown')
   expect(q).not.toMatch(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/)
+  const spacedWindow = question(`${F} decide r1 ship "${'a'.repeat(350)}x  $(id)  y"`)
+  expect(spacedWindow).toContain('x\\x20{2}$(id)\\x20{2}y')
+  expect(spacedWindow).toContain('ASCII spaces')
 })
 
 test('ksx5 AC3: display cuts use source extents and complete tokens', SLOW, async () => {
