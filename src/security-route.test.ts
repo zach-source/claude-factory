@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'bun:test'
-import { planSecurity, routeLine, SECURITY_REASON, securityRoute, sensitivePath } from './security-route'
+import {
+  planSecurity,
+  rigPaths,
+  routeLine,
+  SECURITY_REASON,
+  securityRoute,
+  sensitivePath,
+} from './security-route'
 
 describe('sensitivePath', () => {
   test.each([
@@ -125,4 +132,77 @@ test.each([
   ['see\u2028Security-reason: a.ts:1 b', true],
 ])('SECURITY_REASON %j is %p', (input, ok) => {
   expect(SECURITY_REASON.test(input)).toBe(ok)
+})
+
+describe('rigPaths', () => {
+  test('good values', () => {
+    expect(rigPaths(undefined)).toEqual([])
+    expect(rigPaths([])).toEqual([])
+    expect(rigPaths(['src/cli.ts', 'mod/', 'a.b/c-d_e'])).toEqual(['src/cli.ts', 'mod/', 'a.b/c-d_e'])
+    expect(rigPaths(['x'.repeat(200)])).toEqual(['x'.repeat(200)])
+  })
+  test.each([
+    [null],
+    ['x'],
+    [{}],
+    [[1]],
+    [['']],
+    [['*.ts']],
+    [['src/*']],
+    [['../x']],
+    [['a/../b']],
+    [['./a']],
+    [['a/./b']],
+    [['/abs']],
+    [['a//b']],
+    [['a b']],
+    [['a\\b']],
+    [['a\nb']],
+    [['naïve.ts']],
+    [['x'.repeat(201)]],
+    [['ok', 7]],
+  ])('bad value %j gives null', v => {
+    expect(rigPaths(v)).toBeNull()
+  })
+})
+
+describe('securityRoute rigPaths', () => {
+  test.each([
+    ['mod/', 'mod/.claude-plugin/plugin.json', true],
+    ['mod', 'mod/.claude-plugin/plugin.json', true],
+    ['src/cli.ts', 'src/cli.ts', true],
+    ['src/cli', 'src/cli.ts', false],
+    ['mod/', 'modx/a.ts', false],
+    ['mod/', 'src/mod/a.ts', false],
+    ['Src/cli.ts', 'src/cli.ts', false],
+  ])('entry %s path %s', (e, p, want) => {
+    expect(securityRoute({ paths: [p], labels: [], rigPaths: [e] }).required).toBe(want)
+  })
+  test('first match, reasons, fail closed', () => {
+    expect(securityRoute({ paths: ['mod/a.ts'], labels: [], rigPaths: ['mod', 'mod/'] }).why).toEqual([
+      'mod/a.ts (rig:mod)',
+    ])
+    expect(
+      securityRoute({
+        paths: ['src/cli.ts'],
+        labels: [],
+        plan: 'Security-sensitive: no',
+        rigPaths: ['src/cli.ts'],
+      }),
+    ).toEqual({ required: true, why: ['src/cli.ts (rig:src/cli.ts)'] })
+    expect(securityRoute({ paths: ['factories/x.ts'], labels: [], rigPaths: ['factories/'] }).why).toEqual([
+      'factories/x.ts (dir:factories)',
+    ])
+    expect(securityRoute({ paths: [], labels: [], rigPaths: null }).why).toEqual([
+      'rig sensitivePaths malformed',
+    ])
+    expect(securityRoute({ paths: ['src/metrics.ts'], labels: [], rigPaths: [] }).required).toBe(false)
+    expect(securityRoute({ paths: ['src/metrics.ts'], labels: [] }).required).toBe(false)
+  })
+  test('clip', () => {
+    const paths = [0, 1, 2, 3, 4, 5, 6].map(i => `src/f${i}.ts`)
+    const why = securityRoute({ paths, labels: [], rigPaths: ['src/'] }).why
+    expect(why).toHaveLength(6)
+    expect(why.at(-1)).toBe('+2 more')
+  })
 })
