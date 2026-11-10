@@ -614,6 +614,13 @@ test('1ocuv AC1 AC2 real TLS checks raw targets and duplicate headers before app
     expect(
       await raw(
         server.port,
+        '/v1/patrol/snapshot',
+        `Authorization: Patrol ${token}\r\nContent-Length: 1\r\n`,
+      ),
+    ).toContain('HTTP/1.1 400')
+    expect(
+      await raw(
+        server.port,
         '/v1/patrol/lease/acquire',
         `Authorization: Patrol ${token}\r\nContent-Length: 4097\r\n`,
         'POST',
