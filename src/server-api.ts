@@ -18,7 +18,7 @@ import {
 import { STATUS_CODES } from 'node:http'
 import type { Socket } from 'node:net'
 import { join, resolve, sep } from 'node:path'
-import { createServer as createTlsServer } from 'node:tls'
+import { createServer as createTlsServer, type TLSSocket, type TlsOptions } from 'node:tls'
 import {
   CATALOG,
   boardView,
@@ -845,9 +845,10 @@ export function clientListener(o: {
   handle: (req: Request, ip: string) => Promise<Response>
   idleMs?: number
 }) {
-  const open = new Set<Socket>()
-  const srv = createTlsServer(
-    {
+  return listen({
+    port: o.port,
+    label: 'client',
+    tls: {
       cert: o.cert,
       key: o.key,
       ca: [o.ca],
@@ -855,18 +856,53 @@ export function clientListener(o: {
       rejectUnauthorized: false,
       minVersion: 'TLSv1.2',
     },
-    sock => {
-      if (!sock.authorized) return sock.destroy()
-      open.add(sock)
-      sock.on('close', () => open.delete(sock))
-      serveSocket(sock, o.handle, o.idleMs ?? 30_000)
-    },
-  )
+    authorize: s => s.authorized,
+    handle: o.handle,
+    idleMs: o.idleMs ?? 30_000,
+  })
+}
+
+/**
+ * The TLS listener of the worker API. A worker has no client certificate: its Bearer token is the identity, and the handler checks it.
+ * It serves the same one-request sockets as clientListener.
+ */
+export function workerListener(o: {
+  port: number
+  cert: string
+  key: string
+  handle: (req: Request, ip: string) => Promise<Response>
+  idleMs?: number
+}) {
+  return listen({
+    port: o.port,
+    label: 'worker',
+    tls: { cert: o.cert, key: o.key, minVersion: 'TLSv1.2' },
+    authorize: () => true,
+    handle: o.handle,
+    idleMs: o.idleMs ?? 30_000,
+  })
+}
+
+function listen(o: {
+  port: number
+  label: 'client' | 'worker'
+  tls: TlsOptions
+  authorize: (s: TLSSocket) => boolean
+  handle: (req: Request, ip: string) => Promise<Response>
+  idleMs: number
+}) {
+  const open = new Set<Socket>()
+  const srv = createTlsServer(o.tls, sock => {
+    if (!o.authorize(sock)) return sock.destroy()
+    open.add(sock)
+    sock.on('close', () => open.delete(sock))
+    serveSocket(sock, o.handle, o.idleMs)
+  })
   srv.on('tlsClientError', () => {})
   srv.on('error', () => {})
   srv.listen(o.port)
   const addr = srv.address()
-  if (!addr || typeof addr === 'string') throw new Error(`cannot listen on client port ${o.port}`)
+  if (!addr || typeof addr === 'string') throw new Error(`cannot listen on ${o.label} port ${o.port}`)
   return {
     port: addr.port,
     stop() {

@@ -6,7 +6,14 @@ import { hostname } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import type { Port } from './core/catalog'
 import { EXCLUDES, type BackupCfg } from './homebackup'
-import { clientHandler, clientListener, cliRunner } from './server-api'
+import {
+  clientHandler,
+  clientListener,
+  cliRunner,
+  workerHandler,
+  workerKey,
+  workerListener,
+} from './server-api'
 
 export type Lease = { holder: string; until: number }
 
@@ -92,6 +99,14 @@ export type ServeOpts = {
     ca: string
     handle: (req: Request, ip: string) => Promise<Response>
     /** idle limit while the request is read, in ms; default 30000 */
+    idleMs?: number
+  }
+  /** the worker API on a TLS listener with no client certificate; `cert` and `key` are the server certificate text */
+  worker?: {
+    port: number
+    cert: string
+    key: string
+    handle: (req: Request, ip: string) => Promise<Response>
     idleMs?: number
   }
 }
@@ -198,12 +213,24 @@ export function serve(o: ServeOpts) {
       throw e
     }
   }
+  let worker: ReturnType<typeof workerListener> | undefined
+  if (o.worker) {
+    try {
+      worker = workerListener(o.worker)
+    } catch (e) {
+      client?.stop()
+      void server.stop(true)
+      throw e
+    }
+  }
   // A long tick keeps the lease. A blocked event loop does not run this timer, so leaseMs must outlast those stretches.
   const renew = setInterval(() => held && take(), Math.max(1, Math.floor(o.leaseMs / 3)))
   timer = setTimeout(next, 0)
   return {
     port: server.port,
     clientPort: client?.port,
+    workerPort: worker?.port,
+    held: () => held,
     board: () => last,
     holder,
     async stop() {
@@ -219,12 +246,13 @@ export function serve(o: ServeOpts) {
       }
       await server.stop(true)
       client?.stop()
+      worker?.stop()
     },
   }
 }
 
 const USAGE =
-  'usage: factory server [--port 8080] [--every-ms 5000] [--lease-ms 60000] [--client-port 8444 --tls-cert <path> --tls-key <path> --person-ca <path>]'
+  'usage: factory server [--port 8080] [--every-ms 5000] [--lease-ms 60000] [--client-port 8444 --tls-cert <path> --tls-key <path> --person-ca <path> [--worker-port 8443 --worker-key <path>]]'
 const NUMS = {
   '--port': 'port',
   '--every-ms': 'everyMs',
@@ -233,11 +261,17 @@ const NUMS = {
 } as const
 const PATHS = { '--tls-cert': 'cert', '--tls-key': 'key', '--person-ca': 'ca' } as const
 
-/** Parse the flags of `factory server`. The four client flags come all together or not at all. Throw the usage text on a bad value. */
+/**
+ * Parse the flags of `factory server`. The four client flags come all together or not at all.
+ * The two worker flags come together, and only with the client flags: the worker port uses --tls-cert and --tls-key.
+ * Throw the usage text on a bad value.
+ */
 export function parseFlags(args: string[]) {
   const v = { port: 8080, everyMs: 5000, leaseMs: 60000, clientPort: undefined as number | undefined }
   const files: Partial<Record<(typeof PATHS)[keyof typeof PATHS], string>> = {}
   const seen = new Set<string>()
+  let workerPort: number | undefined
+  let workerKeyPath: string | undefined
   for (let i = 0; i < args.length; i += 2) {
     const flag = args[i] ?? ''
     const raw = args[i + 1]
@@ -249,15 +283,31 @@ export function parseFlags(args: string[]) {
     } else if (flag in PATHS) {
       if (!raw || raw.startsWith('--')) throw new Error(USAGE)
       files[PATHS[flag as keyof typeof PATHS]] = raw
+    } else if (flag === '--worker-port') {
+      if (!/^\d+$/.test(raw)) throw new Error(USAGE)
+      workerPort = Number(raw)
+    } else if (flag === '--worker-key') {
+      if (!raw || raw.startsWith('--')) throw new Error(USAGE)
+      workerKeyPath = raw
     } else throw new Error(USAGE)
   }
   if (v.everyMs <= 0 || v.leaseMs < 2 * v.everyMs || v.port > 65535) throw new Error(USAGE)
   const { clientPort, ...base } = v
   const given = [clientPort !== undefined, !!files.cert, !!files.key, !!files.ca].filter(Boolean).length
   if (given !== 0 && given !== 4) throw new Error(USAGE)
-  if (clientPort === undefined) return { ...base, client: undefined }
+  if ((workerPort === undefined) !== (workerKeyPath === undefined)) throw new Error(USAGE)
+  if (clientPort === undefined) {
+    if (workerPort !== undefined) throw new Error(USAGE)
+    return { ...base, client: undefined, worker: undefined }
+  }
   if (clientPort > 65535 || clientPort === v.port) throw new Error(USAGE)
-  return { ...base, client: { port: clientPort, ...(files as Record<'cert' | 'key' | 'ca', string>) } }
+  if (workerPort !== undefined && (workerPort > 65535 || workerPort === v.port || workerPort === clientPort))
+    throw new Error(USAGE)
+  return {
+    ...base,
+    client: { port: clientPort, ...(files as Record<'cert' | 'key' | 'ca', string>) },
+    worker: workerPort === undefined ? undefined : { port: workerPort, key: workerKeyPath! },
+  }
 }
 
 /** read a file the server needs; a missing file throws its path, never its text */
@@ -304,7 +354,7 @@ export function serverBackupCfg(
   }
 }
 
-/** `factory server [--port 8080] [--every-ms 5000] [--lease-ms 60000] [--client-port ... --tls-cert ... --tls-key ... --person-ca ...]`. The caller passes the tick, so there is no import cycle with cli.ts. */
+/** `factory server [--port 8080] [--every-ms 5000] [--lease-ms 60000] [--client-port ... --tls-cert ... --tls-key ... --person-ca ... [--worker-port ... --worker-key ...]]`. The caller passes the tick, so there is no import cycle with cli.ts. */
 export function main(
   args: string[],
   home: string,
@@ -323,6 +373,19 @@ export function main(
     ca: need(f.client.ca),
     handle,
   }
+  const worker = f.client &&
+    f.worker && {
+      port: f.worker.port,
+      cert: need(f.client.cert),
+      key: need(f.client.key),
+      handle: workerHandler({
+        home,
+        key: workerKey(f.worker.key),
+        run: cliRunner(home),
+        held: () => s?.held() ?? false,
+        log,
+      }),
+    }
   const b = serverBackupCfg(process.env, home)
   s = serve({
     home,
@@ -332,10 +395,11 @@ export function main(
     tick,
     onBoard: handle.publish,
     client,
+    worker,
     backup: b && 'cfg' in b && backup ? { everyMs: b.everyMs, run: backup } : undefined,
   })
   console.log(
-    `factory server on :${s.port}${s.clientPort ? ` and client API on :${s.clientPort}` : ''} as ${s.holder}`,
+    `factory server on :${s.port}${s.clientPort ? ` and client API on :${s.clientPort}` : ''}${s.workerPort ? ` and worker API on :${s.workerPort}` : ''} as ${s.holder}`,
   )
   if (b) console.log('off' in b ? b.off : `backup on: branch ${b.cfg.branch} every ${b.everyMs} ms`)
   const stop = () => void s!.stop().then(() => process.exit(0))
