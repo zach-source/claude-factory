@@ -1,5 +1,5 @@
 // The manager chat of the core: one conversation file for each id, one model turn at a time.
-import { createHash, randomBytes } from 'node:crypto'
+import { createHash, createPublicKey, generateKeyPairSync, randomBytes, sign, verify } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { connect, createServer, type Server } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -75,36 +75,55 @@ const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex')
 const HASH = /^[0-9a-f]{64}$/
 const SOCK = /^\/[A-Za-z0-9._/-]{1,100}$/
 
-/** the one-use count of an approval, in this process: the hook asks, and the first right hash gets yes */
-function approvalServer(hash: string): Promise<{ path: string; server: Server }> {
+const PUB = /^[0-9a-f]{88}$/
+const NONCE = /^[0-9a-f]{32}$/
+
+/**
+ * the one-use count of an approval, in this process. The hook sends `<hash> <nonce>`; the first right hash gets
+ * `yes <signature>` over `<hash> <nonce> yes`. The private key stays in this process, the public key goes in the hook argv:
+ * a model that replaces the socket cannot sign, and a captured answer fails on the next nonce.
+ */
+function approvalServer(hash: string): Promise<{ path: string; server: Server; pub: string }> {
   const path = join(tmpdir(), `fcg-${randomBytes(12).toString('hex')}.sock`)
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519')
+  const pub = publicKey.export({ type: 'spki', format: 'der' }).toString('hex')
   let used = false
   const server = createServer(c => {
     c.setEncoding('utf8')
     c.once('data', d => {
-      const yes = !used && String(d).trim() === hash
-      if (yes) used = true
-      c.end(yes ? 'yes' : 'no')
+      const [h, n, ...rest] = String(d).trim().split(' ')
+      if (used || h !== hash || !NONCE.test(n ?? '') || rest.length) return void c.end('no')
+      used = true
+      c.end(`yes ${sign(null, Buffer.from(`${h} ${n} yes`), privateKey).toString('hex')}`)
     })
     c.on('error', () => {})
   })
   return new Promise((res, rej) => {
     server.once('error', rej)
-    server.listen(path, () => res({ path, server }))
+    server.listen(path, () => res({ path, server, pub }))
   })
 }
 
-/** ask the core for the one use; any failure is no */
-const askUse = (path: string, hash: string) =>
+/** ask the core for the one use; any failure, or an answer without the core's signature, is no */
+const askUse = (path: string, hash: string, pub: string) =>
   new Promise<boolean>(res => {
+    const nonce = randomBytes(16).toString('hex')
     let out = ''
     const c = connect(path)
     c.setEncoding('utf8')
     c.setTimeout(5000, () => c.destroy())
     c.on('data', d => (out += d))
     c.on('error', () => res(false))
-    c.on('close', () => res(out === 'yes'))
-    c.write(hash)
+    c.on('close', () => {
+      const m = /^yes ([0-9a-f]{128})$/.exec(out)
+      try {
+        const key = createPublicKey({ key: Buffer.from(pub, 'hex'), format: 'der', type: 'spki' })
+        res(!!m && verify(null, Buffer.from(`${hash} ${nonce} yes`), key, Buffer.from(m[1]!, 'hex')))
+      } catch {
+        res(false)
+      }
+    })
+    c.write(`${hash} ${nonce}`)
   })
 
 /** a model can leave a half line: write a newline first, so the next turn stays readable */
@@ -155,7 +174,7 @@ export function send(
         const hash = sha(command)
         const s = await approvalServer(hash)
         server = s.server
-        hook += ` ${hash} ${s.path}`
+        hook += ` ${hash} ${s.path} ${s.pub}`
       }
       try {
         append(path, {
@@ -234,12 +253,14 @@ export function send(
 }
 
 /**
- * the body of `factory chat-guard [<sha256> <socket>]`: every result but allow gives code 2.
- * The two words are the approval of one asked command: the core process counts the use on its socket.
- * ponytail: a model that runs a script can still bind its own socket or kill the core's. Upgrade: the sandbox (see claude-factory-xrbpw).
+ * the body of `factory chat-guard [<sha256> <socket> <public key>]`: every result but allow gives code 2.
+ * The three words are the approval of one asked command: the core process counts the use on its socket and signs its answer.
+ * ponytail: a model that runs a script can still kill the core's socket (a denial only) or relay one hook to it. Upgrade: the sandbox (see claude-factory-xrbpw).
  */
 export async function guardHook(stdin: string, args: string[] = []): Promise<{ code: number; err: string }> {
-  const bad = args.length !== 0 && !(args.length === 2 && HASH.test(args[0]!) && SOCK.test(args[1]!))
+  const bad =
+    args.length !== 0 &&
+    !(args.length === 3 && HASH.test(args[0]!) && SOCK.test(args[1]!) && PUB.test(args[2]!))
   if (bad) return { code: 2, err: 'bad chat-guard arguments\n' }
   let command: unknown
   try {
@@ -249,7 +270,7 @@ export async function guardHook(stdin: string, args: string[] = []): Promise<{ c
   const v = check(command, 'manager')
   if (v.decision === 'allow') return { code: 0, err: '' }
   if (v.decision === 'deny') return { code: 2, err: v.reason + '\n' }
-  if (args.length === 2 && sha(command) === args[0] && (await askUse(args[1]!, args[0]!)))
+  if (args.length === 3 && sha(command) === args[0] && (await askUse(args[1]!, args[0]!, args[2]!)))
     return { code: 0, err: '' }
   return {
     code: 2,

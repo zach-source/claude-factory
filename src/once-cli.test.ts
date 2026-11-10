@@ -358,6 +358,6 @@ test('chat-guard fails closed on bad arguments and on a missing socket', () => {
   const hash = new Bun.CryptoHasher('sha256').update(ask).digest('hex')
   const guard = (args: string[], command: string) =>
     factory(['chat-guard', ...args], JSON.stringify({ tool_input: { command } }))
-  expect(guard([hash, join(home, 'none.sock')], ask).code).toBe(2)
+  expect(guard([hash, join(home, 'none.sock'), 'a'.repeat(88)], ask).code).toBe(2)
   expect(guard(['c'], 'factory status')).toEqual({ code: 2, out: '', err: 'bad chat-guard arguments\n' })
 })

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { connect } from 'node:net'
+import { connect, createServer } from 'node:net'
 import { join } from 'node:path'
 import type { ModelCall, ModelResult } from '../once'
 import { CLI, conversationFile, guardHook, queue, send, show } from './chat'
@@ -303,6 +303,7 @@ const hookArgs = (c: ModelCall): string[] => {
     .PreToolUse[0]!.hooks[0]!.command
   return cmd.split('chat-guard')[1]!.split(' ').filter(Boolean)
 }
+const PUBX = 'a'.repeat(88)
 const raw = (id: string) => readFileSync(join(home, 'conversations', `${id}.jsonl`), 'utf8')
 const ASK_MSG = (c: string) =>
   askOf(c) + '\nthe person must approve this command; a chat turn cannot run it: tell the person\n'
@@ -377,7 +378,7 @@ test('approve: a wrong hash on the socket does not use up the approval', async (
       s.setEncoding('utf8')
       s.on('data', d => (out += d))
       s.on('close', () => res(out))
-      s.write(sha('other'))
+      s.write(`${sha('other')} ${'a'.repeat(32)}`)
     })
     expect(bad).toBe('no')
     seen.push((await hook(ASK, a)).code)
@@ -385,6 +386,35 @@ test('approve: a wrong hash on the socket does not use up the approval', async (
   })
   await send(ctxOf(m.chatModel), { id: 'c', text: 'yes', front: 'web', approve: 't2' })
   expect(seen).toEqual([0])
+})
+
+test('approve: a replaced socket or a captured answer gives no approval', async () => {
+  seed('c', [mgr('s-1', askRow('t2', ASK))])
+  const seen: number[] = []
+  const m = fakeModel(async c => {
+    const a = hookArgs(c)
+    // the real core answers one captured request for the approved hash
+    const real = await new Promise<string>(res => {
+      let out = ''
+      const s = connect(a[1]!)
+      s.setEncoding('utf8')
+      s.on('data', d => (out += d))
+      s.on('close', () => res(out))
+      s.write(`${a[0]} ${'b'.repeat(32)}`)
+    })
+    expect(real).toMatch(/^yes [0-9a-f]{128}$/)
+    // the model replaces the socket: one server says yes with no signature, one replays the captured answer
+    for (const answer of ['yes', real, 'yes ' + '0'.repeat(128)]) {
+      rmSync(a[1]!, { force: true })
+      const fake = createServer(c2 => c2.end(answer))
+      await new Promise<void>(r => fake.listen(a[1]!, r))
+      seen.push((await hook(ASK, a)).code)
+      fake.close()
+    }
+    return ok()
+  })
+  await send(ctxOf(m.chatModel), { id: 'c', text: 'yes', front: 'web', approve: 't2' })
+  expect(seen).toEqual([2, 2, 2])
 })
 
 test('approve: the socket is gone after the turn', async () => {
@@ -428,7 +458,7 @@ test('approve: a deny stays denied', async () => {
   // the hook itself
   const d = check(DENY, 'manager')
   if (d.decision !== 'deny') throw new Error('the fixture must deny')
-  expect(await hook(DENY, [sha(DENY), '/x/y.sock'])).toEqual({ code: 2, err: d.reason + '\n' })
+  expect(await hook(DENY, [sha(DENY), '/x/y.sock', PUBX])).toEqual({ code: 2, err: d.reason + '\n' })
 })
 
 test('approve: bad ids are refused with no side effect', async () => {
@@ -495,13 +525,16 @@ test('approve: the hook argument grammar fails closed', async () => {
   const S = '/tmp/x.sock'
   for (const args of [
     [h],
-    ['c', h, S],
-    [h, S, S],
-    [h.toUpperCase(), S],
-    [h.slice(1), S],
-    [h, 'rel.sock'],
-    [h, '/a b'],
-    [h, '/' + 'a'.repeat(101)],
+    [h, S],
+    ['c', h, S, PUBX],
+    [h, S, PUBX, PUBX],
+    [h.toUpperCase(), S, PUBX],
+    [h.slice(1), S, PUBX],
+    [h, 'rel.sock', PUBX],
+    [h, '/a b', PUBX],
+    [h, '/' + 'a'.repeat(101), PUBX],
+    [h, S, PUBX.toUpperCase()],
+    [h, S, PUBX.slice(1)],
   ])
     for (const c of ['/repo/bin/factory status', ASK])
       expect(await hook(c, args)).toEqual({ code: 2, err: 'bad chat-guard arguments\n' })
@@ -509,8 +542,8 @@ test('approve: the hook argument grammar fails closed', async () => {
 })
 
 test('approve: the hook refuses when the socket is missing or the hash is wrong', async () => {
-  expect((await hook(ASK, [sha(ASK), join(home, 'none.sock')])).code).toBe(2)
-  expect((await hook(ASK, [sha('other'), join(home, 'none.sock')])).code).toBe(2)
+  expect((await hook(ASK, [sha(ASK), join(home, 'none.sock'), PUBX])).code).toBe(2)
+  expect((await hook(ASK, [sha('other'), join(home, 'none.sock'), PUBX])).code).toBe(2)
 })
 
 test('a half line at the end of the file does not hide the real manager turn', async () => {
