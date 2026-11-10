@@ -262,7 +262,7 @@ const pick = (o: unknown, keys: Record<string, Leaf>): Record<string, unknown> =
  * The board a client may read: each rig keeps only the fields a front end draws (mod/types FactoryRig).
  * Fail closed: env, params, beadsRemote and any unknown field never leave. A malformed rig list throws.
  */
-function boardView(b: unknown): unknown {
+export function boardView(b: unknown): unknown {
   if (!b || typeof b !== 'object' || (b as { rigs?: unknown }).rigs === undefined) return b
   const rigs = (b as { rigs: unknown }).rigs
   if (!Array.isArray(rigs)) throw new Error('board rigs are malformed')

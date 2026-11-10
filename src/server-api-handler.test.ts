@@ -487,6 +487,18 @@ describe('events query grammar', () => {
 })
 
 describe('events replay and ring', () => {
+  test('events carry no private rig data, replay and live', async () => {
+    const t = setup()
+    const rig = { name: 'r', env: { FOO: 'zqsecret' }, params: { FOO: 'zqsecret' }, beadsRemote: 'zqsecret' }
+    t.h.publish({ rigs: [rig], n: 1 })
+    t.h.publish({ rigs: 'zqsecret', n: 9 })
+    const r = await get(t.h, '/v1/events')
+    setTimeout(() => t.h.publish({ rigs: [{ ...rig, repo: 'x' }], n: 2 }), 10)
+    const text = await frames(r, 2)
+    expect(text).not.toContain('zqsecret')
+    expect(text).toContain('"repo":"x"')
+    expect(text).not.toContain('"n":9')
+  })
   test('replay then live, each event once', async () => {
     const t = setup()
     t.h.publish({ a: 1 })
