@@ -836,6 +836,37 @@ test('juo9t AC3 tick candidates', async () => {
   }
 }, 30_000)
 
+for (const command of ['brief', 'review'] as const) {
+  test(`juo9t AC3 failed facts deduplicate ${command} keys`, () => {
+    const home = newHome()
+    const board = (visit: number) =>
+      command === 'brief'
+        ? { runs: [{ id: 'missing-run', since: visit, gate: { prompt: 'Ask the person' } }] }
+        : { reviews: [{ key: `proposal:missing:${visit}` }] }
+    const run = () => {
+      const p = Bun.spawnSync([CLI, command, '--once'], { env: env(home), timeout: 5000 })
+      expect(p.exitCode).toBe(0)
+      return p.stdout.toString().trim()
+    }
+    const log = () =>
+      readFileSync(join(home, `${command}-log.jsonl`), 'utf8')
+        .trim()
+        .split('\n')
+        .map(line => JSON.parse(line))
+    writeFileSync(join(home, 'manager-tick.json'), JSON.stringify(board(1)))
+    expect(run()).toContain('facts failed:')
+    expect(log()).toHaveLength(1)
+    expect(log()[0].error).toBeTruthy()
+    expect(run()).toBe('nothing due')
+    expect(log()).toHaveLength(1)
+    writeFileSync(join(home, 'manager-tick.json'), JSON.stringify(board(2)))
+    expect(run()).toContain('facts failed:')
+    expect(log()).toHaveLength(2)
+    expect(log()[1].key).not.toBe(log()[0].key)
+    expect(existsSync(join(home, 'agent-steps.jsonl'))).toBe(false)
+  }, 30_000)
+}
+
 for (const kind of ['pm', 'brief', 'review'] as const) {
   test(`juo9t AC5 job lifecycle ${kind}`, async () => {
     const home = newHome()
