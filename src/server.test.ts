@@ -1,5 +1,6 @@
-import { afterEach, expect, test } from 'bun:test'
+import { afterEach, expect, spyOn, test } from 'bun:test'
 import type { Subprocess } from 'bun'
+import * as fs from 'node:fs'
 import {
   chmodSync,
   existsSync,
@@ -13,7 +14,7 @@ import {
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { backup } from './homebackup'
-import { claim, leaseFile, parseFlags, release, serve, serverBackupCfg } from './server'
+import { claim, leaseFile, main, parseFlags, release, serve, serverBackupCfg } from './server'
 
 const dirs: string[] = []
 const lease = () => {
@@ -122,8 +123,11 @@ test('stop keeps the lease renewed while it waits for a tick longer than the lea
 // Process tests: real `factory server` children on one FACTORY_HOME.
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const kids: Subprocess[] = []
-afterEach(() => {
-  for (const k of kids.splice(0)) k.kill('SIGKILL')
+afterEach(async () => {
+  for (const k of kids.splice(0)) {
+    k.kill('SIGKILL')
+    await k.exited
+  }
 })
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 const newHome = () => {
@@ -133,7 +137,19 @@ const newHome = () => {
   return d
 }
 const env = (home: string) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_PATROL, ...laptop } = process.env
+  const {
+    FACTORY_OUTBOX,
+    FACTORY_FROM,
+    FACTORY_RUN,
+    FACTORY_PATROL,
+    FACTORY_SERVER,
+    FACTORY_MAIN_CHAT,
+    FACTORY_WORKER,
+    FACTORY_STEP_ISOLATE,
+    FACTORY_LEASE_HOLDER,
+    FACTORY_LEASE_KIND,
+    ...laptop
+  } = process.env
   return { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_NO_KICK: '1' }
 }
 const FAST = ['--port', '0', '--every-ms', '100', '--lease-ms', '1000']
@@ -648,17 +664,113 @@ test('akiq.15 AC8: stop() calls the patrol kill hook', async () => {
   expect(killed).toBe(1)
 })
 
-test('akiq.15 AC8: --patrol-every-ms is off by default and must be at least --every-ms', () => {
+test('axo88 AC1: server patrol accepts only zero', () => {
   expect(parseFlags([]).patrolMs).toBe(0)
-  expect(parseFlags(['--patrol-every-ms', '60000']).patrolMs).toBe(60000)
-  expect(() => parseFlags(['--every-ms', '100', '--patrol-every-ms', '50'])).toThrow('usage')
-  expect(() => parseFlags(['--patrol-every-ms', 'x'])).toThrow('usage')
+  for (const raw of ['0', '000']) expect(parseFlags(['--patrol-every-ms', raw]).patrolMs).toBe(0)
+  for (const raw of ['1', '200', '60000', '9'.repeat(400)]) {
+    expect(() => parseFlags(['--patrol-every-ms', raw])).toThrow('isolated runner')
+  }
+  for (const raw of ['-1', 'NaN', 'Infinity', '1e3', '0.0', '', '$INTERVAL', '$(true)', '@config']) {
+    expect(() => parseFlags(['--patrol-every-ms', raw])).toThrow('usage')
+  }
+})
+
+test('axo88 AC1: the server flag grammar stays closed', () => {
+  for (const args of [
+    ['--unknown', '0'],
+    ['toString', '0'],
+    ['constructor', '0'],
+    ['__proto__', '0'],
+    ['--port', '0', '--port', '1'],
+    ['--port'],
+    ['positional'],
+    ['--port=0'],
+    ['ENV=0', 'server'],
+    ['@config'],
+    ['--patrol-every-ms', '0', '--patrol-every-ms', '0'],
+    ['--port', '65536'],
+    ['--every-ms', '0'],
+    ['--every-ms', '100', '--lease-ms', '199'],
+    ['--client-port', '8444'],
+    ['--tls-cert', 'cert'],
+    ['--client-port', '8080', '--tls-cert', 'cert', '--tls-key', 'key', '--person-ca', 'ca'],
+  ])
+    expect(() => parseFlags(args)).toThrow('usage')
+  for (const flag of ['--port', '--every-ms', '--lease-ms', '--client-port']) {
+    for (const raw of ['-1', 'NaN', 'Infinity', '1e3', '0.0', '']) {
+      expect(() => parseFlags([flag, raw])).toThrow('usage')
+    }
+  }
+  const tls = ['--client-port', '8444', '--tls-cert', 'a cert', '--tls-key', 'key', '--person-ca', 'ca']
+  expect(parseFlags(tls).client).toEqual({ port: 8444, cert: 'a cert', key: 'key', ca: 'ca' })
+  for (const flag of ['--tls-cert', '--tls-key', '--person-ca']) {
+    for (const raw of ['', '--port']) expect(() => parseFlags([flag, raw])).toThrow('usage')
+  }
+  expect(parseFlags(FAST)).toMatchObject({ port: 0, everyMs: 100, leaseMs: 1000 })
+})
+
+test('axo88 AC2: direct main refuses before listeners, ticks, backup, or model calls', () => {
+  const home = newHome()
+  const before = 'retained mail'
+  writeFileSync(join(home, 'patrol-state.json'), before)
+  const counts = { listener: 0, tick: 0, backup: 0, model: 0, state: 0 }
+  const write = fs.writeFileSync
+  const state = spyOn(fs, 'writeFileSync').mockImplementation((...args) => {
+    if (args[0] === join(home, 'patrol-state.json')) counts.state++
+    return write(...args)
+  })
+  const listener = spyOn(Bun, 'serve').mockImplementation(() => {
+    counts.listener++
+    throw new Error('unexpected listener')
+  })
+  const model = spyOn(Bun, 'spawn').mockImplementation(() => {
+    counts.model++
+    throw new Error('unexpected model')
+  })
+  try {
+    for (const extra of [
+      [],
+      [
+        '--client-port',
+        '8444',
+        '--tls-cert',
+        'missing-cert',
+        '--tls-key',
+        'missing-key',
+        '--person-ca',
+        'missing-ca',
+      ],
+    ]) {
+      expect(() =>
+        main(
+          [...FAST, '--patrol-every-ms', '200', ...extra],
+          home,
+          () => {
+            counts.tick++
+          },
+          {} as Parameters<typeof main>[3],
+          async () => {
+            counts.backup++
+          },
+        ),
+      ).toThrow('isolated runner')
+    }
+    expect(counts).toEqual({ listener: 0, tick: 0, backup: 0, model: 0, state: 0 })
+    expect(readFileSync(join(home, 'patrol-state.json'), 'utf8')).toBe(before)
+    expect(existsSync(leaseFile(home))).toBe(false)
+    expect(existsSync(join(home, 'manager.lease'))).toBe(false)
+    expect(existsSync(join(home, 'agent-steps.jsonl'))).toBe(false)
+  } finally {
+    listener.mockRestore()
+    model.mockRestore()
+    state.mockRestore()
+  }
 })
 
 /** a server child with a fake claude, on a home with one kept mail */
 async function patrolServer(extra: string[]) {
   const home = newHome()
-  const stub = join(home, '..', `claude-${basename(home)}.sh`)
+  const stub = join(home, 'claude.sh')
   writeFileSync(
     stub,
     `#!/bin/sh\ncat > /dev/null\nenv > '${home}/child-env.txt'\nprintf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'\n`,
@@ -681,23 +793,32 @@ async function patrolServer(extra: string[]) {
   return { home, p, stub }
 }
 
-test('akiq.15 AC8: the server runs the patrol with its own HOME; with the flag off it runs none', async () => {
+test('axo88 AC2: CLI refuses patrol and retains mail without model or lease effects', async () => {
   const on = await patrolServer(['--patrol-every-ms', '200'])
-  const steps = join(on.home, 'agent-steps.jsonl')
-  for (let i = 0; i < 100 && !existsSync(steps); i++) await sleep(100)
-  expect(JSON.parse(readFileSync(steps, 'utf8').split('\n')[0]!)).toMatchObject({
-    step: 'patrol',
-    outcome: 'ok',
-  })
-  expect(readFileSync(join(on.home, 'child-env.txt'), 'utf8')).toContain(`HOME=${on.home}/steps/patrol\n`)
-  // wait for a second patrol interval: the next child must take no refused lease
-  await sleep(700)
-  on.p.kill('SIGTERM')
-  await on.p.exited
-  expect(await new Response(on.p.stderr).text()).not.toContain('no patrol:')
-  rmSync(on.stub)
-  const off = await patrolServer([])
-  await sleep(1500)
-  expect(existsSync(join(off.home, 'agent-steps.jsonl'))).toBe(false)
-  rmSync(off.stub)
+  const before = readFileSync(join(on.home, 'patrol-state.json'), 'utf8')
+  const result = await Promise.race([on.p.exited, sleep(3000).then(() => 'timeout')])
+  expect(result).not.toBe('timeout')
+  expect(result).not.toBe(0)
+  expect(on.p.signalCode).toBeNull()
+  expect(await new Response(on.p.stderr).text()).toContain('isolated runner')
+  for (const file of ['agent-steps.jsonl', 'child-env.txt', 'server-lease.json', 'manager.lease']) {
+    expect(existsSync(join(on.home, file))).toBe(false)
+  }
+  expect(readFileSync(join(on.home, 'patrol-state.json'), 'utf8')).toBe(before)
+}, 30_000)
+
+test('axo88 AC3: default and zero servers tick without patrol or mail effects', async () => {
+  for (const flags of [[], ['--patrol-every-ms', '0']]) {
+    const off = await patrolServer(flags)
+    const before = readFileSync(join(off.home, 'patrol-state.json'), 'utf8')
+    const first = new TextDecoder().decode((await off.p.stdout.getReader().read()).value)
+    const port = Number(/on :(\d+)/.exec(first)?.[1])
+    await sleep(500)
+    expect((await health(port)).ticks).toBeGreaterThan(0)
+    off.p.kill('SIGTERM')
+    expect(await off.p.exited).toBe(0)
+    expect(existsSync(join(off.home, 'agent-steps.jsonl'))).toBe(false)
+    expect(existsSync(join(off.home, 'child-env.txt'))).toBe(false)
+    expect(readFileSync(join(off.home, 'patrol-state.json'), 'utf8')).toBe(before)
+  }
 }, 30_000)
