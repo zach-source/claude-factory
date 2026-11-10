@@ -20,7 +20,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { dirname, join, relative } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { rmSafe } from './home-guard'
 import { stepPrompt } from './steps'
 import type { PrState } from './prs'
@@ -1653,13 +1653,16 @@ export function mdFileCount(dir: string): number {
   return n
 }
 
+/** true when a failed .git restore fenced `dir`: every factory git spawn in it refuses until a person removes `<dir>.fenced` */
+export const gitFenced = (dir: string) => existsSync(resolve(dir) + '.fenced')
+
 /** when a note has no at:, its age since the commit that added it, so it ages like any other note
  * (claude-factory-59r.19b: treating it as added "now" meant it could never grow stale or merge).
  * `git log -1` gives the newest commit to touch the path. A later edit or a git mv reset the age to
  * "now" each time one ran. `--diff-filter=A` finds only the commit(s) that added the path. git log lists
  * newest first, so the last line is the oldest of those (claude-factory-59r.23). */
 function gitAddedMs(dir: string, path: string): number | undefined {
-  if (!existsSync(join(dir, '.git'))) return undefined
+  if (!existsSync(join(dir, '.git')) || gitFenced(dir)) return undefined
   const out = Bun.spawnSync([
     'git',
     '-C',

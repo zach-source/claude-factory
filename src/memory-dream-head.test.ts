@@ -167,7 +167,8 @@ test('AC7d 96ks a dream whose agent pass writes the memory repo config commits n
   ])
   expect(run({ FACTORY_CLAUDE: claude }).code).toBe(0)
   expect(gitMemory('rev-parse', 'HEAD')).toBe(readFileSync(join(dir, 'before'), 'utf8').trim())
-  expect(dreamLog()).toContain('memory: repo config not allowed, nothing committed')
+  // claude-factory-f1zc: the .git guard runs first and puts the config back
+  expect(dreamLog()).toContain('dream: .git changed in the pass, nothing committed')
   expect(dreamCommits()).toBe('')
   expect(existsSync(marker)).toBe(false)
 })

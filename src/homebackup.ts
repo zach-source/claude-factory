@@ -11,6 +11,7 @@ import {
 import { join, relative } from 'node:path'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import { claudeFiles } from './migrate'
+import { gitFenced } from './memory'
 
 /**
  * Backup of the AX manager's state to a private git branch (claude-factory-192.9). AX keeps a task's workspace only
@@ -155,7 +156,7 @@ const PUSH_MS = 600_000
  */
 function snapshotMemory(cfg: BackupCfg): string | undefined {
   const mem = memDir(cfg.ws)
-  if (existsSync(join(mem, '.git'))) {
+  if (existsSync(join(mem, '.git')) && !gitFenced(mem)) {
     const l = Bun.spawnSync(['git', '-C', mem, 'log', '-1', '--grep=^dream:', '--format=%at'], {
       stdout: 'pipe',
     })

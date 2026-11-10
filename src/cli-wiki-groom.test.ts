@@ -629,20 +629,116 @@ for (const exit of [0, 1]) {
       )
       const r = groom()
       expect(r.code).toBe(0)
-      expect(wikiLog()).toContain('wiki groom: repo config not allowed, nothing committed')
-      const br = `groom/${today()}`
+      // f1zc: the .git guard runs first, puts the config back and lets the cleanup finish
+      expect(wikiLog()).toContain('wiki groom: .git changed in the pass, nothing committed')
       expect(git('rev-list', '--count', 'refs/remotes/origin/main..HEAD')).toBe('0')
       expect(bareGit('branch', '--list', 'groom/*')).toBe('')
       expect(run(['git', '-C', e, 'branch', '--list', 'groom/*']).out.trim()).toBe('')
       expect(creates()).toHaveLength(0)
       expect(existsSync(join(home, 'wiki-state.json')) && 'groomPr' in state()).toBe(false)
-      expect(git('symbolic-ref', 'HEAD')).toBe(`refs/heads/${br}`)
+      expect(git('symbolic-ref', 'HEAD')).toBe('refs/heads/main')
       expect(existsSync(marker)).toBe(false)
-      const calls = claudeCalls().length
-      groom()
-      expect(wikiLog()).toContain('wiki groom: repo config not allowed, skipped')
-      expect(claudeCalls().length).toBe(calls)
+      expect(readFileSync(join(wiki(), '.git', 'config'), 'utf8')).not.toContain('insteadOf')
     },
     SLOW,
   )
 }
+
+// claude-factory-f1zc: the apply pass must not leave a .git change or a nested repo that runs a command
+const SCRIPT = () => join(dir, 'mark.sh')
+const MARKER = () => join(dir, 'MARKER')
+const FSMON = () => `printf '[core]\\n\\tfsmonitor = ${SCRIPT()}\\n' >> .git/config\n`
+const NESTED = () =>
+  [
+    'mkdir -p topics/sub/g/objects/info topics/sub/g/refs/heads',
+    `printf 'gitdir: ./g\\n' > topics/sub/.git`,
+    `printf '%s\\n' "${wiki()}/.git/objects" > topics/sub/g/objects/info/alternates`,
+    'git rev-parse HEAD > topics/sub/g/HEAD',
+    `printf '[core]\\n\\trepositoryformatversion = 0\\n\\tfsmonitor = ${SCRIPT()}\\n' > topics/sub/g/config`,
+    'echo hi > topics/sub/f.md',
+    '',
+  ].join('\n')
+const markScript = () => {
+  writeFileSync(SCRIPT(), `#!/bin/sh\ntouch '${MARKER()}'\n`)
+  chmodSync(SCRIPT(), 0o755)
+}
+const CHANGED = 'wiki groom: .git changed in the pass, nothing committed'
+const groomed = () => {
+  expect(existsSync(MARKER())).toBe(false)
+  expect(creates()).toEqual([])
+  expect(wikiLog()).toContain(CHANGED)
+  expect(git('symbolic-ref', 'HEAD')).toBe('refs/heads/main')
+}
+
+test(
+  'AC6a a config write in the apply pass is undone and nothing is committed',
+  () => {
+    setup()
+    markScript()
+    const before = join(fake, 'config.before')
+    apply(`cp .git/config "${before}"\n${EDIT3}${FSMON()}`)
+    expect(groom().code).toBe(0)
+    // the cleanup then drops the groom branch section, so the bytes differ only by that
+    expect(readFileSync(join(wiki(), '.git', 'config'), 'utf8')).not.toContain('fsmonitor')
+    expect(readFileSync(before, 'utf8')).not.toContain('fsmonitor')
+    groomed()
+  },
+  SLOW,
+)
+
+test(
+  'AC6b a nested repo from the apply pass is removed',
+  () => {
+    setup()
+    markScript()
+    apply(EDIT3 + NESTED())
+    expect(groom().code).toBe(0)
+    expect(existsSync(join(wiki(), 'topics', 'sub', '.git'))).toBe(false)
+    groomed()
+  },
+  SLOW,
+)
+
+test(
+  'AC6c a .git that becomes a file fences the wiki',
+  () => {
+    setup()
+    markScript()
+    const shim = join(dir, 'shim')
+    const glog = join(dir, 'git.log')
+    mkdirSync(shim, { recursive: true })
+    writeFileSync(join(shim, 'git'), `#!/bin/sh\necho "$*" >> '${glog}'\nexec '${Bun.which('git')}' "$@"\n`)
+    chmodSync(join(shim, 'git'), 0o755)
+    const PATH = `${shim}:${join(dir, 'bin')}:${process.env.PATH}`
+    apply(
+      `mv .git .g\nprintf 'gitdir: .g\\n' > .git\nprintf '[core]\\n\\tfsmonitor = ${SCRIPT()}\\n' >> .g/config\necho PASS-END >> '${glog}'\n`,
+    )
+    expect(groom([], { PATH }).code).toBe(0)
+    expect(wikiLog()).toContain(
+      'wiki groom: .git changed in the pass, restore failed, git fenced, nothing committed',
+    )
+    expect(wikiLog()).toContain('wiki groom: cleanup failed, checkout left on groom/')
+    expect(existsSync(join(home, 'wiki.fenced'))).toBe(true)
+    const lines = readFileSync(glog, 'utf8').split('\n')
+    expect(lines.slice(lines.indexOf('PASS-END') + 1).filter(l => l.includes(wiki()))).toEqual([])
+    const n = readFileSync(glog, 'utf8').length
+    groom([], { PATH })
+    expect(readFileSync(glog, 'utf8').slice(n)).not.toContain(wiki())
+    expect(existsSync(MARKER())).toBe(false)
+    expect(creates()).toEqual([])
+  },
+  SLOW,
+)
+
+test(
+  'AC6d a failed apply call that also wrote config is still undone',
+  () => {
+    setup()
+    markScript()
+    apply(`${FSMON()}exit 1\n`)
+    expect(groom().code).toBe(0)
+    groomed()
+    expect(wikiLog()).not.toContain('apply call failed')
+  },
+  SLOW,
+)
