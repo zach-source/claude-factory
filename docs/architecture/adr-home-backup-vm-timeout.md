@@ -100,6 +100,7 @@ Child peak RSS reached 2185436 KiB after run 1 and 2187120 KiB after run 3.
 This RSS counter is a cumulative child maximum, not an independent peak for each run.
 The paths `cpu.max`, `pids.max`, and `memory.max` under `/sys/fs/cgroup/` were unavailable.
 Thus, these measurements cannot rule out a host CPU quota or a process limit outside the VM view.
+The VM also lacked `ps`, so no process-list measurement was available.
 
 A separate scratch export measured the large test with phase wrappers.
 The wrappers passed subprocess arguments and options unchanged and returned the original results.
@@ -139,11 +140,21 @@ The paired focused evidence does not include a full-suite comparison.
 The station report records the final gate and independent mutation results.
 
 A later clean baseline under `factory mutate` exceeded the large test limit at 120.83 seconds.
-That run used the stronger assertions and unchanged production code. The tool refused the mutation and left the file clean.
-The test reported 30 assertion calls but no failed result assertion. This does not identify the slow phase.
+A second clean baseline exceeded the limit at 120.62 seconds.
+Both runs used the stronger assertions and unchanged production code.
+The tool refused each mutation and left the file clean.
+Each test reported 30 assertion calls but no failed result assertion. This does not identify the slow phase.
 This observation confirms that a focused run can also exceed the limit on this VM.
 It does not establish the cause of the original absent `changed` result.
 The timeout and all assertions remain unchanged.
+
+A repeat phase run on the main export passed in 114.37 seconds, 10.75 seconds above the first phase run.
+Its scans took 45.14, 0.15, 45.94, and 0.14 seconds: 91.37 seconds total.
+Git calls took 14.22 seconds total; compression took 2.75 seconds.
+Fixture creation and file writes took 1.33 seconds. Complete restore took 2.12 seconds.
+All scans exited 0, with no subprocess signal or timeout error.
+These observations show runtime variance in the unchanged production path.
+They do not identify why the original second backup returned no `changed` value.
 
 ### Rejected alternatives
 
