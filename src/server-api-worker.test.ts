@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { revoke, sign } from './tokens'
-import { workerHandler, type RunResult } from './server-api'
+import { workerHandler, workerKey, type RunResult } from './server-api'
 
 const KEY = Buffer.alloc(32, 7)
 const T0 = 1_800_000_000_000
@@ -275,7 +275,7 @@ describe('worker API', () => {
     }
     // the claims checks need a live token: use a fresh home with its own tokens
     const h2 = setup()
-    for (const c of [{ run: '..' }, { run: '.' }, { node: '..' }, { node: 'manager' }]) {
+    for (const c of [{ run: '..' }, { run: '.' }, { node: '.' }, { node: '..' }, { node: 'manager' }]) {
       const r = await h2.post('/v1/report', REP, { token: h2.token(c) })
       expect(r.status).toBe(403)
       expect((await body(r)).refused).toBe('token claims are not a run station')
@@ -344,6 +344,26 @@ describe('worker API', () => {
     expect(ok1.status).toBe(200)
     const ok2 = await s.post('/v1/report', { outcome: 'ready', summary: big(102400) })
     expect(ok2.status).toBe(200)
+  })
+
+  test('body: the byte cap refuses valid small JSON with excess whitespace', async () => {
+    const s = setup()
+    const json = JSON.stringify(REP)
+    expect((await s.post('/v1/report', json.padEnd(128 * 1024, ' '))).status).toBe(200)
+    const r = await s.post('/v1/report', json.padEnd(128 * 1024 + 1, ' '))
+    expect(r.status).toBe(400)
+    expect((await body(r)).refused).toBe('body over 128 KiB')
+    expect(s.calls).toHaveLength(1)
+    expect(Object.values(s.rows()).map(row => row.status)).toEqual(['applied', 'refused'])
+  })
+
+  test('workerKey needs at least 32 bytes', () => {
+    const s = setup()
+    const file = join(s.home, 'key')
+    writeFileSync(file, Buffer.alloc(31, 7))
+    expect(() => workerKey(file)).toThrow()
+    writeFileSync(file, KEY)
+    expect(workerKey(file)).toEqual(KEY)
   })
 
   test('station: an old seq or another node is refused', async () => {
