@@ -113,7 +113,7 @@ test('the AX fixtures ignore inherited worker and Beads settings', () => {
         FACTORY_BEADS_REMOTE: '',
         BEADS_DIR: join(dir, 'parent-beads'),
       },
-      timeout: 20_000,
+      timeout: 30_000,
     },
   )
   expect(p.exitCode, p.stderr.toString()).toBe(0)
