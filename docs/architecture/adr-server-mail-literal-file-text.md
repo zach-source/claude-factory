@@ -4,6 +4,8 @@
 
 Bead: `claude-factory-teyn1`. Base: `7595aef6`.
 
+The sections below retain the original parser contract. The continuation section defines the work after the first verify pass.
+
 `src/cli.ts:13520` expands mail file arguments before `client.main`.
 `src/client.ts:117` then interprets the expanded third argument as an option.
 A file that contains `--wake` thus causes a usage refusal instead of mail.
@@ -110,6 +112,7 @@ Run `bun run test`, `bunx tsc --noEmit -p .`, and `bunx prettier@3.9.9 --check .
 Run `gitleaks detect --log-opts=origin/main..HEAD` and `bun audit`.
 Required CI checks `test`, `plugin`, `typecheck`, and `format` must pass on the final PR head.
 Record local tool gaps separately from CI evidence. Do not weaken a test to obtain a pass.
+An executed local assertion failure remains unresolved until a permitted worker checks it; a hook denial is not test evidence.
 
 ## Test plan
 
@@ -164,3 +167,58 @@ No AC is must-see-live; isolated process evidence and exact-head CI prove this p
 
 Task 2 depends on task 1. Both tasks must fit one implementation pass of at most 120 minutes.
 The plan station commits only this ADR.
+
+## Continuation after four partial passes
+
+PR: <https://github.com/zach-source/claude-factory/pull/828>. It must remain a draft through the required approval stations.
+The reviewed branch state for this plan is `9181aa6fbe5141d729e4596ebc5d2ec9d333e84d`.
+Tasks `.1` and `.2` are closed. Their test and fix commits are `f152d2d9`, `832070c2`, and `700bf816`.
+The journal records the expected pre-fix failures and seven killed mutants. Do not repeat that work without a code change.
+Task `.3` is closed after two isolated passes with the unchanged 500 ms limits.
+
+Task `claude-factory-teyn1.4` remains open for AC4.
+Verify measured 360.381029 ms against a 200 ms limit at `src/home-guard.test.ts:402`.
+The test name is `homeReason > an unclosed quote input returns fast`.
+The journal reports that the source and test match `origin/main`; the mail diff changes neither file.
+This evidence does not establish the cause of the time failure or prove a mail regression.
+
+The four partial passes expose a separate cause of the stalled work: the worker cannot access the required source and test.
+The hook refused both source reads under its home-directory delete rule.
+It also refused the isolated test in verify. No later pass obtained new evidence about the assertion.
+Empty checkpoint commits did not resolve that prerequisite. Do not create more empty commits or repeat denied commands on this worker.
+
+### Access prerequisite
+
+The manager must supply a worker that permits these source reads and the isolated test without a guard bypass:
+
+```sh
+rg -n '^' src/home-guard.ts
+rg -n '^' src/home-guard.test.ts
+bun test --timeout 30000 src/home-guard.test.ts
+```
+
+Until that worker exists, report blocked on worker access, not partial on the mail implementation.
+Do not alter `.factory/`, the worker hook, or the sandbox in this run to obtain access.
+Do not move the failed assertion out of AC4 or use green CI to erase an executed local failure.
+
+### Remaining task and checks
+
+Keep `.4` as the single remaining task. Do not create a duplicate bug or reopen the completed mail tasks.
+After the access prerequisite, complete these steps within one 120-minute pass:
+
+1. Read the two files and compare their diff against current `origin/main`.
+2. Run the isolated test twice. Record the SHA, command, exit code, pass count, and elapsed assertion time.
+3. Run the unchanged full gate from AC4 and record all failures separately.
+4. If both isolated runs and the full gate pass, close `.4` with that evidence.
+5. If the assertion fails again, report its evidence and request a separate diagnostic plan before any guard change.
+6. Run the mail tests from AC1 through AC3 and the remaining AC4 checks on the final head.
+7. Require successful final-head CI before the next approval station.
+
+This task does not authorize a threshold increase, test skip, or speculative guard optimization.
+If a code fix becomes necessary, the next plan must define its cause, negative rows, and mutation proof first.
+Use one ADR evidence commit for the completed assessment; do not create an empty checkpoint commit.
+Its check is the unchanged isolated test, full gate, and final-head CI.
+The earlier test-first sequence remains complete; no new failing mail test is necessary for this continuation.
+
+The parser design, security classification, rollout, rollback, and observability requirements remain unchanged.
+No production read or owner credential action is necessary to resolve this prerequisite.
