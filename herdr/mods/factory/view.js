@@ -206,3 +206,123 @@ export const chatArgv = cfg => (cfg.machine ? ['hc', 'attach', `${cfg.machine}/m
 
 /** the exec call of a remote job: [command, args]. It runs in the foreground, since hc exec kills what a command leaves behind. */
 export const directJob = (cfg, words) => ['env', [`FACTORY_HOME=${cfg.home}`, cfg.cli, ...words]]
+
+// The Flow tab (claude-factory-hpmc.26): it draws the flows.show graph (spec 008, FR-025).
+
+export const FLOW_LENSES = ['live', 'flow', 'time']
+export const FLOW_WINDOWS = ['1h', '24h', '7d']
+export const FLOW_FACTORIES = ['lifecycle', 'ship']
+const BOX_W = 120
+const BOX_H = 46
+const GAP_X = 80
+const GAP_Y = 30
+const PAD = 24
+const BACK_DEPTH = 34
+const MAX_DOTS = 4
+/** a move this recent (ms) makes its run pulse */
+export const PULSE_MS = 90_000
+
+/** the words of the flows job */
+export const flowJobWords = (factory, window) => ['flows', '--json', '--factory', factory, '--since', window]
+
+/** the result of `factory flows --json`: { graph } or { error } */
+export function parseFlows(code, out, err) {
+  if (code !== 0) return { error: line(err || out || `factory flows exited ${code}`, 300) }
+  try {
+    const graph = JSON.parse(out)
+    if (!Array.isArray(graph?.nodes)) throw new Error('no nodes')
+    return { graph }
+  } catch {
+    return { error: line(`factory flows printed no JSON: ${out || err}`, 300) }
+  }
+}
+
+/** the ids of the runs that moved in the last `ms` before the graph's own clock */
+export const recentMovers = (graph, ms = PULSE_MS) => [
+  ...new Set(graph.moves.filter(m => graph.now - m.at <= ms).map(m => m.run)),
+]
+
+/**
+ * The boxes, dots and edges of the graph in px. Columns are ranks, rows are definition order.
+ * Lens `flow` sizes an edge by log traversals; lens `time` heats a node by its p90 dwell (0 to 1).
+ * An edge is a path: [['M', x, y], ['C', x, y, ax, ay, bx, by]]. A cubic goes to (x, y) through (ax, ay), (bx, by).
+ */
+export function flowLayout(graph, lens) {
+  const ranks = [...new Set(graph.nodes.map(n => n.rank))].sort((a, b) => a - b)
+  const col = new Map(ranks.map((r, i) => [r, i]))
+  const rows = new Map()
+  const slowest = Math.max(0, ...graph.nodes.map(n => n.dwell?.p90 ?? 0))
+  const nodes = [...graph.nodes]
+    .sort((a, b) => a.order - b.order)
+    .map(n => {
+      const row = rows.get(n.rank) ?? 0
+      rows.set(n.rank, row + 1)
+      return {
+        id: n.id,
+        label: n.legacy ? `${n.id} (old)` : n.id,
+        gate: n.gate,
+        legacy: n.legacy,
+        x: PAD + col.get(n.rank) * (BOX_W + GAP_X),
+        y: PAD + row * (BOX_H + GAP_Y),
+        w: BOX_W,
+        h: BOX_H,
+        counts: n.counts,
+        p90: n.dwell?.p90 ?? null,
+        heat: lens === 'time' && slowest ? (n.dwell?.p90 ?? 0) / slowest : 0,
+        dots: n.runs.slice(0, MAX_DOTS).map(run => ({ run })),
+        chip: n.runs.length > MAX_DOTS ? `+${n.runs.length - MAX_DOTS}` : '',
+      }
+    })
+  const by = Object.fromEntries(nodes.map(n => [n.id, n]))
+  const edges = graph.edges
+    .filter(e => by[e.from] && by[e.to])
+    .map(e => {
+      const a = by[e.from]
+      const b = by[e.to]
+      const width = lens === 'flow' ? 1 + Math.log2(1 + e.traversals) : 1.5
+      const label = lens === 'flow' || e.traversals ? `${e.outcome} ${e.traversals}` : e.outcome
+      if (e.back) {
+        const y = Math.max(a.y, b.y) + BOX_H
+        const ax = a.x + a.w / 2
+        const bx = b.x + b.w / 2
+        return {
+          ...e,
+          width,
+          label,
+          dashed: true,
+          path: [
+            ['M', ax, a.y + a.h],
+            ['C', bx, b.y + b.h, ax, y + BACK_DEPTH, bx, y + BACK_DEPTH],
+          ],
+          lx: (ax + bx) / 2,
+          ly: y + BACK_DEPTH,
+        }
+      }
+      const sx = a.x + a.w
+      const sy = a.y + a.h / 2
+      const tx = b.x
+      const ty = b.y + b.h / 2
+      const mid = (sx + tx) / 2
+      return {
+        ...e,
+        width,
+        label,
+        dashed: false,
+        path: [
+          ['M', sx, sy],
+          ['C', tx, ty, mid, sy, mid, ty],
+        ],
+        lx: mid,
+        ly: (sy + ty) / 2 - 8,
+      }
+    })
+  const exits = graph.exits.map(x => ({ ...x, opens: FLOW_FACTORIES.includes(x.to) ? x.to : undefined }))
+  const rowsMax = Math.max(1, ...rows.values())
+  return {
+    nodes,
+    edges,
+    exits: exits.map(x => (x.opens ? x : { from: x.from, outcome: x.outcome, to: x.to })),
+    width: PAD * 2 + ranks.length * BOX_W + Math.max(0, ranks.length - 1) * GAP_X,
+    height: PAD * 2 + rowsMax * BOX_H + (rowsMax - 1) * GAP_Y + BACK_DEPTH * 2,
+  }
+}
