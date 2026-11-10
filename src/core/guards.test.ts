@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import * as view from '../../mod/hooks/view'
 import { GATED_KINDS, kindEnds } from '../../mod/hooks/view'
+import { SETTING_KEYS, DEVENV_KEYS } from '../settings'
 import { check, INSTALL_VERB, META_WRITE, PATROL_VERB, bdWrite, gatedCommand } from './guards'
 
 test('the core exports the same rules as the mod', () => {
@@ -22,6 +23,18 @@ test('the core exports the same rules as the mod', () => {
 
 // Commands from mod/tests/gate.test.ts:7-9, 104-152, 340-391, 484-516.
 const ask = [
+  '/repo/bin/factory settings set ax.image evil.example/x@sha256:' + 'a'.repeat(64),
+  '/repo/bin/factory settings set ax.manager-image x',
+  '/repo/bin/factory settings set ax.vault x',
+  '/repo/bin/factory settings set ax.context x',
+  '/repo/bin/factory settings set ax.env /x',
+  '/repo/bin/factory settings set token.read cmd',
+  '/repo/bin/factory settings set token.write cmd',
+  '/repo/bin/factory settings set image.registry ghcr.io/acme',
+  '/repo/bin/factory settings set max-runs 5',
+  '/repo/bin/factory settings unset ax.image',
+  '/repo/bin/factory \\\nsettings \\\nset ax.image x',
+  "/repo/bin/factory settings set 'ax.image' x",
   '/repo/bin/factory token use claude',
   '/repo/bin/factory token best',
   '/repo/bin/factory \\\ntoken \\\nuse claude',
@@ -96,16 +109,17 @@ const deny = [
   'F=/repo/bin/factory; for r in $(cat /tmp/s); do $F show $r; done',
 ]
 const allow = [
+  '/repo/bin/factory settings list',
+  '/repo/bin/factory settings',
+  '/repo/bin/factory memory search settings set',
   '/repo/bin/factory status',
   '/repo/bin/factory start lifecycle api "fix the thing"',
   "/repo/bin/factory mail r1 plan '$5'",
   '/repo/bin/factory wiki status',
   '/repo/bin/factory memory compact',
-  '/repo/bin/factory settings set image.registry ghcr.io/acme',
   '/repo/bin/factory memory search image',
   '/repo/bin/factory token',
   '/repo/bin/factory token list',
-  '/repo/bin/factory settings set token.read cmd',
   '/repo/bin/factory memory search token use',
   '/repo/bin/fac\\\\\ntory decide r1 ship',
   'ls -la # note',
@@ -138,6 +152,19 @@ test('the manager keeps the mod gate decisions and texts', () => {
       const subagent = check(command, 'subagent')
       expect(subagent.decision).not.toBe('ask')
       if (decision !== 'allow') expect(subagent.decision).toBe('deny')
+    }
+})
+
+test('factory settings set and unset ask the person for every key', () => {
+  for (const key of [...SETTING_KEYS.map(s => s.key), ...DEVENV_KEYS])
+    for (const command of [
+      `/repo/bin/factory settings set ${key} v`,
+      `/repo/bin/factory settings unset ${key}`,
+    ]) {
+      const g = gatedCommand(command)
+      expect(g?.ask).toBe(true)
+      expect(g!.question).toContain('change a factory setting')
+      expect(g!.deny).toContain('did not confirm this settings change')
     }
 })
 
