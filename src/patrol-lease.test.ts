@@ -153,6 +153,37 @@ describe('1ocuv AC4 remote lease exclusion and replay', () => {
     expect(t.lookup).not.toHaveBeenCalled()
     expect(t.acquire('new-acquire')).toEqual(newer)
   })
+  for (const operation of ['renew', 'complete'] as const)
+    test(`a second valid identity cannot ${operation} the live lease`, () => {
+      const t = setup()
+      const first = t.first()
+      const who = { ...principal, id: 'second', digest: 'b'.repeat(64) }
+      const index = spyOn((t.lease as unknown as { replays: Map<string, unknown> }).replays, 'has')
+      t.lookup.mockClear()
+      t.time(2000)
+      expect(
+        t.lease.mutate(
+          who,
+          operation,
+          {
+            epoch: t.lease.epoch,
+            generation: first.generation,
+            ...(operation === 'complete' && { outcome: 'success' }),
+          },
+          `second-${operation}`,
+          [principal, who],
+        ),
+      ).toEqual({ status: 409, body: { error: 'conflict' } })
+      expect(index).not.toHaveBeenCalled()
+      expect(t.lookup).not.toHaveBeenCalled()
+      expect(t.acquire()).toEqual({ status: 200, body: first })
+      t.time(first.expiresAt)
+      t.lookup.mockClear()
+      expect(
+        t.call('renew', { epoch: t.lease.epoch, generation: first.generation }, 'owner-renew').status,
+      ).toBe(409)
+      expect(t.lookup).not.toHaveBeenCalled()
+    })
   test('identity and generation fences precede even the replay key index', () => {
     const t = setup()
     const first = t.first()
