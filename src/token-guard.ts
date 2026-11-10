@@ -51,7 +51,7 @@ export interface TokenEnv {
 }
 
 /** the real path of `p`: the nearest existing ancestor through realpath, plus the rest. undefined on any other error */
-function realPath(p: string): string | undefined {
+export function realPath(p: string): string | undefined {
   let real = p
   const rest: string[] = []
   for (;;) {

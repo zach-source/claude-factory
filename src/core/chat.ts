@@ -1,7 +1,9 @@
 // The manager chat of the core: one conversation file for each id, one model turn at a time.
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import {
   appendFileSync,
+  closeSync,
+  openSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -80,6 +82,7 @@ export const queue = new Map<string, Promise<void>>()
 
 const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex')
 const HASH = /^[0-9a-f]{64}$/
+const NONCE = /^[0-9a-f]{32}$/
 
 /** a model can leave a half line: write a newline first, so the next turn stays readable */
 const append = (path: string, t: Turn) => {
@@ -125,11 +128,13 @@ export function send(
       mkdirSync(join(ctx.home, 'conversations'), { recursive: true })
       const file = join(resolve(ctx.home), 'conversations', `${a.id}.approve`)
       let hook = `'${CLI}' chat-guard`
+      const nonce = randomBytes(16).toString('hex')
+      const used = join(resolve(ctx.home), 'conversations', `${a.id}.${nonce}.used`)
       if (command !== undefined) {
         const hash = sha(command)
         rmSync(file, { force: true })
         writeFileSync(file, hash, { mode: 0o600, flag: 'wx' })
-        hook += ` ${a.id} ${hash}`
+        hook += ` ${a.id} ${hash} ${nonce}`
       }
       try {
         append(path, {
@@ -153,7 +158,7 @@ export function send(
             maxTurns: 40,
             settings: { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } },
             baseEnv: ctx.env,
-            env: { FACTORY_HOME: ctx.home },
+            env: { FACTORY_HOME: ctx.home, FACTORY_MAIN_CHAT: '1' },
             cwd: ctx.home,
             timeoutMs: 15 * 60_000,
             persist: true,
@@ -191,6 +196,7 @@ export function send(
         if (command !== undefined)
           try {
             rmSync(file, { recursive: true, force: true })
+            rmSync(used, { recursive: true, force: true })
           } catch {}
       }
     }
@@ -210,9 +216,11 @@ export function send(
   })
 }
 
-/** the body of `factory chat-guard [<id> <sha256>]`: every result but allow gives code 2; the pair is the approval of one asked command */
+/** the body of `factory chat-guard [<id> <sha256> <nonce>]`: every result but allow gives code 2; the three words are the approval of one asked command */
 export function guardHook(stdin: string, home = '', args: string[] = []): { code: number; err: string } {
-  const bad = args.length !== 0 && !(args.length === 2 && CONVERSATION.test(args[0]!) && HASH.test(args[1]!))
+  const bad =
+    args.length !== 0 &&
+    !(args.length === 3 && CONVERSATION.test(args[0]!) && HASH.test(args[1]!) && NONCE.test(args[2]!))
   if (bad) return { code: 2, err: 'bad chat-guard arguments\n' }
   let command: unknown
   try {
@@ -222,11 +230,14 @@ export function guardHook(stdin: string, home = '', args: string[] = []): { code
   const v = check(command, 'manager')
   if (v.decision === 'allow') return { code: 0, err: '' }
   if (v.decision === 'deny') return { code: 2, err: v.reason + '\n' }
-  if (args.length === 2 && sha(command) === args[1]) {
-    const file = join(resolve(home), 'conversations', `${args[0]}.approve`)
+  if (args.length === 3 && sha(command) === args[1]) {
+    const dir = join(resolve(home), 'conversations')
     try {
-      if (readFileSync(file, 'utf8') === args[1]) {
-        unlinkSync(file)
+      if (readFileSync(join(dir, `${args[0]}.approve`), 'utf8') === args[1]) {
+        // the exclusive create is the one use: the model can write the .approve file again, but cannot unmake this one
+        // ponytail: the model can learn the nonce from its hook argv and delete this file. Upgrade: a counter in the core.
+        closeSync(openSync(join(dir, `${args[0]}.${args[2]}.used`), 'wx', 0o600))
+        unlinkSync(join(dir, `${args[0]}.approve`))
         return { code: 0, err: '' }
       }
     } catch {}

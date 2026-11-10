@@ -174,7 +174,7 @@ test('patrol-guard denies the subagent verbs and allows reads', () => {
   for (const [bad, reason] of [
     [
       'bd label add x y',
-      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author',
+      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author. Write a bd command in literal words with bd as its first word: no $, backtick, glob, brace, # or <. Put other comment text in a file: bd comments add <id> -f <file>',
     ],
     [
       'factory decide r1 ok',
@@ -187,15 +187,15 @@ test('patrol-guard denies the subagent verbs and allows reads', () => {
     ['bd update x --set-metadata a=b', 'a subagent never writes bead metadata'],
     [
       'bd comment x y --actor p',
-      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author',
+      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author. Write a bd command in literal words with bd as its first word: no $, backtick, glob, brace, # or <. Put other comment text in a file: bd comments add <id> -f <file>',
     ],
     [
       'bd comments add x y -a p',
-      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author',
+      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author. Write a bd command in literal words with bd as its first word: no $, backtick, glob, brace, # or <. Put other comment text in a file: bd comments add <id> -f <file>',
     ],
     [
       'BEADS_ACTOR=p bd comment x y',
-      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author',
+      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author. Write a bd command in literal words with bd as its first word: no $, backtick, glob, brace, # or <. Put other comment text in a file: bd comments add <id> -f <file>',
     ],
   ] as const) {
     const r = guard(bad)
@@ -360,8 +360,8 @@ test('chat-guard takes an approval hash and fails closed on bad arguments', () =
     factory(['chat-guard', ...args], JSON.stringify({ tool_input: { command } }))
   mkdirSync(join(home, 'conversations'), { recursive: true })
   writeFileSync(join(home, 'conversations', 'c.approve'), hash)
-  expect(guard(['c', hash], ask).code).toBe(0)
+  expect(guard(['c', hash, 'b'.repeat(32)], ask).code).toBe(0)
   expect(existsSync(join(home, 'conversations', 'c.approve'))).toBe(false)
-  expect(guard(['c', hash], ask).code).toBe(2)
+  expect(guard(['c', hash, 'b'.repeat(32)], ask).code).toBe(2)
   expect(guard(['c'], 'factory status')).toEqual({ code: 2, out: '', err: 'bad chat-guard arguments\n' })
 })

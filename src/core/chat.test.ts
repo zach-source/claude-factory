@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ModelCall, ModelResult } from '../once'
@@ -205,7 +205,7 @@ test('the turn runs with the chat guard', async () => {
     },
   })
   expect(c.baseEnv).toBe(env)
-  expect(c.env).toEqual({ FACTORY_HOME: home })
+  expect(c.env).toEqual({ FACTORY_HOME: home, FACTORY_MAIN_CHAT: '1' })
   expect(c.input).toBe('a')
 })
 
@@ -285,6 +285,7 @@ test('a turn with usage adds a chat row to manager-usage.jsonl', async () => {
   })
 })
 
+const N = 'a'.repeat(32)
 const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex')
 const ASK = '/repo/bin/factory decide lifecycle-abc ship "looks good"'
 const DENY = '/repo/bin/factory mail r1 plan "$(id)"'
@@ -329,6 +330,34 @@ test('approve: the hook runs the approved command one time', async () => {
   expect(m.calls[0]!.input).toContain('The person approved one run of this exact command in this turn:')
 })
 
+test('approve: a rewritten approval file does not allow a second run', async () => {
+  seed('c', [mgr('s-1', askRow('t2', ASK))])
+  const seen: number[] = []
+  const m = fakeModel(c => {
+    const a = hookArgs(c)
+    const saved = readFileSync(approveFile('c'), 'utf8')
+    seen.push(hook(ASK, a).code)
+    writeFileSync(approveFile('c'), saved) // the model has the Write tool
+    seen.push(hook(ASK, a).code)
+    return ok()
+  })
+  await send(ctxOf(m.chatModel), { id: 'c', text: 'yes', front: 'web', approve: 't2' })
+  expect(seen).toEqual([0, 2])
+  expect(readdirSync(join(home, 'conversations')).filter(f => f.endsWith('.used'))).toEqual([])
+})
+
+test('approve: two hooks at once run the command one time', async () => {
+  seed('c', [mgr('s-1', askRow('t2', ASK))])
+  let codes: number[] = []
+  const m = fakeModel(async c => {
+    const a = hookArgs(c)
+    codes = (await Promise.all([1, 2, 3].map(async () => hook(ASK, a)))).map(r => r.code)
+    return ok()
+  })
+  await send(ctxOf(m.chatModel), { id: 'c', text: 'yes', front: 'web', approve: 't2' })
+  expect(codes.filter(x => x === 0)).toHaveLength(1)
+})
+
 test('approve: only the exact text runs', async () => {
   const L = '/repo/bin/factory decide lifecycle-abc ship "' + 'a'.repeat(400) + '"'
   const M = L.slice(0, -2) + 'b"'
@@ -358,7 +387,7 @@ test('approve: a deny stays denied', async () => {
   writeFileSync(approveFile('c'), sha(DENY))
   const d = check(DENY, 'manager')
   if (d.decision !== 'deny') throw new Error('the fixture must deny')
-  expect(hook(DENY, ['c', sha(DENY)])).toEqual({ code: 2, err: d.reason + '\n' })
+  expect(hook(DENY, ['c', sha(DENY), N])).toEqual({ code: 2, err: d.reason + '\n' })
   expect(existsSync(approveFile('c'))).toBe(true)
 })
 
@@ -425,14 +454,14 @@ test('approve: the approval lasts one turn and the core cleans up', async () => 
 
 test('approve: the hook argument grammar fails closed', () => {
   const h = sha(ASK)
-  for (const args of [['c'], ['c', h, 'x'], ['c', h.toUpperCase()], ['c', h.slice(1)], ['../x', h]])
+  for (const args of [['c'], ['c', h], ['c', h, 'x'], ['c', h, N, N], ['c', h.toUpperCase()], ['c', h.slice(1)], ['../x', h, N]])
     for (const c of ['/repo/bin/factory status', ASK])
       expect(hook(c, args)).toEqual({ code: 2, err: 'bad chat-guard arguments\n' })
   expect(guardHook('{}', home, ['c'])).toEqual({ code: 2, err: 'bad chat-guard arguments\n' })
 })
 
 test('approve: the hook does not throw on a bad approval file', () => {
-  const args = ['c', sha(ASK)]
+  const args = ['c', sha(ASK), N]
   mkdirSync(join(home, 'conversations'), { recursive: true })
   expect(hook(ASK, args).code).toBe(2) // missing
   writeFileSync(approveFile('c'), sha('other'))
