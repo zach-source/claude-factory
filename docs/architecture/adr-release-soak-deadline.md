@@ -152,7 +152,7 @@ Live observation belongs to soak, with existing access rules; it is not a pre-me
 ## Tasks
 
 1. `claude-factory-geo6.1`: Add AC1-AC5 contract tests and route fixtures. Commit the tests first; record the expected policy failures.
-2. `claude-factory-geo6.2`: Change release soak and rollout time text. Update the scope assertion and append one Unreleased changelog bullet.
+2. `claude-factory-geo6.2`: Change release soak and rollout time text. Update the scope assertion. The release step owns the changelog.
    Run focused tests, mutations, definition validation, and required repository checks. Commit the complete fix.
 
 These two tasks fit one 120-minute implement pass and one PR.
