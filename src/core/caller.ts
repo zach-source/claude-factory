@@ -130,12 +130,13 @@ export function mainChatRefusal(env: Env, home: string, kind: string): string | 
  * Under FACTORY_PATROL a patrol (any harness) cannot run a gated kind, install or reject a skill or proposal,
  * or answer a decision. The Claude hook stays as a second layer. Returns the refusal, else undefined.
  */
+const OWN_REFUSAL = new Set(['decide', 'answer', 'owned', 'image'])
 export function patrolRefusal(cmd: string | undefined, args: string[], env: Env): string | undefined {
   if (!env.FACTORY_PATROL) return undefined
-  // `start --owned` and `decisions answer` keep their own refusals in the command (claude-factory-72v.19)
+  // these four keep their own refusals in the command (claude-factory-72v.19)
   const gated = mainChatKind(cmd, args)
   const kind =
-    (gated === 'owned' || gated === 'answer' ? undefined : gated) ??
+    (gated && OWN_REFUSAL.has(gated) ? undefined : gated) ??
     ((cmd === 'skills' || cmd === 'proposals') && (args[0] === 'install' || args[0] === 'reject')
       ? `${cmd} ${args[0]}`
       : undefined)
