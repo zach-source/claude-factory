@@ -13498,6 +13498,15 @@ if (import.meta.main && !outboxCmd)
         break
       case 'tick': {
         refuseWorker('tick', true)
+        // --board (claude-factory-hpmc.14): the board with no tick and no lease, for a remote view
+        if (args[0] === '--board') {
+          console.log(
+            JSON.stringify(
+              await readOnlyBoard(leases.readLease(HOME) ?? { holder: 'none', kind: 'none', at: Date.now() }),
+            ),
+          )
+          break
+        }
         lease()
         const other = localLease()
         if (other) {
@@ -13604,14 +13613,35 @@ if (import.meta.main && !outboxCmd)
         process.exit(await superviseManager(args))
       case 'herdr': {
         refuseWorker('herdr', true)
-        const at = args.indexOf('--app-home')
-        if (args[0] !== 'install' || args.length !== (at > 0 ? 3 : 1) || (at > 0 && !args[at + 1]))
-          fail('usage: factory herdr install [--app-home <dir>]')
+        const opt = (k: string) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined)
+        const flags = ['--app-home', '--machine', '--home']
+        const bad =
+          args[0] !== 'install' ||
+          args.length !== 1 + 2 * flags.filter(k => args.includes(k)).length ||
+          flags.some(k => args.includes(k) && !opt(k)) ||
+          (!!opt('--machine') && !/^[A-Za-z0-9._-]+$/.test(opt('--machine')!))
+        if (bad) fail('usage: factory herdr install [--app-home <dir>] [--machine <name> [--home <path>]]')
         const repo = resolve(import.meta.dir, '..')
-        const app = at > 0 ? resolve(args[at + 1]!) : herdrApp.appHomeOf(process.env)
-        const out = herdrApp.install(repo, app, join(repo, 'bin', 'factory'), HOME)
+        const app = opt('--app-home') ? resolve(opt('--app-home')!) : herdrApp.appHomeOf(process.env)
+        const machine = opt('--machine')
+        // a remote home is a path on the machine: do not resolve it here
+        const home = machine
+          ? (opt('--home') ?? herdrApp.REMOTE_HOME)
+          : opt('--home')
+            ? resolve(opt('--home')!)
+            : HOME
+        if (machine && !home.startsWith('/')) fail('--home must be an absolute path on the machine')
+        if (!machine) {
+          const why = herdrApp.localRefusal(home, ax.remoteManager(), leases.readLease(home), Date.now())
+          if (why) fail(why)
+        }
+        const out = herdrApp.install(
+          repo,
+          app,
+          machine ? { cli: herdrApp.REMOTE_CLI, home, machine } : { cli: join(repo, 'bin', 'factory'), home },
+        )
         console.log(
-          `installed the factory mod in ${out.mod} and the layout in ${out.layout}, for the home ${HOME}`,
+          `installed the factory mod in ${out.mod} and the layout in ${out.layout}, for the home ${home}${machine ? ` on ${machine} (view and control only: no tick, no lease)` : ''}`,
         )
         console.log("in the Herdr app, run layout.switch {name: 'factory'} to show it")
         break

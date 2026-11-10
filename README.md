@@ -1313,6 +1313,23 @@ The command does these steps:
 The app home is `--app-home`, else `$HERDR_APP_HOME`, else `~/.config/herdr-app`. To update the
 mod, run the command again. The app reloads it.
 
+### Remote mode (manager in AX)
+
+When the manager runs in the AX task `f-manager`, install the mod in remote mode:
+
+```sh
+factory herdr install --machine f-manager [--home /workspace/w/home] [--app-home <dir>]
+```
+
+- `config.json` gets `machine`. The default `--home` is `/workspace/w/home`. The CLI on the machine is `factory`.
+- Every exec and file read of the mod runs on that `hc` machine.
+- The mod is a view and control client. It never runs `tick`, `patrol`, `brief`, `review` or `pm`. It takes no lease.
+- It shows the board (`factory tick --board`, which changes nothing) and the decisions.
+- The buttons call `factory stop`, `resume`, `unhold ax` and `abort <run>` on the machine.
+- The button "Manager chat" opens the `hc` terminal `<machine>/manager`.
+- A local install (no `--machine`) refuses a home whose manager runs in AX. A second manager must not start.
+- The machine must run a `factory` that has `tick --board`. Update the manager image first.
+
 To show the mod, switch to the factory layout:
 
 ```sh

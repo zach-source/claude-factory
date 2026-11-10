@@ -6,6 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- New: remote mode for the Herdr app mod (claude-factory-hpmc.14). `factory herdr install --machine <m> [--home <path>]` writes a config that sends every exec and file read to that `hc` machine. The mod only shows the board and calls `stop`, `resume`, `unhold`, `abort`. It never ticks, patrols or takes the lease. A "Manager chat" button opens `<m>/manager`. A local install refuses a home whose manager runs in AX. `factory tick --board` prints the board and changes nothing.
 - Changed: the default factory home is the platform data dir (claude-factory-nnkqp).
   - The order stays: `FACTORY_HOME`, then the nearest dir up with a `rigs.json`, then the default home.
   - The default home is `$XDG_DATA_HOME/claude-factory` when `XDG_DATA_HOME` is set. Else it is `~/Library/Application Support/claude-factory` on macOS, else `~/.local/share/claude-factory`.

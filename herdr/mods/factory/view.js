@@ -136,3 +136,57 @@ export function parseTick(code, out, err) {
     return { error: line(`factory tick printed no JSON: ${out || err}`, 300) }
   }
 }
+
+// Remote mode (claude-factory-hpmc.14): the manager runs on another machine, such as the AX task f-manager.
+
+/** the config.json text as { cli, home, machine? }, or null when it is not one */
+export function parseConfig(text) {
+  try {
+    const c = JSON.parse(text)
+    if (typeof c?.cli !== 'string' || typeof c.home !== 'string') return null
+    if (c.machine !== undefined && typeof c.machine !== 'string') return null
+    return c
+  } catch {
+    return null
+  }
+}
+
+/** the options that send an exec or a file read to the machine of a remote config */
+export const onOf = cfg => (cfg.machine ? { on: cfg.machine } : undefined)
+
+/** the step names and how often each runs (ms). A step that is due and finds no work makes no model call. */
+export const STEPS = { patrol: 60_000, brief: 120_000, review: 300_000, pm: 3_600_000, decisions: 300_000 }
+
+/**
+ * The factory commands one beat starts, as { name, words }.
+ * A remote mod only reads: `tick --board` shows the board and changes nothing, and `decisions` lists.
+ * It never runs tick, patrol, brief, review or pm, so it never takes the manager lease.
+ */
+export function beatJobs(cfg, state, ran, now) {
+  if (cfg.machine)
+    return [
+      { name: 'board', words: ['tick', '--board'] },
+      { name: 'decisions', words: ['decisions'] },
+    ]
+  const jobs = [{ name: 'tick', words: ['tick', '--keep-mail'] }]
+  // a manager without the lease only shows the board (claude-factory-s01d.2)
+  if (state.readOnly || state.halt) return jobs
+  for (const [name, every] of Object.entries(STEPS))
+    if (now - (ran[name] ?? 0) >= every)
+      jobs.push({
+        name,
+        words:
+          name === 'decisions' ? ['decisions'] : name === 'review' ? ['review', '--once'] : [name, '--once'],
+      })
+  return jobs
+}
+
+/** the shell words of a control button; only these CLI commands are allowed */
+export function actionWords(action, arg) {
+  if (['stop', 'resume'].includes(action)) return [action]
+  if (['abort', 'unhold', 'say'].includes(action) && arg) return [action, arg]
+  throw new Error(`no such action: ${action}`)
+}
+
+/** the terminal command for the manager chat of a remote config, or null for a local one */
+export const chatArgv = cfg => (cfg.machine ? ['hc', 'attach', `${cfg.machine}/manager`] : null)
