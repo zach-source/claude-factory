@@ -1432,6 +1432,30 @@ export const register: Register = (on, options) => {
     deny: 'Monitor is disabled in the factory mod. Use Bash for shell commands.',
   }))
 
+  on('tool.call', { tool: 'Write' }, async ($, e, next) => {
+    if (!e.agentId || !(rt.patrolIds.includes(e.agentId) || (await isPatrolAgent($, e.agentId))))
+      return next(e)
+    const absolute = (path: unknown): path is string =>
+      typeof path === 'string' && path.startsWith('/') && !path.includes('\0')
+    const normalize = (path: string) => {
+      const parts: string[] = []
+      for (const part of path.split('/')) {
+        if (part === '..') parts.pop()
+        else if (part && part !== '.') parts.push(part)
+      }
+      return `/${parts.join('/')}`
+    }
+    // ponytail: lexical checks do not detect symlinks, hard links, mounts, or concurrent path replacement.
+    // Use an OS boundary or a directory-relative no-follow writer for filesystem isolation.
+    if (
+      !absolute(rt.home) ||
+      !absolute(e.file_path) ||
+      !normalize(e.file_path).startsWith(`${normalize(`${rt.home}/text`)}/`)
+    )
+      return { deny: 'Patrol Write requires a path inside FACTORY_HOME/text/.' }
+    return next(e)
+  })
+
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     // e.agentId is the subagent's own loop id (AgentLoop), absent on the main loop: the patrol's
     // first Bash call learns rt.patrolId from it. agent.spawn's resolved value never carries an
