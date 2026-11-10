@@ -404,6 +404,25 @@ The activation diff remains empty. No patrol source or test changed.
 The prior full-gate results remain unchanged evidence, not new local passes.
 This evidence-only commit needs its own CI results before acceptance.
 
+### AC6 dependency-download result, 2026-11-10
+
+Source head: `b5455617`. Fetched main: `741dff82`.
+`git merge origin/main` reports `Already up to date.`
+No source, test, package, or build configuration changed.
+
+The fresh `nix build .#factory` exits 1 after 103.05 seconds.
+This attempt reaches the node-modules dependency install phase.
+Tarball downloads fail with `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, before compilation.
+This result fits the Nix dependency-download row in the closed AC6 evidence table.
+The local build remains unverified. No certificate or network workaround was used.
+The earlier startup failures remain failed attempts, not local build passes.
+The final evidence commit still needs exact-head Nix build and smoke-test CI proof.
+
+The focused patrol repeat passes: 165 tests, zero failures, 4910 assertions.
+The prior complete local gate, compatibility, plugin, and mutation results remain applicable to unchanged code.
+The caller search still finds no production patrol listener.
+Task `.6` can close only after all five required jobs pass at the final commit.
+
 ## Test plan and tasks
 
 Write tests before implementation. Use temporary homes and fake credentials only.
