@@ -25,6 +25,7 @@ const OUTSIDE_TEXT = [
   {},
   '/fixture/home/text/a\0b',
   'text/a',
+  'fixture/home/text/a',
   '../text/a',
   '~/text/a',
   'file:///fixture/home/text/a',
@@ -45,7 +46,7 @@ const INSIDE_TEXT = [
   '/fixture/home/text/mock-link/a',
 ]
 
-for (const home of ['/fixture/home', '', undefined, 'relative', '/fixture/\0home']) {
+for (const home of ['/fixture/home', '', undefined, 'relative', '/fixture/\0home/../home']) {
   test(`oxib AC1 path grammar with home ${JSON.stringify(home)}`, SLOW, async ($, on) => {
     const clock = mock.clock(on)
     const files = new Map<string, string>()
@@ -74,7 +75,9 @@ for (const home of ['/fixture/home', '', undefined, 'relative', '/fixture/\0home
       await clock.settle()
     }
     const before = [...files]
-    for (const file_path of home === '/fixture/home' ? OUTSIDE_TEXT : [INSIDE_TEXT[0]]) {
+    const deniedPaths =
+      home === '/fixture/home' ? OUTSIDE_TEXT : [INSIDE_TEXT[0], '/text/a', '/relative/text/a']
+    for (const file_path of deniedPaths) {
       const result = await $.tool.call({
         tool: 'Write',
         agentId: 'oxib-fresh',
