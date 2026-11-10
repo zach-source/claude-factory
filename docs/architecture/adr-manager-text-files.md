@@ -207,3 +207,14 @@ One initial minimum-text mutation survived. A missing-summary test detects it no
 One initial field mutation did not build. A valid field mutation replaced it and the test detected it.
 
 No changelog entry, version change, dependency, factory-definition change, or production action is part of this implementation.
+
+## Repeat local gate
+
+The repeat suite at `ba782483` completed 17,988 tests in 777.54 seconds.
+It passed 17,956 tests, skipped two tests, and failed 30 tests.
+The three reported time failures did not recur. No test limit or guard changed.
+The two 40,000-word scans took 126.91 ms and 97.04 ms under the full suite.
+The unclosed-quote checks took 16.92 ms and 45.07 ms.
+The memory model fetch failed with `ECONNRESET`; 29 memory tests failed.
+The Git builtin test failed with Git 2.47.0 and passed with Nix Git 2.56.0.
+The focused Git check passed 27 tests with zero failures.
