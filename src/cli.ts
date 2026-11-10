@@ -206,6 +206,7 @@ import {
 } from './wiki'
 import type { Page } from './wiki'
 import * as ax from './ax'
+import { codexChatLaunch } from './manager-codex'
 import type { Egress } from './ax'
 import {
   type ConnectCache,
@@ -622,7 +623,14 @@ async function readOnlyBoard(holder: leases.Lease) {
       runs.push({ id, error: (err as Error).message })
     }
   }
-  return { readOnly: leases.leaseLine(holder, Date.now()), lease: holder, runs, manager: [], rigs: rigs() }
+  return {
+    readOnly: leases.leaseLine(holder, Date.now()),
+    lease: holder,
+    runs,
+    manager: [],
+    managerLimited: managerLimited() ?? null,
+    rigs: rigs(),
+  }
 }
 const fail = (msg: string): never => {
   throw new Error(msg)
@@ -2392,17 +2400,7 @@ export const codexAuth = (egress: Egress[] = []): 'apikey' | 'chatgpt' =>
 export const codexEgress = (egress: Egress[] = []) =>
   codexAuth(egress) === 'apikey' || egress.some(e => e.hosts.includes('chatgpt.com'))
     ? egress
-    : [
-        ...egress,
-        {
-          hosts: ['chatgpt.com'],
-          pathPrefixes: ['/backend-api/codex/'],
-          headers: [
-            { header: 'Authorization', prefix: 'Bearer ', key: 'CODEX_CHATGPT' },
-            { header: 'ChatGPT-Account-ID', prefix: '', key: 'CODEX_CHATGPT_ACCOUNT' },
-          ],
-        },
-      ]
+    : [...egress, ax.CODEX_CHATGPT_RULE]
 
 /** FACTORY_GH_REVIEWER comes only from launchTask's reviewer flag, never from FACTORY_AX_ENV or a rig's env */
 const noReviewerFlag = (e: Record<string, string> = {}) => {
@@ -3198,6 +3196,26 @@ export function clearLimit(at: number) {
   delete s.limits[active]
   delete s.hitAt?.[active]
   writeJson(LIMITS, s)
+}
+
+/** <home>/manager-limit.json: the manager's Claude is refused and no account is free (claude-factory-y3f8w.3) */
+const managerLimitFile = (home = HOME) => join(home, 'manager-limit.json')
+const MANAGER_LIMIT_UNKNOWN_MS = 30 * 60_000 // a limit with no known reset counts for this long
+export function recordManagerLimit(hit: { at: number; kind: string; resetsAt: number }, home = HOME) {
+  writeJson(managerLimitFile(home), hit)
+}
+export function clearManagerLimit(home = HOME) {
+  rmSync(managerLimitFile(home), { force: true })
+}
+/** the manager's limit while it holds: its kind and when it lifts (ms), else null */
+export function managerLimited(now = Date.now(), home = HOME) {
+  try {
+    const h = readJson<{ at: number; kind: string; resetsAt: number }>(managerLimitFile(home))
+    const until = h.resetsAt > 0 ? h.resetsAt : h.at + MANAGER_LIMIT_UNKNOWN_MS
+    return until > now && until <= now + LIMIT_RESET_MAX_MS ? { kind: h.kind, until } : null
+  } catch {
+    return null
+  }
 }
 
 function swapAccount(hit: { at: number; resetsAt: number }, now: number): number {
@@ -4220,10 +4238,16 @@ async function superviseManager(args: string[]) {
     const watch = setInterval(() => {
       const tail = tailOf(process.cwd(), session)
       const hit = limitHit(tail)
-      if (!hit) clearLimit(servedAt(tail))
-      if (hit && hit.at > startedAt && swapAccount(hit, Date.now()) === 0) {
-        isSwapped = true
-        child.kill()
+      if (!hit) {
+        clearLimit(servedAt(tail))
+        if (servedAt(tail)) clearManagerLimit()
+      }
+      if (hit && hit.at > startedAt) {
+        const wait = swapAccount(hit, Date.now())
+        if (wait === 0) {
+          isSwapped = true
+          child.kill()
+        } else recordManagerLimit({ ...hit, resetsAt: wait || hit.resetsAt })
       }
     }, 60_000)
     const code = await child.exited
@@ -8060,6 +8084,8 @@ async function tick(isPatrol = false) {
     const out = {
       runs: [] as Row[],
       manager: [] as (Mail & { run: string })[],
+      // set while the manager's Claude is refused and every account is drained (claude-factory-y3f8w.3)
+      managerLimited: managerLimited() ?? null,
       // the manager's patrol works toward their goals; each opted-in rig carries its last Linear pull
       rigs: rigs().map(r => (linearState[r.name] ? { ...r, linearSync: linearState[r.name] } : r)),
       // each pending skill and proposal with no verdict yet, for the mod's reviewer (claude-factory-ag2)
@@ -9109,7 +9135,11 @@ async function createTracked(
     return await createRun(spec, repo, goal, { id, bead, from, ship, onto, shipBranch })
   } catch (err) {
     // deferred, not released: a dispatcher would otherwise retry the same failure every window
-    if (bead) b.defer(bead, `could not start a run: ${clip((err as Error).message, 300)}`)
+    try {
+      if (bead) b.defer(bead, `could not start a run: ${clip((err as Error).message, 300)}`)
+    } catch (deferErr) {
+      throw new Error(`${(err as Error).message}; could not defer ${bead}: ${(deferErr as Error).message}`)
+    }
     throw err
   }
 }
@@ -10585,12 +10615,18 @@ async function planFactsCmd() {
   console.log(await planFactsText())
 }
 
+/** the Codex model of the manager's fallback steps: FACTORY_MANAGER_CODEX, else gpt-5-codex */
+export const fallbackCodexModel = (env = process.env) => env.FACTORY_MANAGER_CODEX || 'gpt-5-codex'
+
 /** `factory patrol|pm|brief|review --once`: one step of the manager, headless (src/once.ts) */
 async function onceCmd(verb: 'patrol' | 'pm' | 'brief' | 'review', args: string[]) {
   const codexAt = args.indexOf('--codex')
-  const codex = codexAt >= 0 ? args[codexAt + 1] : undefined
+  // --fallback: the manager's Claude is limited, so the step runs on Codex with the factory's own model name
+  const isFallback = args.includes('--fallback')
+  const codex = codexAt >= 0 ? args[codexAt + 1] : isFallback ? fallbackCodexModel() : undefined
   if (codexAt >= 0 && !(codex && CODEX_MODEL.test(codex))) fail('--codex needs a model name')
-  if (verb === 'patrol' && codexAt >= 0)
+  if (isFallback && !(codex && CODEX_MODEL.test(codex))) fail('FACTORY_MANAGER_CODEX is not a model name')
+  if (verb === 'patrol' && (codexAt >= 0 || isFallback))
     fail('the patrol cannot run on codex: codex has no PreToolUse hook, so the Bash guard cannot apply')
   const release = hold(`${verb}.lock`)
   if (!release) return `a ${verb} is already running`
@@ -13431,6 +13467,7 @@ const usage = `factory — herdr software factories on xstate
   status [run]                       runs at a glance, or one run's full log
   waiting                            everything that waits on the person, by rig, and how to answer each
   digest                             per rig: beads by state, the owner queue, recent repairs, PRs to merge in order
+  manager chat --codex               a Codex chat here, for when the manager's Claude is limited
   manager [claude args...]           start this factory's manager here, lean: Bash and file tools, no MCP servers
   attach [--follow]                  the AX manager's pane, read over ax ssh; --follow redraws every 3 s
                                      (no keyboard: ax ssh has no stdin or TTY; docs/remote-runner.md)
@@ -13473,7 +13510,7 @@ const usage = `factory — herdr software factories on xstate
   herdr install [--app-home <dir>]   copy the Herdr app manager mod and its layout into the app folder
   lease [status|release]             who holds the local manager lease (only its holder ticks); release it
   patrol --once                      one headless manager patrol: answers the kept mail and works the board
-  pm --once | brief --once | review --once [--codex <model>]   one headless pm, gate-brief or skill/proposal review
+  pm --once | brief --once | review --once [--codex <model> | --fallback]   one headless pm, gate-brief or skill/proposal review
   report <run> <seq> <outcome> '<summary...>'|--summary-file path   worker: finish its station
   worker serve [--model m] | poll <cursor> | prompt <base64>   inside an AX task: the worker's Claude, its
                                      state and outbox, a prompt queued for it (docs/remote-runner.md)
@@ -13766,7 +13803,7 @@ if (import.meta.main && !outboxCmd)
       case 'brief': {
         refuseWorker(cmd, true)
         if (!args.includes('--once'))
-          fail(`usage: factory ${cmd} --once${cmd === 'patrol' ? '' : ' [--codex <model>]'}`)
+          fail(`usage: factory ${cmd} --once${cmd === 'patrol' ? '' : ' [--codex <model> | --fallback]'}`)
         lease()
         // only the lease holder patrols (claude-factory-s01d.2)
         const other = localLease()
@@ -13850,6 +13887,15 @@ if (import.meta.main && !outboxCmd)
         if (args[0] === '--ax') {
           await launchAxManager(args.slice(1))
           break
+        }
+        if (args[0] === 'chat') {
+          // the manager's chat on Codex, for when every Claude slot is at its limit (claude-factory-y3f8w.4)
+          if (args.length !== 2 || args[1] !== '--codex') fail('usage: factory manager chat --codex')
+          const l = codexChatLaunch({ cli: CLI, home: HOME, env: process.env })
+          process.exit(
+            await Bun.spawn(l.argv, { cwd: l.cwd, env: l.env, stdio: ['inherit', 'inherit', 'inherit'] })
+              .exited,
+          )
         }
         lease()
         // ponytail: blocks until the manager exits; run it where it should live (a herdr pane)

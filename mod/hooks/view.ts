@@ -625,6 +625,10 @@ export function hasAgentTool(names: readonly string[] | undefined): boolean | un
  * that failed (claude-factory-4hb): 60 s, 120 s, 240 s, doubling up to a 60 minute cap.
  * `failures` counts facts and spawn failures since the last spawn that worked; a working spawn
  * resets it to 0. */
+/** the board's managerLimited while it still holds (claude-factory-y3f8w.5): then the pm runs on Codex */
+export const isManagerLimited = (limited: { until?: unknown } | null | undefined, now: number): boolean =>
+  typeof limited?.until === 'number' && limited.until > now
+
 export function pmRetryDelay(failures: number): number {
   return Math.min(60_000 * 2 ** (failures - 1), 3_600_000)
 }
