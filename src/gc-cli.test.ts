@@ -14,6 +14,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs'
@@ -565,4 +566,87 @@ test('lt4u.6: an unwritable gc.log does not change a removal result or stop the 
   expect(out.out).toContain(`reaped ${good}`)
   expect(out.out).not.toContain(`refused ${good}`)
   expect(out.err).toContain('cannot write gc.log')
+})
+
+// ---- claude-factory-lt4u.7: plain gc safety rows (rm's rules, through the gc caller)
+const OLD = () => Date.now() - 10 * DAY
+const dirtyCases: [string, (wt: string) => void][] = [
+  [
+    'a dirty tracked file',
+    wt => {
+      writeFileSync(join(wt, 'f.txt'), 'one')
+      git(wt, 'add', 'f.txt')
+      git(wt, 'commit', '-q', '-m', 'f')
+      writeFileSync(join(wt, 'f.txt'), 'two')
+    },
+  ],
+  ['an untracked user file', wt => writeFileSync(join(wt, 'mine.txt'), 'keep me')],
+  ['a locked worktree', wt => void git(wt, 'worktree', 'lock', wt)],
+]
+for (const [name, mutate] of dirtyCases) {
+  test(`lt4u.7 AC4: plain gc keeps a run whose worktree has ${name}; dir, files and branch tip stay`, () => {
+    reset()
+    const id = freshId('ship')
+    const d = writeRun(id, { outcome: 'done', finishedAt: OLD(), real: true })
+    const wt = join(home, 'worktrees', id)
+    mutate(wt)
+    const t = tip(id)
+    const out = factory(['gc'])
+    expect(out.code).toBe(0)
+    expect(existsSync(d)).toBe(true)
+    expect(existsSync(wt)).toBe(true)
+    expect(tip(id)).toBe(t)
+    expect(metricIds()).not.toContain(id)
+    expect(readFileSync(join(home, 'gc.log'), 'utf8')).toContain(`refused ${id}`)
+  })
+}
+
+test('lt4u.7 AC4: a clean worktree with a read-only file is removed by plain gc', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'done', finishedAt: OLD(), real: true })
+  const wt = join(home, 'worktrees', id)
+  mkdirSync(join(wt, 'ro'))
+  writeFileSync(join(wt, 'ro', 'x'), 'x')
+  git(wt, 'add', 'ro/x')
+  git(wt, 'commit', '-q', '-m', 'ro')
+  chmodSync(join(wt, 'ro', 'x'), 0o444)
+  chmodSync(join(wt, 'ro'), 0o555)
+  expect(factory(['gc']).code).toBe(0)
+  expect(existsSync(d)).toBe(false)
+  expect(existsSync(wt)).toBe(false)
+})
+
+test('lt4u.7 AC1/AC3: the metrics record holds the run; --dry-run leaves file contents and branch tips', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'done', finishedAt: OLD(), real: true })
+  const snap = () =>
+    readdirSync(d)
+      .sort()
+      .map(n => (statSync(join(d, n)).isFile() ? `${n}:${readFileSync(join(d, n), 'utf8')}` : n))
+  const before = snap()
+  const t = tip(id)
+  expect(factory(['gc', '--dry-run']).code).toBe(0)
+  expect(snap()).toEqual(before)
+  expect(tip(id)).toBe(t)
+  factory(['gc'])
+  const rec = JSON.parse(readFileSync(join(home, 'metrics.jsonl'), 'utf8').trim().split('\n')[0]!)
+  expect(rec.id).toBe(id)
+  expect(Object.keys(rec).length).toBeGreaterThan(1)
+})
+
+test('lt4u.7 AC5: a metrics failure keeps each run and the pass goes on; log lines carry a timestamp', () => {
+  reset()
+  const a = freshId('aaa')
+  const b = freshId('zzz')
+  writeRun(a, { outcome: 'done', finishedAt: OLD(), real: true })
+  const db = writeRun(b, { outcome: 'done', finishedAt: OLD(), real: true })
+  mkdirSync(join(home, 'metrics.jsonl'))
+  factory(['gc'])
+  expect(existsSync(db)).toBe(true)
+  const log = readFileSync(join(home, 'gc.log'), 'utf8')
+  expect(log).toContain(`refused ${a}`)
+  expect(log).toContain(`refused ${b}`)
+  expect(log).toMatch(/^\d{4}-\d\d-\d\dT/m)
 })
