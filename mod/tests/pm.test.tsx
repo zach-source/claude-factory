@@ -69,6 +69,8 @@ function pmMocks(
     /** the manager session's own tool names, as `$.tool.list()` would answer. Left out: no
      * `tool.list` mock at all, the same as an old engine or an unmocked test (claude-factory-dun.29) */
     tools?: readonly string[]
+    /** the board's managerLimited, as `factory tick` prints it */
+    limited?: () => unknown
   },
 ) {
   const files = opts.files ?? new Map<string, string>()
@@ -90,7 +92,12 @@ function pmMocks(
       return { value: { exitCode: 0, stdout, stderr: '' } as never }
     }
     if (e.argv.includes('tick')) {
-      const out = JSON.stringify({ manager: opts.manager ? opts.manager() : [], rigs: [], runs: opts.runs() })
+      const out = JSON.stringify({
+        manager: opts.manager ? opts.manager() : [],
+        rigs: [],
+        runs: opts.runs(),
+        managerLimited: opts.limited?.() ?? null,
+      })
       opts.clearManager?.()
       return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
     }
@@ -701,5 +708,24 @@ test(
     await clock.settle()
 
     expect(spawns).toHaveLength(1)
+  },
+)
+
+test(
+  'the pm runs on Codex through the core while the manager is limited (claude-factory-y3f8w.5)',
+  { ...SLOW, options: { pm: true } },
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const spawns: unknown[] = []
+    const calls: string[][] = []
+    pmMocks(on, { runs: () => [RUN('r1')], calls, limited: () => ({ kind: 'seven_day', until: 9e15 }) })
+    on('agent.spawn', ($, e) => (spawns.push(e), { model: 'sonnet' } as never))
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    agentListMock(on, [], [])
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    expect(spawns).toHaveLength(0)
+    expect(calls.some(a => a.includes('pm') && a.includes('--once') && a.includes('--fallback'))).toBe(true)
   },
 )
