@@ -1463,8 +1463,12 @@ export const register: Register = (on, options) => {
     // same way for a worker's FACTORY_FROM. One residual stays out of scope here: a command that
     // both unsets this var and obfuscates the text still gets through. Fixing that needs the CLI
     // to know the caller's identity on its own.
+    // claude-factory-6g6ud: the main chat's prefix also sets FACTORY_MAIN_CHAT=1. Under it, src/cli.ts refuses
+    // each gated kind unless the person's Allow wrote a one-time token (below). That covers the forms the text
+    // gate cannot read (a symlink to bin/factory, a hidden verb word). One residual stays: a command that unsets the marker.
     const prefix =
-      (e.agentId ? 'export FACTORY_PATROL=1\n' : '') + (rt.home ? `export FACTORY_HOME='${rt.home}'\n` : '')
+      (e.agentId ? 'export FACTORY_PATROL=1\n' : 'export FACTORY_MAIN_CHAT=1\n') +
+      (rt.home ? `export FACTORY_HOME='${rt.home}'\n` : '')
     const pinned = prefix ? { ...e, command: `${prefix}${e.command}` } : e
     const gated = gatedCommand(e.command)
     // joined drops every backslash-newline pair, even after an even run: these guards only deny, and a nested shell can read the pair as a continuation (gatedCommand uses joinLines)
@@ -1520,7 +1524,22 @@ export const register: Register = (on, options) => {
     // nobody watches the dialog in a manager loop: deny a substitution-only or unreadable-only command with its rewrite hint
     if (!gated.ask) return { deny: gated.deny }
     const choice = await $.ui.ask(gated.question, ['Allow', 'Deny']).catch(() => 'Deny')
-    return choice === 'Allow' ? next(pinned) : { deny: gated.deny }
+    if (choice !== 'Allow') return { deny: gated.deny }
+    // claude-factory-6g6ud: the Allow writes a one-time token the CLI consumes. With no home there is no token, so the CLI refuses.
+    if (!rt.home) return next(pinned)
+    const token = crypto.randomUUID()
+    const file = `${rt.home}/allow/${token}.json`
+    try {
+      await $.fs.write(file, JSON.stringify({ kinds: gated.kinds, exp: Date.now() + 600_000 }))
+    } catch (err) {
+      return { deny: `The factory could not write the Allow token (${line(String(err), 120)}): nothing ran.` }
+    }
+    try {
+      return await next({ ...pinned, command: `export FACTORY_ALLOW=${token}\n${pinned.command}` })
+    } finally {
+      // the mod API has no unlink: an empty file is an expired token
+      await $.fs.write(file, '').catch(() => {})
+    }
   })
 
   // hides PATROL_TYPE from the model's own agent listing and from `subagent_type`: only this plugin's own
