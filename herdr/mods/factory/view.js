@@ -190,3 +190,6 @@ export function actionWords(action, arg) {
 
 /** the terminal command for the manager chat of a remote config, or null for a local one */
 export const chatArgv = cfg => (cfg.machine ? ['hc', 'attach', `${cfg.machine}/manager`] : null)
+
+/** the exec call of a remote job: [command, args]. It runs in the foreground, since hc exec kills what a command leaves behind. */
+export const directJob = (cfg, words) => ['env', [`FACTORY_HOME=${cfg.home}`, cfg.cli, ...words]]

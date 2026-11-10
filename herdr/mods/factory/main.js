@@ -38,6 +38,7 @@ import {
   actionWords,
   beatJobs,
   chatArgv,
+  directJob,
   onOf,
 } from './view.js'
 
@@ -107,6 +108,15 @@ export default class Factory extends View {
     const seq = String(++this.seq)
     this.jobs[name] = { seq, at: Date.now() }
     this.ran[name] = Date.now()
+    // hc exec kills every process the command leaves behind, so a remote job runs direct and keeps its output
+    if (this.cfg.machine) {
+      const [cmd, args] = directJob(this.cfg, words)
+      const mine = this.jobs[name]
+      exec(cmd, args, onOf(this.cfg))
+        .then(r => (mine.result = { code: r.code, out: r.stdout, err: r.stderr }))
+        .catch(e => (mine.result = { code: 1, out: '', err: String(e) }))
+      return
+    }
     exec(
       'sh',
       ['-c', JOB, 'sh', this.cfg.cli, this.cfg.home, this.holder, name, seq, ...words],
@@ -120,6 +130,11 @@ export default class Factory extends View {
   async finished(name) {
     const job = this.jobs[name]
     if (!job) return null
+    if (this.cfg.machine) {
+      if (!job.result) return null
+      delete this.jobs[name]
+      return job.result
+    }
     const dir = `${this.cfg.home}/herdr`
     const at = onOf(this.cfg)
     const done = ((await readTextFile(`${dir}/${name}.done`, at)) ?? '').trim().split(' ')

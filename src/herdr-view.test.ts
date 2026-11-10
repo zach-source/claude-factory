@@ -213,3 +213,11 @@ test('a local install refuses a home whose manager runs in AX', () => {
     herdrInstall.localRefusal('/h', undefined, { holder: 'p', kind: 'herdr', at: now }, now),
   ).toBeUndefined()
 })
+
+test('a remote job runs direct in the foreground: no detached shell that hc exec would kill', () => {
+  const cfg = { cli: 'factory', home: '/w/home', machine: 'f-manager' }
+  expect(herdr.directJob(cfg, ['tick', '--board'])).toEqual([
+    'env',
+    ['FACTORY_HOME=/w/home', 'factory', 'tick', '--board'],
+  ])
+})
