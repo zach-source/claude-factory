@@ -205,6 +205,27 @@ describe('1ocuv AC1 identity before application access', () => {
 })
 
 describe('1ocuv AC2 closed grammar', () => {
+  for (const id of ['_bad', '-bad', 'a'.repeat(129)])
+    test(`invalid run identifier ${id.length} ${id.slice(0, 4)}`, async () => {
+      const t = setup()
+      await t.acquire()
+      t.clear()
+      expect((await t.request(`/v1/patrol/runs/${id}`)).status).toBe(400)
+      t.zero()
+    })
+  for (const path of ['/v1/patrol/snapshot', '/v1/patrol/runs/run-one'])
+    test(`direct GET with Content-Length refuses ${path}`, async () => {
+      const t = setup()
+      await t.acquire()
+      t.clear()
+      const response = await t.handle(
+        new Request(`https://localhost${path}`, {
+          headers: { authorization: `Patrol ${token}`, 'content-length': '1' },
+        }),
+      )
+      expect(response.status).toBe(400)
+      t.zero()
+    })
   test('owner paths, held-run mutations, and mismatched route methods have no adapter calls', async () => {
     const t = setup()
     for (const path of [
