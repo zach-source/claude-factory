@@ -499,6 +499,74 @@ describe('events replay and ring', () => {
     expect(text).toContain('"repo":"x"')
     expect(text).not.toContain('"n":9')
   })
+  const privRows: [string, Record<string, unknown>][] = [
+    ['env.FOO', { env: { FOO: 'zqsecret' } }],
+    ['env.API_KEY', { env: { API_KEY: 'zqsecret' } }],
+    ['params.FOO', { params: { FOO: 'zqsecret' } }],
+    ['params.API_KEY', { params: { API_KEY: 'zqsecret' } }],
+    ['beadsRemote', { beadsRemote: 'zqsecret' }],
+    ['unknown', { extra: 'zqsecret' }],
+  ]
+  for (const [name, priv] of privRows)
+    test(`events project ${name} before replay and live`, async () => {
+      const t = setup()
+      const rig = { name: 'r', repo: 'a', runner: 'ax', maxRuns: 2, sweeps: ['s1', 's2'], ...priv }
+      const src = { rigs: [rig], runs: [1], lease: 'L', halt: true }
+      const before = JSON.stringify(src)
+      t.h.publish(src)
+      const r = await get(t.h, '/v1/events')
+      setTimeout(() => t.h.publish({ ...src, rigs: [{ ...rig, repo: 'b' }] }), 10)
+      const text = await frames(r, 2)
+      const pub = { name: 'r', repo: 'a', maxRuns: 2, sweeps: ['s1', 's2'], runner: 'ax' }
+      const rest = { runs: [1], lease: 'L', halt: true }
+      expect(text).toBe(
+        frame(1, { rigs: [pub], ...rest }) + frame(2, { rigs: [{ ...pub, repo: 'b' }], ...rest }),
+      )
+      expect(JSON.stringify(src)).toBe(before)
+      expect(t.calls.length).toBe(0)
+    })
+  const badRigs: [string, unknown][] = [
+    ['rigs string', 'zqsecret'],
+    ['null entry', [null]],
+    ['primitive entry', ['zqsecret']],
+    ['array entry', [['zqsecret']]],
+    ['name object', [{ name: { x: 'zqsecret' } }]],
+    ['maxRuns NaN', [{ maxRuns: NaN, repo: 'zqsecret' }]],
+    ['sweeps object member', [{ sweeps: [{ x: 'zqsecret' }] }]],
+    ['linear null', [{ linear: null, repo: 'zqsecret' }]],
+    ['linear array', [{ linear: ['zqsecret'] }]],
+    ['linear team object', [{ linear: { team: [{ x: 'zqsecret' }] } }]],
+    ['linearSync array', [{ linearSync: ['zqsecret'] }]],
+    ['linearSync error object', [{ linearSync: { error: { x: 'zqsecret' } } }]],
+    ['linearSync at string', [{ linearSync: { at: 'zqsecret' } }]],
+  ]
+  for (const [name, rigs] of badRigs)
+    test(`events reject malformed rig data (${name}) without cache or delivery change`, async () => {
+      const t = setup()
+      t.h.publish({ rigs: [{ name: 'ok' }], n: 1 })
+      const r = await get(t.h, '/v1/events')
+      setTimeout(() => {
+        t.h.publish({ rigs, n: 9 })
+        t.h.publish({ rigs: [{ name: 'ok2' }], n: 2 })
+      }, 10)
+      const text = await frames(r, 2)
+      expect(text).toBe(
+        frame(1, { rigs: [{ name: 'ok' }], n: 1 }) + frame(2, { rigs: [{ name: 'ok2' }], n: 2 }),
+      )
+      expect(text).not.toContain('zqsecret')
+      const late = await get(t.h, '/v1/events?after=1')
+      expect(await frames(late, 1)).toBe(frame(2, { rigs: [{ name: 'ok2' }], n: 2 }))
+      expect(t.calls.length).toBe(0)
+    })
+  test('events deduplicate the public view', async () => {
+    const t = setup()
+    t.h.publish({ rigs: [{ name: 'r', env: { A: 'zqsecret' } }] })
+    t.h.publish({ rigs: [{ name: 'r', env: { A: 'other' }, params: { B: 'c' } }] })
+    t.h.publish({ rigs: [{ name: 'r2' }] })
+    expect(await frames(await get(t.h, '/v1/events'), 2)).toBe(
+      frame(1, { rigs: [{ name: 'r' }] }) + frame(2, { rigs: [{ name: 'r2' }] }),
+    )
+  })
   test('replay then live, each event once', async () => {
     const t = setup()
     t.h.publish({ a: 1 })
