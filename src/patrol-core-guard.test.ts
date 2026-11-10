@@ -7,11 +7,9 @@ const P = { FACTORY_PATROL: '1' }
 test('a patrol refuses the gated kinds, a skill install and a decision answer', () => {
   for (const [cmd, args] of [
     ['decide', ['x']],
-    ['decisions', ['answer', 'd1']],
     ['skills', ['install', 's']],
     ['skills', ['reject', 's', 'why']],
     ['proposals', ['install', 'p']],
-    ['start', ['--owned', 'r']],
     ['token', ['rotate']],
     ['settings', ['set', 'a', 'b']],
   ] as const)

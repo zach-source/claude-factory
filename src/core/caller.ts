@@ -132,8 +132,10 @@ export function mainChatRefusal(env: Env, home: string, kind: string): string | 
  */
 export function patrolRefusal(cmd: string | undefined, args: string[], env: Env): string | undefined {
   if (!env.FACTORY_PATROL) return undefined
+  // `start --owned` and `decisions answer` keep their own refusals in the command (claude-factory-72v.19)
+  const gated = mainChatKind(cmd, args)
   const kind =
-    mainChatKind(cmd, args) ??
+    (gated === 'owned' || gated === 'answer' ? undefined : gated) ??
     ((cmd === 'skills' || cmd === 'proposals') && (args[0] === 'install' || args[0] === 'reject')
       ? `${cmd} ${args[0]}`
       : undefined)
