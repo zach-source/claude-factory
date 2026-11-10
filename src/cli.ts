@@ -172,6 +172,7 @@ import {
   pmOnce,
   reviewOnce,
   runModelAsync,
+  type TickOut,
   type Io,
 } from './once'
 import { guardHook } from './core/chat'
@@ -231,6 +232,7 @@ import * as herdrApp from './herdr-install'
 import * as migrate from './migrate'
 import {
   bdEnv,
+  bdExports,
   hasRigBeads,
   httpsRemote,
   inAx,
@@ -10524,7 +10526,7 @@ async function onceCmd(verb: 'patrol' | 'pm' | 'brief' | 'review', args: string[
       gateFacts: async run => JSON.stringify(await gateBriefFacts(run)),
       reviewFacts: key => JSON.stringify(reviewFacts(key)),
     }
-    if (verb === 'patrol') return patrolOnce(io)
+    if (verb === 'patrol') return await patrolOnce(io)
     return verb === 'pm'
       ? await pmOnce(io, codex)
       : verb === 'brief'
@@ -13716,7 +13718,26 @@ if (import.meta.main && !outboxCmd)
             if (c !== 0) throw new Error(`exit ${c}`)
           })
         }
-        server.main(args, HOME, () => tick(), corePort, backup)
+        // the patrol child takes manager.lease as ppid:<server pid>; the marker moves its HOME away from the person certificate
+        let patrolKid: ReturnType<typeof Bun.spawn> | undefined
+        const patrol = {
+          // ponytail: SIGTERM reaches the patrol child only; a grandchild (the claude step) can outlive it. patrol.lock limits that. Upgrade: kill the process group.
+          kill: () => patrolKid?.kill('SIGTERM'),
+          run: () => {
+            const { FACTORY_LEASE_HOLDER, FACTORY_LEASE_KIND, ...env } = kickEnv(process.env, HOME)
+            const p = Bun.spawn([CLI, 'patrol', '--once'], {
+              stdout: 'ignore',
+              stderr: 'inherit',
+              env: { ...env, FACTORY_STEP_ISOLATE: '1' },
+            })
+            patrolKid = p
+            return p.exited.then(c => {
+              if (c !== 0) throw new Error(`exit ${c}`)
+            })
+          },
+          keep: (out: unknown) => keepTick(HOME, out as TickOut),
+        }
+        server.main(args, HOME, () => tick(), corePort, backup, patrol)
         break
       case 'cert': {
         refuseWorker('cert', true)
@@ -13783,7 +13804,16 @@ if (import.meta.main && !outboxCmd)
         console.log(HOME)
         break
       case 'repos': {
-        if (args[0] !== 'sync') fail('usage: factory repos sync')
+        if (args[0] === 'bd-env') {
+          // claude-factory-d289.26: the manager model's shell evals this before its bd, in the cwd it has then
+          const top = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel'], { stderr: 'ignore' })
+          for (const [k, v] of Object.entries(
+            bdExports(top.success ? top.stdout.toString().trim() : undefined),
+          ))
+            console.log(`export ${k}=${sq(v)}`)
+          break
+        }
+        if (args[0] !== 'sync') fail('usage: factory repos sync | factory repos bd-env')
         const problems = reposSync()
         if (problems.length) fail(problems.join('\n'))
         console.log(`repos in place under ${process.env.FACTORY_REPOS ?? '/workspace/w/repos'}`)

@@ -1482,7 +1482,13 @@ export const register: Register = (on, options) => {
     // gate cannot read (a symlink to bin/factory, a hidden verb word). One residual stays: a command that unsets the marker.
     const prefix =
       (e.agentId ? 'export FACTORY_PATROL=1\n' : 'export FACTORY_MAIN_CHAT=1\n') +
-      (rt.home ? `export FACTORY_HOME='${rt.home}'\n` : '')
+      (rt.home ? `export FACTORY_HOME='${rt.home}'\n` : '') +
+      // claude-factory-d289.26: in the AX manager task, a shell bd gets the beads env of its cwd's rig repo.
+      // The factory's own bd calls get it too. `repos bd-env` prints nothing outside a rig repo.
+      // The laptop has no FACTORY_IN_AX, so nothing changes there.
+      (rt.cli
+        ? `if [ "$FACTORY_IN_AX" = 1 ]; then bd() { (eval "$('${rt.cli}' repos bd-env 2>/dev/null)"; command bd "$@"); }; fi\n`
+        : '')
     const pinned = prefix ? { ...e, command: `${prefix}${e.command}` } : e
     const gated = gatedCommand(e.command)
     // joined drops every backslash-newline pair, even after an even run: these guards only deny, and a nested shell can read the pair as a continuation (gatedCommand uses joinLines)
