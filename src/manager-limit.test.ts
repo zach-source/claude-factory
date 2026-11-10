@@ -3,7 +3,7 @@ import { expect, test } from 'bun:test'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { clearManagerLimit, managerLimited, recordManagerLimit } from './cli'
+import { clearManagerLimit, fallbackCodexModel, managerLimited, recordManagerLimit } from './cli'
 
 const home = () => mkdtempSync(join(tmpdir(), 'mlimit-'))
 
@@ -25,4 +25,9 @@ test('a limit with no known reset holds for a short time', () => {
   recordManagerLimit({ at: now, kind: 'usage', resetsAt: 0 }, h)
   expect(managerLimited(now + 60_000, h)?.kind).toBe('usage')
   expect(managerLimited(now + 3600_000, h)).toBeNull()
+})
+
+test('the fallback Codex model is the env value, else gpt-5-codex', () => {
+  expect(fallbackCodexModel({})).toBe('gpt-5-codex')
+  expect(fallbackCodexModel({ FACTORY_MANAGER_CODEX: 'gpt-x' })).toBe('gpt-x')
 })
