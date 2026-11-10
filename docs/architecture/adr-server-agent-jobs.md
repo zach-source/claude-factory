@@ -64,7 +64,7 @@ Correct any claim in `docs/server.md` that the server does not start dream.
 
 Expected code files: `src/server.ts`, `src/cli.ts`, and a small board-write extraction in `src/once.ts` if needed.
 Expected tests: `src/server.test.ts`, with `src/once-cli.test.ts` or `src/steps.test.ts` only where needed.
-Update server help, `docs/server.md`, and one bullet at the end of Unreleased in `CHANGELOG.md`.
+Update server help and `docs/server.md`. The release step owns the changelog and version.
 No deployment, credential, `.factory/`, frontend, or database change belongs to this task.
 
 Rejected alternatives: another scheduler duplicates lease and overlap logic.
@@ -167,7 +167,19 @@ These live reads belong to the later authorized soak, not pre-merge acceptance.
 
 1. T1, `claude-factory-juo9t.1`: Add AC1 through AC5 tests first. One test commit; record red baseline evidence.
 2. T2, `claude-factory-juo9t.2`: Add the flag, shared triggers, board persistence, and isolated children. One implementation commit; pass AC1 through AC5.
-3. T3, `claude-factory-juo9t.3`: Correct server docs and help, add the changelog bullet, and verify AC6. One completion commit; run all required checks.
+3. T3, `claude-factory-juo9t.3`: Correct server docs and help, and verify AC6. Run all required checks.
 
 Order T1 before T2 before T3. Target one 120-minute implement pass.
 The test commit and its fix must ship in one PR. This ADR is the plan station's only tracked change.
+
+### Re-plan after three partial reports
+
+Continue draft PR #819 on `factory/lifecycle-mwag8hdg9f`. Keep all committed WIP tests.
+No implementation exists at `2e216b93`. No task meets its acceptance criteria yet.
+The prior hook denied the formatter, test command, and source search. Do not retry them without manager direction.
+First resolve that prerequisite through factory mail. Do not change the hook or remove test coverage for this task.
+Then complete T1 before T2. Validate the process fixtures against the real board and model configuration.
+Add fresh-board persistence and failed-model key checks. Record the red baseline before implementation.
+Use separate completion commits for T1, T2, and T3. Push each task before the next task starts.
+Retain the dream exception and default-off flag. Do not enable live jobs.
+The final gate must pass at the final HEAD. WIP commits and prior expected failures cannot prove acceptance.
