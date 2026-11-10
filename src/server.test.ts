@@ -12,6 +12,8 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
+import { createActor } from 'xstate'
+import { compile } from './machine'
 import { backup } from './homebackup'
 import { claim, leaseFile, parseFlags, release, serve, serverBackupCfg } from './server'
 
@@ -701,3 +703,328 @@ test('akiq.15 AC8: the server runs the patrol with its own HOME; with the flag o
   expect(existsSync(join(off.home, 'agent-steps.jsonl'))).toBe(false)
   rmSync(off.stub)
 }, 30_000)
+
+test('juo9t AC1 flag grammar', () => {
+  expect(parseFlags([])).toHaveProperty('agentSteps', false)
+  expect(parseFlags(['--agent-steps', '0'])).toHaveProperty('agentSteps', false)
+  expect(parseFlags(['--agent-steps', '1'])).toHaveProperty('agentSteps', true)
+  for (const args of [
+    ['--agent-steps'],
+    ['--agent-steps', '2'],
+    ['--agent-steps', '01'],
+    ['--agent-steps', 'true'],
+    ['--agent-steps', '-1'],
+    ['--agent-steps', '1', '--agent-steps', '0'],
+    ['--agent-steps', '1', '--unknown', '1'],
+    ['text', '--agent-steps', '1'],
+  ]) {
+    expect(() => parseFlags(args)).toThrow('usage: factory server')
+    const home = newHome()
+    const p = Bun.spawnSync([CLI, 'server', ...args], { env: env(home), timeout: 5000 })
+    expect(p.exitCode).not.toBe(0)
+    expect(p.stderr.toString()).toContain('usage: factory server')
+    expect(existsSync(leaseFile(home))).toBe(false)
+    expect(existsSync(join(home, 'agent-steps.jsonl'))).toBe(false)
+  }
+}, 30_000)
+
+test('juo9t AC2 pm cadence', async () => {
+  let calls = 0
+  let blocked = false
+  const lines: string[] = []
+  const jobs = {
+    agentSteps: {
+      pm: {
+        everyMs: 200,
+        run: async () => {
+          calls++
+          if (calls === 1) throw new Error('pm refused')
+        },
+      },
+      brief: { run: async () => {} },
+      review: { run: async () => {} },
+    },
+  }
+  const s = serve({
+    home: newHome(),
+    port: 0,
+    everyMs: 10,
+    leaseMs: 1000,
+    tick: () => ({ halt: blocked ? 'paused' : undefined }),
+    log: line => lines.push(line),
+    ...jobs,
+  })
+  try {
+    await sleep(100)
+    expect(calls).toBe(0)
+    await sleep(160)
+    expect(calls).toBe(1)
+    expect(lines).toContain('pm failed: pm refused')
+    await sleep(200)
+    expect(calls).toBe(2)
+    blocked = true
+    await sleep(220)
+    expect(calls).toBe(2)
+  } finally {
+    await s.stop()
+  }
+  const stoppedAt = calls
+  await sleep(220)
+  expect(calls).toBe(stoppedAt)
+}, 30_000)
+
+test('juo9t AC3 tick candidates', async () => {
+  const calls: string[] = []
+  let board: unknown = { runs: [], reviews: [] }
+  let fail = false
+  let accepted = 0
+  const jobs = {
+    agentSteps: {
+      pm: { everyMs: 60_000, run: async () => {} },
+      brief: { run: async () => void calls.push('brief') },
+      review: { run: async () => void calls.push('review') },
+    },
+  }
+  const s = serve({
+    home: newHome(),
+    port: 0,
+    everyMs: 20,
+    leaseMs: 1000,
+    log: () => {},
+    tick: () => {
+      if (fail) throw new Error('tick refused')
+      return board
+    },
+    onBoard: () => void accepted++,
+    ...jobs,
+  })
+  const gate = { id: 'r1', since: 1, gate: { prompt: 'Review this gate' } }
+  const review = { key: 'proposal:p1' }
+  try {
+    await sleep(100)
+    expect(calls).toEqual([])
+    board = { runs: [gate], reviews: [review] }
+    await sleep(100)
+    expect(calls).toContain('brief')
+    expect(calls).toContain('review')
+    for (const next of [
+      { runs: [{ ...gate, gate: { ...gate.gate, brief: 'Done' } }], reviews: [] },
+      { busy: true, runs: [gate], reviews: [review] },
+      { halt: 'paused', runs: [gate], reviews: [review] },
+      { halt: 'stopping', runs: [gate], reviews: [review] },
+      { runs: [], reviews: [] },
+    ]) {
+      board = next
+      await sleep(50)
+      const before = calls.length
+      await sleep(60)
+      expect(calls.length).toBe(before)
+    }
+    board = { runs: [gate], reviews: [review] }
+    fail = true
+    await sleep(50)
+    const before = calls.length
+    const saved = accepted
+    await sleep(60)
+    expect(calls.length).toBe(before)
+    expect(accepted).toBe(saved)
+    fail = false
+    await sleep(100)
+    expect(calls.length).toBeGreaterThan(before)
+  } finally {
+    await s.stop()
+  }
+}, 30_000)
+
+for (const kind of ['pm', 'brief', 'review'] as const) {
+  test(`juo9t AC5 job lifecycle ${kind}`, async () => {
+    const home = newHome()
+    const calls = { pm: 0, brief: 0, review: 0 }
+    const kills = { pm: 0, brief: 0, review: 0 }
+    let finish: (() => void) | undefined
+    let pending = true
+    const lines: string[] = []
+    const child = (name: keyof typeof calls) => ({
+      everyMs: 30,
+      run: async () => {
+        calls[name]++
+        if (name === kind && pending) await new Promise<void>(resolve => (finish = resolve))
+        if (name === kind) throw new Error('child refused')
+      },
+      kill: () => void kills[name]++,
+    })
+    const jobs = { agentSteps: { pm: child('pm'), brief: child('brief'), review: child('review') } }
+    const options = {
+      home,
+      port: 0,
+      everyMs: 10,
+      leaseMs: 1000,
+      tick: () => ({ runs: [{ gate: {} }], reviews: [{ key: 'proposal:p1' }] }),
+      log: (line: string) => lines.push(line),
+      ...jobs,
+    }
+    const s = serve({ ...options, holder: 'first' })
+    const waitingCalls = { pm: 0, brief: 0, review: 0 }
+    const waiting = serve({
+      ...options,
+      holder: 'second',
+      agentSteps: Object.fromEntries(
+        Object.keys(waitingCalls).map(name => [
+          name,
+          { everyMs: 30, run: async () => void waitingCalls[name as keyof typeof calls]++ },
+        ]),
+      ),
+    } as Parameters<typeof serve>[0])
+    try {
+      await sleep(160)
+      expect(calls[kind]).toBe(1)
+      for (const other of ['pm', 'brief', 'review'] as const)
+        if (other !== kind) expect(calls[other]).toBeGreaterThan(1)
+      expect(waitingCalls).toEqual({ pm: 0, brief: 0, review: 0 })
+      pending = false
+      finish?.()
+      await sleep(120)
+      expect(calls[kind]).toBeGreaterThan(1)
+      expect(lines).toContain(`${kind} failed: child refused`)
+      writeFileSync(leaseFile(home), JSON.stringify({ holder: 'foreign', until: Date.now() + 10_000 }))
+      await sleep(50)
+      const lostAt = { ...calls }
+      await sleep(80)
+      expect(calls).toEqual(lostAt)
+    } finally {
+      finish?.()
+      await waiting.stop()
+      await s.stop()
+    }
+    expect(kills).toEqual({ pm: 1, brief: 1, review: 1 })
+    const stoppedAt = { ...calls }
+    await sleep(80)
+    expect(calls).toEqual(stoppedAt)
+  }, 30_000)
+}
+
+for (const step of ['pm', 'briefer', 'reviewer'] as const) {
+  test(`juo9t AC4 server step rows ${step}`, async () => {
+    const home = newHome()
+    const stub = join(home, 'claude.sh')
+    const preload = join(home, 'clock.ts')
+    writeFileSync(
+      preload,
+      `import { appendFileSync } from 'node:fs'
+const interval = globalThis.setInterval
+globalThis.setInterval = ((fn, ms, ...args) => {
+  appendFileSync(${JSON.stringify(join(home, 'intervals.jsonl'))}, JSON.stringify(ms) + '\\n')
+  return interval(fn, ms === 3600000 ? 500 : ms, ...args)
+})
+const spawn = Bun.spawn
+Bun.spawn = ((args, opts) => {
+  if (Array.isArray(args) && args[2] === '--once') {
+    const e = opts?.env ?? {}
+    appendFileSync(${JSON.stringify(join(home, 'children.jsonl'))}, JSON.stringify({
+      args: args.slice(1), isolate: e.FACTORY_STEP_ISOLATE,
+      holder: e.FACTORY_LEASE_HOLDER, kind: e.FACTORY_LEASE_KIND,
+    }) + '\\n')
+  }
+  return spawn(args, opts)
+})
+`,
+    )
+    const answer =
+      step === 'pm'
+        ? '```json\n{"rigs":{},"proposals":[]}\n```'
+        : step === 'reviewer'
+          ? '```json\n{"recommendation":"reject","why":"Needs more evidence."}\n```'
+          : 'The checks passed. Ask the person to decide.'
+    writeFileSync(
+      join(home, 'reply.jsonl'),
+      JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: answer }) + '\n',
+    )
+    writeFileSync(
+      stub,
+      `#!/bin/sh
+cat > '${home}/model-input.txt'
+printf '%s\\n' "$@" > '${home}/model-args.txt'
+printf '%s\\n' "HOME=$HOME" "CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR" "FACTORY_PATROL=$FACTORY_PATROL" "FACTORY_SERVER=$FACTORY_SERVER" "FACTORY_STEP_ISOLATE=$FACTORY_STEP_ISOLATE" > '${home}/model-env.txt'
+cat '${home}/reply.jsonl'
+`,
+      { mode: 0o755 },
+    )
+    if (step === 'briefer') {
+      const def = {
+        name: 'gate-test',
+        start: 'g',
+        nodes: { g: { prompt: 'Ask the person', gate: true, next: { approve: 'done' } } },
+      }
+      const actor = createActor(compile(def)).start()
+      const d = join(home, 'runs', 'r1')
+      mkdirSync(d)
+      const factory = join(d, 'factory.ts')
+      writeFileSync(factory, `export default ${JSON.stringify(def)}`)
+      writeFileSync(
+        join(d, 'run.json'),
+        JSON.stringify({ id: 'r1', factory, repo: home, worktree: home, goal: 'Check the gate', ws: 'w' }),
+      )
+      writeFileSync(join(d, 'state.json'), JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }))
+      actor.stop()
+    }
+    if (step === 'reviewer') {
+      const mem = join(home, 'memory')
+      mkdirSync(join(mem, '.proposals'), { recursive: true })
+      writeFileSync(join(mem, '.proposals', 'pr.md'), '---\nrung: core\ntarget: CORE.md\nstatus: pending\n---\nRun prettier.\n')
+      expect(Bun.spawnSync(['git', 'init', '-q', mem]).exitCode).toBe(0)
+      writeFileSync(join(mem, 'CORE.md'), '- An old line\n')
+    }
+    const run = (flag: string) => {
+      const p = Bun.spawn([process.execPath, '--preload', preload, join(import.meta.dir, 'cli.ts'), 'server', ...FAST, '--agent-steps', flag], {
+        env: { ...env(home), FACTORY_CLAUDE: stub, FACTORY_SERVER: '1' },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      kids.push(p)
+      return p
+    }
+    const off = run('0')
+    await sleep(800)
+    off.kill('SIGTERM')
+    await off.exited
+    expect(existsSync(join(home, 'agent-steps.jsonl'))).toBe(false)
+    expect(existsSync(join(home, 'children.jsonl'))).toBe(false)
+    const on = run('1')
+    const log = join(home, 'agent-steps.jsonl')
+    for (let i = 0; i < 100 && !existsSync(log) && on.exitCode === null; i++) await sleep(100)
+    try {
+      expect(existsSync(log)).toBe(true)
+      const rows = readFileSync(log, 'utf8').trim().split('\n').map(l => JSON.parse(l))
+      expect(rows).toContainEqual(expect.objectContaining({ step, outcome: 'ok' }))
+      const command = step === 'briefer' ? 'brief' : step === 'reviewer' ? 'review' : 'pm'
+      const children = readFileSync(join(home, 'children.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l))
+      expect(children).toContainEqual({ args: [command, '--once'], isolate: '1' })
+      const modelEnv = readFileSync(join(home, 'model-env.txt'), 'utf8')
+      expect(modelEnv).toContain(`HOME=${home}/steps/${step}\n`)
+      expect(modelEnv).toContain(`CLAUDE_CONFIG_DIR=${home}/steps/${step}/.claude\n`)
+      expect(modelEnv).toContain('FACTORY_PATROL=1\n')
+      expect(modelEnv).toContain('FACTORY_SERVER=\n')
+      expect(modelEnv).toContain('FACTORY_STEP_ISOLATE=\n')
+      const args = readFileSync(join(home, 'model-args.txt'), 'utf8')
+      expect(args).toContain('--tools\n\n')
+      expect(args).toContain('--strict-mcp-config\n')
+      expect(existsSync(join(home, 'patrol-state.json'))).toBe(false)
+      if (step === 'pm') {
+        expect(readFileSync(join(home, 'intervals.jsonl'), 'utf8')).toContain('3600000\n')
+      } else {
+        await sleep(600)
+        expect(readFileSync(log, 'utf8').trim().split('\n')).toHaveLength(1)
+      }
+      if (step === 'reviewer')
+        expect(readFileSync(join(home, 'memory', '.proposals', 'pr.md'), 'utf8')).toContain('status: pending')
+      if (step === 'briefer') {
+        const board = JSON.parse(readFileSync(join(home, 'manager-tick.json'), 'utf8'))
+        expect(board.runs[0].gate.brief).toBeTruthy()
+        expect(board.runs[0].node).toBe('g')
+      }
+    } finally {
+      on.kill('SIGTERM')
+      await on.exited
+    }
+  }, 30_000)
+}
