@@ -315,7 +315,7 @@ test('wua3v model argv preserves source restriction', async () => {
     timeoutMs: 20_000,
     settings,
   }
-  const restricted = { ...base, settingSources: 'user' } as ModelCall
+  const restricted: ModelCall = { ...base, settingSources: 'user' }
   const args = () => readFileSync(join(dir, 'args.txt'), 'utf8').trimEnd().split('\n')
   try {
     for (const run of [runModel, runModelAsync]) {

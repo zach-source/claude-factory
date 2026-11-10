@@ -18,13 +18,12 @@ test.skipIf(process.env.WUA3V_REAL_CLAUDE !== '1')(
       async fetch(req) {
         const body = (await req.json()) as any
         requests.push(body)
-        writeFileSync(join(root, 'requests.json'), JSON.stringify(requests, null, 2))
         const result = requested
         requested = true
         const content = result
-        ? [{ type: 'text' as const, text: 'Probe complete.' }]
+          ? [{ type: 'text' as const, text: 'Probe complete.' }]
           : ['factory status', 'factory decide lifecycle-acme ship ok'].map((command, i) => ({
-            type: 'tool_use' as const,
+              type: 'tool_use' as const,
               id: `toolu_probe${requests.length}_${i}`,
               name: 'Bash',
               input: { command },
@@ -109,8 +108,8 @@ test.skipIf(process.env.WUA3V_REAL_CLAUDE !== '1')(
               wrapper,
               `import {appendFileSync} from 'node:fs';
 const input = await Bun.stdin.text();
-appendFileSync(${JSON.stringify(calls)}, input + '\\n');
 const p = Bun.spawnSync([${JSON.stringify(cli)}, 'chat-guard'], {stdin: Buffer.from(input), env: {...process.env, FACTORY_SELF_UPDATE: '0'}});
+appendFileSync(${JSON.stringify(calls)}, JSON.stringify({id: JSON.parse(input).tool_use_id, code: p.exitCode, err: p.stderr.toString()}) + '\\n');
 process.stderr.write(p.stderr); process.exit(p.exitCode);
 `,
             )
@@ -199,6 +198,21 @@ process.stderr.write(p.stderr); process.exit(p.exitCode);
             expect(benign.isOk).toBe(true)
             expect(benign.calls).toHaveLength(2)
             expect(existsSync(marker)).toBe(!restricted && files.length > 0)
+            if (restricted || files.length === 0) {
+              const records = readFileSync(calls, 'utf8')
+                .trim()
+                .split('\n')
+                .map(l => JSON.parse(l))
+              const attempted = [...first.calls, ...second!.calls, ...benign.calls]
+              expect(records).toHaveLength(attempted.length)
+              for (const call of attempted) {
+                const record = records.find(r => r.id === call.id)
+                expect(record?.code).toBe(call.command === 'factory status' ? 0 : 2)
+                if (call.command !== 'factory status')
+                  expect(record.err).toContain('the person must approve this command')
+              }
+              expect(readFileSync(downstream, 'utf8')).toBe('status\nstatus\nstatus\n')
+            }
           }
         }
       }

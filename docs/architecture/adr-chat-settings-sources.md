@@ -177,3 +177,12 @@ Each turn reached the fake downstream `decide` command.
 With files created before resume, the first turn ran two hooks; the resumed turn ran zero.
 The benign project hook marker appeared without the restriction in all file cases.
 AC1 and AC2 also failed at their source-selection assertions before the fix.
+
+After the fix, the same command exited 0: one test, 253 assertions, and 16 matrix cases.
+Each case used a fresh turn, a resumed turn, and a resumed benign-hook control: 48 Claude calls total.
+Each restricted case retained four guard calls across the first two turns and six after the benign control.
+Every requested Bash call matched a recorded guard result by tool ID.
+Each `status` result had code 0. Each `decide` result had code 2 and the approval refusal.
+Only `status` reached the fake executable. No project hook marker appeared in a restricted case.
+The fixture revision starts at `e4389cd2`; the source-restriction commit adds the final per-call result checks.
+The test writes its version, case outcomes, and hook counts to `.scratch/chat-settings-<timestamp>/evidence.json`.

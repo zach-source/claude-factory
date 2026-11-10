@@ -86,6 +86,7 @@ export function send(ctx: Ctx, a: { id: string; text: string; front: Front }): P
           tools: 'Bash,Read,Grep,Glob,Write',
           maxTurns: 40,
           settings: { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } },
+          settingSources: 'user',
           baseEnv: ctx.env,
           env: { FACTORY_HOME: ctx.home, FACTORY_MAIN_CHAT: '1' },
           cwd: ctx.home,
