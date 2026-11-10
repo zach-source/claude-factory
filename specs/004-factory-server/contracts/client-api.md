@@ -42,6 +42,7 @@ Each action endpoint takes `Idempotency-Key`, as in the worker API.
 `POST /v1/gc` invokes `gc.run` without a CLI child.
 It uses the closed inputs in [the gc ADR](../../../docs/architecture/adr-gc-core-parity.md#closed-input-contract).
 Preview uses the same POST and caller checks.
+The HTTP transport writes audit and idempotency records for previews too.
 
 A successful reply is JSON: `{code: 0, out: string, err: string}`.
 The catalog's text output describes `out`. Clients must emit both fields to their own streams without extra newlines.

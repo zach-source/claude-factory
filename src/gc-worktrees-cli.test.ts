@@ -396,6 +396,8 @@ test('n69b2 AC3 server preview and rig selection preserve real refs and wrong-ri
     expect(git(a.repo, 'show-ref')).toBe(before)
     expect(existsSync(join(home, 'gc-worktrees.stamp'))).toBe(false)
     expect(existsSync(join(home, 'gc-worktrees.jsonl'))).toBe(false)
+    expect(existsSync(join(home, 'client-idempotency.json'))).toBe(true)
+    expect(existsSync(join(home, 'client-actions.jsonl'))).toBe(true)
     const execute = factory(['gc', '--worktrees', '--rig', 'a'], { FACTORY_SERVER: origin })
     expect(execute.code).toBe(0)
     expect(execute.out).toContain('reclaimed: 1 worktrees, 1 local + 1 remote branches')

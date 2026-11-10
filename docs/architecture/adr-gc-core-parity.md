@@ -132,7 +132,8 @@ Prefix new test names with `n69b2 ACn`. All criteria below are pre-merge fixture
    Worktree gc must retain its separate snapshot, branch eligibility, and compare-and-swap rules.
    Never substitute worktree mode tests for plain mode tests.
    Plain dry-run can update `gc.stamp`; it must delete no data or append metrics or gc logs.
-   Worktree dry-run must leave durable home contents, refs, and worktree files unchanged, including its stamp and journal.
+   Worktree dry-run must keep durable home contents, refs, and worktree files unchanged, including its stamp and journal.
+   The HTTP transport still writes `client-idempotency.json` and `client-actions.jsonl` for an accepted POST.
    Both modes retain current temporary lock behavior. A held mode lock skips that pass; a thrown error releases it.
    Test zero deletion and chmod calls for dry-run and refused candidates, with a positive trace control.
    Test metrics failure prevents run deletion, and a candidate failure does not suppress the next valid candidate.
