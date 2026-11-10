@@ -1,6 +1,16 @@
 // The manager chat of the core: one conversation file for each id, one model turn at a time.
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { createHash } from 'node:crypto'
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { join, resolve } from 'node:path'
 import { line } from '../../mod/hooks/view'
 import { appendUsage, type ModelResult } from '../once'
 import { stepPrompt } from '../steps'
@@ -21,6 +31,8 @@ export type Turn = {
   commands?: { id: string; command: string }[]
   /** the commands of `commands` that need the person's approval */
   asks?: { id: string; question: string }[]
+  /** the tool_use id of the ask that the person approved for this turn */
+  approve?: string
   session?: string
   error?: string
   reason?: string
@@ -66,7 +78,38 @@ export function show(home: string, id: string): { id: string; session: string | 
 /** the tail of each conversation's queue; an entry leaves the map when its turn is the last one */
 export const queue = new Map<string, Promise<void>>()
 
-const append = (path: string, t: Turn) => appendFileSync(path, JSON.stringify(t) + '\n')
+const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex')
+const HASH = /^[0-9a-f]{64}$/
+
+/** a model can leave a half line: write a newline first, so the next turn stays readable */
+const append = (path: string, t: Turn) => {
+  let pre = ''
+  if (existsSync(path) && statSync(path).size > 0) {
+    const b = readFileSync(path)
+    if (b[b.length - 1] !== 10) pre = '\n'
+  }
+  appendFileSync(path, pre + JSON.stringify(t) + '\n')
+}
+
+const isObj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object'
+
+/** the command that the person approves: the ask `id` of the last manager turn; throws a refusal */
+function approved(turns: Turn[], id: string): string {
+  const last = turns.filter(t => t.who === 'manager').at(-1)
+  if (!last) throw new Error('the approval is refused: the conversation has no manager turn')
+  const list = (x: unknown) => (Array.isArray(x) ? x.filter(isObj) : [])
+  const ask = list(last.asks).find(e => e.id === id && typeof e.question === 'string')
+  if (!ask) throw new Error(`the approval is refused: the last manager turn has no ask ${id}`)
+  const cmd = list(last.commands).find(e => e.id === id && typeof e.command === 'string')
+  if (!cmd) throw new Error(`the approval is refused: the last manager turn has no command ${id}`)
+  const command = cmd.command as string
+  const v = check(command, 'manager')
+  if (v.decision === 'deny') throw new Error('the approval is refused: the command is denied')
+  if (v.decision === 'allow') throw new Error('the approval is refused: the command needs no approval')
+  if (v.question !== ask.question)
+    throw new Error('the approval is refused: the question does not match the command')
+  return command
+}
 
 export function send(
   ctx: Ctx,
@@ -76,54 +119,80 @@ export function send(
     refuseWorker(ctx.env, 'chat', true)
     const path = conversationFile(ctx.home, a.id)
     const turn = async (): Promise<Turn> => {
-      const session = sessionOf(readTurns(path))
+      const turns = readTurns(path)
+      const session = sessionOf(turns)
+      const command = a.approve === undefined ? undefined : approved(turns, a.approve)
       mkdirSync(join(ctx.home, 'conversations'), { recursive: true })
-      append(path, { who: 'person', text: a.text, front: a.front, at: Date.now() })
-      const guard = { type: 'command', command: `'${CLI}' chat-guard` }
-      let res: ModelResult
+      const file = join(resolve(ctx.home), 'conversations', `${a.id}.approve`)
+      let hook = `'${CLI}' chat-guard`
+      if (command !== undefined) {
+        const hash = sha(command)
+        rmSync(file, { force: true })
+        writeFileSync(file, hash, { mode: 0o600, flag: 'wx' })
+        hook += ` ${a.id} ${hash}`
+      }
       try {
-        res = await ctx.port.chatModel({
-          system: stepPrompt('chat', { cli: CLI }),
-          input: a.text,
-          model: 'claude-opus-5-5',
-          tools: 'Bash,Read,Grep,Glob,Write',
-          maxTurns: 40,
-          settings: { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } },
-          baseEnv: ctx.env,
-          env: { FACTORY_HOME: ctx.home },
-          cwd: ctx.home,
-          timeoutMs: 15 * 60_000,
-          persist: true,
-          ...(session ? { resume: session } : {}),
+        append(path, {
+          who: 'person',
+          text: a.text,
+          front: a.front,
+          at: Date.now(),
+          ...(a.approve === undefined ? {} : { approve: a.approve }),
         })
-      } catch (e) {
-        res = {
-          isOk: false,
-          text: '',
-          error: line(String(e), 300),
-          reason: 'spawn-failed',
-          durationMs: 0,
-          commands: [],
-          calls: [],
+        const guard = { type: 'command', command: hook }
+        let res: ModelResult
+        try {
+          res = await ctx.port.chatModel({
+            system: stepPrompt('chat', { cli: CLI }),
+            input:
+              command === undefined
+                ? a.text
+                : `${a.text}\n\nThe person approved one run of this exact command in this turn:\n${command}`,
+            model: 'claude-opus-5-5',
+            tools: 'Bash,Read,Grep,Glob,Write',
+            maxTurns: 40,
+            settings: { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } },
+            baseEnv: ctx.env,
+            env: { FACTORY_HOME: ctx.home },
+            cwd: ctx.home,
+            timeoutMs: 15 * 60_000,
+            persist: true,
+            ...(session ? { resume: session } : {}),
+          })
+        } catch (e) {
+          res = {
+            isOk: false,
+            text: '',
+            error: line(String(e), 300),
+            reason: 'spawn-failed',
+            durationMs: 0,
+            commands: [],
+            calls: [],
+          }
         }
+        const asks = res.calls.flatMap(c => {
+          const v = check(c.command, 'manager')
+          return v.decision === 'ask' ? [{ id: c.id, question: v.question }] : []
+        })
+        const out: Turn = {
+          who: 'manager',
+          text: res.text,
+          front: a.front,
+          at: Date.now(),
+          commands: res.calls,
+          asks,
+          ...(res.session && SESSION.test(res.session) ? { session: res.session } : {}),
+          ...(res.isOk ? {} : { error: res.error ?? 'the model failed', reason: res.reason }),
+        }
+        append(path, out)
+        appendUsage(ctx.home, 'chat', res.usage)
+        return out
+      } finally {
+        if (command !== undefined)
+          try {
+            rmSync(file, { recursive: true, force: true })
+          } catch {}
       }
-      const asks = res.calls.flatMap(c => {
-        const v = check(c.command, 'manager')
-        return v.decision === 'ask' ? [{ id: c.id, question: v.question }] : []
-      })
-      const out: Turn = {
-        who: 'manager',
-        text: res.text,
-        front: a.front,
-        at: Date.now(),
-        commands: res.calls,
-        asks,
-        ...(res.session && SESSION.test(res.session) ? { session: res.session } : {}),
-        ...(res.isOk ? {} : { error: res.error ?? 'the model failed', reason: res.reason }),
-      }
-      append(path, out)
-      appendUsage(ctx.home, 'chat', res.usage)
-      return out
     }
     // the stored tail never rejects: a failed turn reaches only its own caller
     const run = (queue.get(path) ?? Promise.resolve()).then(turn)
@@ -141,8 +210,10 @@ export function send(
   })
 }
 
-/** the body of `factory chat-guard`, the PreToolUse Bash hook of a chat turn: every result but allow gives code 2 */
-export function guardHook(stdin: string, _home = '', _args: string[] = []): { code: number; err: string } {
+/** the body of `factory chat-guard [<id> <sha256>]`: every result but allow gives code 2; the pair is the approval of one asked command */
+export function guardHook(stdin: string, home = '', args: string[] = []): { code: number; err: string } {
+  const bad = args.length !== 0 && !(args.length === 2 && CONVERSATION.test(args[0]!) && HASH.test(args[1]!))
+  if (bad) return { code: 2, err: 'bad chat-guard arguments\n' }
   let command: unknown
   try {
     command = JSON.parse(stdin)?.tool_input?.command
@@ -151,6 +222,15 @@ export function guardHook(stdin: string, _home = '', _args: string[] = []): { co
   const v = check(command, 'manager')
   if (v.decision === 'allow') return { code: 0, err: '' }
   if (v.decision === 'deny') return { code: 2, err: v.reason + '\n' }
+  if (args.length === 2 && sha(command) === args[1]) {
+    const file = join(resolve(home), 'conversations', `${args[0]}.approve`)
+    try {
+      if (readFileSync(file, 'utf8') === args[1]) {
+        unlinkSync(file)
+        return { code: 0, err: '' }
+      }
+    } catch {}
+  }
   return {
     code: 2,
     err: `${v.question}\nthe person must approve this command; a chat turn cannot run it: tell the person\n`,

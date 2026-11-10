@@ -383,6 +383,7 @@ test('approve: bad ids are refused with no side effect', async () => {
     expect(raw('c')).toBe(before)
     expect(existsSync(approveFile('c'))).toBe(false)
   }
+  rmSync(join(home, 'conversations'), { recursive: true, force: true })
   const m = fakeModel()
   const r = await send(ctxOf(m.chatModel), { id: 'n', text: 'yes', front: 'web', approve: 't2' })
   expect(r.code).toBe(1)
