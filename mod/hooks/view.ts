@@ -1169,11 +1169,42 @@ const BD_READ = new Set([
   'comment',
   'undefer',
 ])
+/** Rule B (claude-factory-tm9of): the command with each quoted char, quote and backslash pair masked as \0, or null
+ * when bash can expand a char (plain text outside a closed character set, $ or backtick in double quotes, an
+ * unclosed quote, a last backslash). */
+function plainText(command: string): string | null {
+  let state: 'plain' | 'single' | 'double' = 'plain'
+  let out = ''
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!
+    if (state === 'single') {
+      if (c === "'") state = 'plain'
+      out += '\0'
+    } else if (c === '\\') {
+      if (++i >= command.length) return null
+      out += '\0\0'
+    } else if (state === 'double') {
+      if (c === '"') state = 'plain'
+      else if (c === '$' || c === '`') return null
+      out += '\0'
+    } else if (c === "'" || c === '"') {
+      state = c === "'" ? 'single' : 'double'
+      out += '\0'
+    } else if (/[A-Za-z0-9 \t\n_./:=,@%+|&;>-]/.test(c)) out += c
+    else return null
+  }
+  return state === 'plain' ? out : null
+}
+
 /**
  * [SECURITY] true when the command runs bd with a verb that is not a read (claude-factory-0wv6).
  * This is an allowlist. A list of label spellings never closes, because bd (cobra) has flag aliases,
  * flags before the verb and verb aliases. The shell drops `\`, `'` and `"`, so this code drops them first.
- * It is best-effort: a verb that a variable or a command output hides gets through. It is linear.
+ * claude-factory-tm9of: when the text holds a bd word, it also denies a character that bash can expand outside
+ * single quotes (a closed character set; a backslash pair is literal), and a bd word that is not the first word
+ * of a command in the outer shell (xargs bd, env bd, sh -c '...bd', a quoted bd).
+ * It is best-effort only against a bd word that the hook cannot see: a variable, a command output, an interpreter
+ * or a script makes the bd name (follow-up claude-factory-z62pl). It is linear.
  * claude-factory-8njd: it also denies a bd command that sets the comment author: BEADS_ACTOR, a long flag
  * that abbreviates --actor or --author (3 or more letters), or, with the word comments, a short flag word
  * with the letter a. Quotes do not protect the text (fail closed).
@@ -1182,6 +1213,15 @@ export function bdWrite(command: string): boolean {
   const s = command.replace(/[\\'"]/g, '')
   if (/--add-label|--set-labels/.test(s)) return true
   const bd = /\bbd\b/i.test(s)
+  if (bd) {
+    const p = plainText(command)
+    if (p === null) return true
+    // Rule C: each bd word must be the plain command word of a part of the outer shell
+    const words = p
+      .split(/[;&|\n]/)
+      .filter(part => /^(?:[\w./-]*\/)?bd$/i.test(/^[ \t]*([^ \t>]*)/.exec(part)![1]!)).length
+    if (words !== (s.match(/\bbd\b/gi) ?? []).length) return true
+  }
   if (bd && s.includes('BEADS_ACTOR')) return true
   if (bd && /(?<![\w-])--(?:act(?:or?)?|aut(?:h(?:or?)?)?)(?![\w-])/.test(s)) return true
   if (bd && /\bcomments\b/.test(s) && /(?<![\w-])-[A-Za-z]*a/.test(s)) return true

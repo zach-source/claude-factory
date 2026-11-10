@@ -1451,7 +1451,7 @@ export const register: Register = (on, options) => {
     // [SECURITY] a subagent runs bd only as a read or a comment: a bd label write queues a bead for dispatch with no check.
     if (e.agentId && bdWrite(joined))
       return {
-        deny: 'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first: queue or start a bead with factory queue or factory start, which check it. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author',
+        deny: 'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first: queue or start a bead with factory queue or factory start, which check it. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author. Write a bd command in literal words with bd as its first word: no $, backtick, glob, brace, # or <. Put other comment text in a file: bd comments add <id> -f <file>',
       }
 
     // the model's shell cd's into rigs to read them: its factory commands still work this factory.
