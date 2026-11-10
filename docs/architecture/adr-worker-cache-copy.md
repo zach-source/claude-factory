@@ -116,6 +116,14 @@ This is a local fixture check, not a production read. No AC is must-see-live.
 
 ## Test plan
 
+### Test access prerequisite
+
+Three implement passes could not start the required guard tests because the worker hook denied them.
+The next plan must identify an authorized test environment before implementation resumes.
+Do not repeat denied commands through another tool or change the hook environment.
+The manager request for this prerequisite is in the run mail.
+Both tasks remain open. No regression test or source exception exists yet.
+
 Commit the AC1 through AC3 regression tests before the fix.
 Show the AC1 allow row fails against the baseline with `HOOK_CONTROL_REASON`.
 Show existing protected-write rows pass before and after the fix.
