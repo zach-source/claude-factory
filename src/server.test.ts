@@ -1,10 +1,19 @@
 import { afterEach, expect, test } from 'bun:test'
 import type { Subprocess } from 'bun'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { backup } from './homebackup'
-import { claim, leaseFile, release, serve, serverBackupCfg } from './server'
+import { claim, leaseFile, parseFlags, release, serve, serverBackupCfg } from './server'
 
 const dirs: string[] = []
 const lease = () => {
@@ -574,4 +583,99 @@ test('a962 AC4: the child refuses a home that is not ready and goes off without 
   const d = await child(s.home, s.extra, ['x'])
   expect(d.code).toBe(1)
   expect(d.err).toContain('usage: factory server backup')
+}, 30_000)
+
+// akiq.15 AC8: the patrol job
+test('akiq.15 AC8: the patrol job runs only for the lease holder, one at a time, and survives a failure', async () => {
+  const mk = (run: () => Promise<unknown>, holder = 'a', home?: string) => {
+    const h = home ?? mkdtempSync(join(tmpdir(), 'server-pt-'))
+    if (!home) dirs.push(h)
+    const logs: string[] = []
+    const s = serve({
+      home: h,
+      port: 0,
+      everyMs: 50,
+      leaseMs: 1000,
+      holder,
+      log: l => logs.push(l),
+      tick: () => {},
+      patrol: { everyMs: 50, run },
+    })
+    return { s, h, logs }
+  }
+  let na = 0
+  const a = mk(async () => void na++)
+  await sleep(400)
+  expect(na).toBeGreaterThanOrEqual(2)
+  await a.s.stop()
+  let nb = 0
+  const b = mk(() => (nb++, new Promise(() => {})))
+  await sleep(400)
+  expect(nb).toBe(1)
+  await b.s.stop()
+  let nc = 0
+  const h1 = mkdtempSync(join(tmpdir(), 'server-pt-'))
+  dirs.push(h1)
+  const c1 = mk(async () => {}, 'a', h1)
+  const c2 = mk(async () => void nc++, 'b', h1)
+  await sleep(400)
+  expect(nc).toBe(0)
+  await c2.s.stop()
+  await c1.s.stop()
+  let nd = 0
+  const d = mk(() => (nd++, Promise.reject(new Error('exit 3'))))
+  await sleep(400)
+  expect(nd).toBeGreaterThanOrEqual(2)
+  expect(d.logs).toContain('patrol failed: exit 3')
+  await d.s.stop()
+}, 30_000)
+
+test('akiq.15 AC8: --patrol-every-ms is off by default and must be at least --every-ms', () => {
+  expect(parseFlags([]).patrolMs).toBe(0)
+  expect(parseFlags(['--patrol-every-ms', '60000']).patrolMs).toBe(60000)
+  expect(() => parseFlags(['--every-ms', '100', '--patrol-every-ms', '50'])).toThrow('usage')
+  expect(() => parseFlags(['--patrol-every-ms', 'x'])).toThrow('usage')
+})
+
+/** a server child with a fake claude, on a home with one kept mail */
+async function patrolServer(extra: string[]) {
+  const home = newHome()
+  const stub = join(home, '..', `claude-${basename(home)}.sh`)
+  writeFileSync(
+    stub,
+    `#!/bin/sh\ncat > /dev/null\nenv > '${home}/child-env.txt'\nprintf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'\n`,
+  )
+  chmodSync(stub, 0o755)
+  writeFileSync(
+    join(home, 'patrol-state.json'),
+    JSON.stringify({
+      unsent: [{ run: 'r1', from: 'build', text: 'which branch?', at: 5 }],
+      seen: [],
+      patrolAt: 0,
+    }),
+  )
+  const p = Bun.spawn([CLI, 'server', ...FAST, ...extra], {
+    env: { ...env(home), FACTORY_CLAUDE: stub },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  kids.push(p)
+  return { home, p, stub }
+}
+
+test('akiq.15 AC8: the server runs the patrol with its own HOME; with the flag off it runs none', async () => {
+  const on = await patrolServer(['--patrol-every-ms', '200'])
+  const steps = join(on.home, 'agent-steps.jsonl')
+  for (let i = 0; i < 100 && !existsSync(steps); i++) await sleep(100)
+  expect(JSON.parse(readFileSync(steps, 'utf8').split('\n')[0]!)).toMatchObject({
+    step: 'patrol',
+    outcome: 'ok',
+  })
+  expect(readFileSync(join(on.home, 'child-env.txt'), 'utf8')).toContain(`HOME=${on.home}/steps/patrol\n`)
+  on.p.kill('SIGKILL')
+  rmSync(on.stub)
+  const off = await patrolServer([])
+  await sleep(1500)
+  expect(existsSync(join(off.home, 'agent-steps.jsonl'))).toBe(false)
+  rmSync(off.stub)
 }, 30_000)

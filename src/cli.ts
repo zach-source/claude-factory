@@ -173,6 +173,7 @@ import {
   pmOnce,
   reviewOnce,
   runModelAsync,
+  type TickOut,
   type Io,
 } from './once'
 import { guardHook } from './core/chat'
@@ -13655,7 +13656,22 @@ if (import.meta.main && !outboxCmd)
             if (c !== 0) throw new Error(`exit ${c}`)
           })
         }
-        server.main(args, HOME, () => tick(), corePort, backup)
+        // the patrol child takes manager.lease as ppid:<server pid>; the marker moves its HOME away from the person certificate
+        const patrol = {
+          run: () => {
+            const { FACTORY_LEASE_HOLDER, FACTORY_LEASE_KIND, ...env } = kickEnv(process.env, HOME)
+            const p = Bun.spawn([CLI, 'patrol', '--once'], {
+              stdout: 'ignore',
+              stderr: 'inherit',
+              env: { ...env, FACTORY_STEP_ISOLATE: '1' },
+            })
+            return p.exited.then(c => {
+              if (c !== 0) throw new Error(`exit ${c}`)
+            })
+          },
+          keep: (out: unknown) => keepTick(HOME, out as TickOut),
+        }
+        server.main(args, HOME, () => tick(), corePort, backup, patrol)
         break
       case 'cert': {
         refuseWorker('cert', true)

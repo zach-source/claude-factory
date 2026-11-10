@@ -82,6 +82,8 @@ export type ServeOpts = {
   onBoard?: (board: unknown) => void
   /** the home backup: `run` starts every `everyMs` while this server holds the lease and no earlier `run` is pending */
   backup?: { everyMs: number; run: () => Promise<unknown> }
+  /** the manager patrol (claude-factory-akiq.15): the same rules as `backup`, with its own pending flag */
+  patrol?: { everyMs: number; run: () => Promise<unknown> }
   holder?: string
   log?: (line: string) => void
   /** the client API on its own mTLS listener; `ca` is the person CA text; `handle` gets the request and the peer address */
@@ -153,25 +155,30 @@ export function serve(o: ServeOpts) {
     h.ticks++
     h.tickAt = new Date().toISOString()
   }
-  let pending = false
-  const backupTimer = o.backup
-    ? setInterval(() => {
-        if (!held || pending || stopping) return
-        pending = true
-        void Promise.resolve()
-          .then(o.backup!.run)
-          .catch(e =>
-            log(
-              `backup failed: ${String((e as Error)?.message ?? e)
-                .split('\n')[0]!
-                .slice(0, 300)}`,
-            ),
-          )
-          .finally(() => {
-            pending = false
-          })
-      }, o.backup.everyMs)
-    : undefined
+  // one timer for each job; a job never overlaps itself, and runs only while this server holds the lease
+  const job = (name: string, j?: { everyMs: number; run: () => Promise<unknown> }) => {
+    let pending = false
+    return j
+      ? setInterval(() => {
+          if (!held || pending || stopping) return
+          pending = true
+          void Promise.resolve()
+            .then(j.run)
+            .catch(e =>
+              log(
+                `${name} failed: ${String((e as Error)?.message ?? e)
+                  .split('\n')[0]!
+                  .slice(0, 300)}`,
+              ),
+            )
+            .finally(() => {
+              pending = false
+            })
+        }, j.everyMs)
+      : undefined
+  }
+  const backupTimer = job('backup', o.backup)
+  const patrolTimer = job('patrol', o.patrol)
   let timer: ReturnType<typeof setTimeout>
   const next = () => {
     if (stopping) return
@@ -210,6 +217,7 @@ export function serve(o: ServeOpts) {
       stopping = true
       clearTimeout(timer)
       clearInterval(backupTimer)
+      clearInterval(patrolTimer)
       await running
       clearInterval(renew)
       if (held) {
@@ -224,18 +232,25 @@ export function serve(o: ServeOpts) {
 }
 
 const USAGE =
-  'usage: factory server [--port 8080] [--every-ms 5000] [--lease-ms 60000] [--client-port 8444 --tls-cert <path> --tls-key <path> --person-ca <path>]'
+  'usage: factory server [--port 8080] [--every-ms 5000] [--lease-ms 60000] [--patrol-every-ms 0] [--client-port 8444 --tls-cert <path> --tls-key <path> --person-ca <path>]'
 const NUMS = {
   '--port': 'port',
   '--every-ms': 'everyMs',
   '--lease-ms': 'leaseMs',
+  '--patrol-every-ms': 'patrolMs',
   '--client-port': 'clientPort',
 } as const
 const PATHS = { '--tls-cert': 'cert', '--tls-key': 'key', '--person-ca': 'ca' } as const
 
 /** Parse the flags of `factory server`. The four client flags come all together or not at all. Throw the usage text on a bad value. */
 export function parseFlags(args: string[]) {
-  const v = { port: 8080, everyMs: 5000, leaseMs: 60000, clientPort: undefined as number | undefined }
+  const v = {
+    port: 8080,
+    everyMs: 5000,
+    leaseMs: 60000,
+    patrolMs: 0,
+    clientPort: undefined as number | undefined,
+  }
   const files: Partial<Record<(typeof PATHS)[keyof typeof PATHS], string>> = {}
   const seen = new Set<string>()
   for (let i = 0; i < args.length; i += 2) {
@@ -252,6 +267,7 @@ export function parseFlags(args: string[]) {
     } else throw new Error(USAGE)
   }
   if (v.everyMs <= 0 || v.leaseMs < 2 * v.everyMs || v.port > 65535) throw new Error(USAGE)
+  if (v.patrolMs > 0 && v.patrolMs < v.everyMs) throw new Error(USAGE)
   const { clientPort, ...base } = v
   const given = [clientPort !== undefined, !!files.cert, !!files.key, !!files.ca].filter(Boolean).length
   if (given !== 0 && given !== 4) throw new Error(USAGE)
@@ -311,6 +327,7 @@ export function main(
   tick: () => unknown,
   port: Port,
   backup?: () => Promise<unknown>,
+  patrol?: { run: () => Promise<unknown>; keep: (out: unknown) => void },
 ) {
   const f = parseFlags(args)
   let s: ReturnType<typeof serve> | undefined
@@ -324,19 +341,29 @@ export function main(
     handle,
   }
   const b = serverBackupCfg(process.env, home)
+  // with the patrol on, each tick keeps its manager mail for the patrol; with it off, the tick is not wrapped
+  const patrolOn = f.patrolMs > 0 && patrol
   s = serve({
     home,
     port: f.port,
     everyMs: f.everyMs,
     leaseMs: f.leaseMs,
-    tick,
+    tick: patrolOn
+      ? async () => {
+          const out = await tick()
+          patrolOn.keep(out)
+          return out
+        }
+      : tick,
     onBoard: handle.publish,
     client,
     backup: b && 'cfg' in b && backup ? { everyMs: b.everyMs, run: backup } : undefined,
+    patrol: patrolOn ? { everyMs: f.patrolMs, run: patrolOn.run } : undefined,
   })
   console.log(
     `factory server on :${s.port}${s.clientPort ? ` and client API on :${s.clientPort}` : ''} as ${s.holder}`,
   )
+  if (patrolOn) console.log(`patrol every ${f.patrolMs} ms`)
   if (b) console.log('off' in b ? b.off : `backup on: branch ${b.cfg.branch} every ${b.everyMs} ms`)
   const stop = () => void s!.stop().then(() => process.exit(0))
   process.once('SIGTERM', stop)
