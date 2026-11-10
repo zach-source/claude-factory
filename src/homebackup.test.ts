@@ -113,7 +113,10 @@ test('d289.21: backup.want is fresh for 10 min; the backup removes it at the loc
   const seen: string[] = []
   const lock = () => {
     seen.push(`take want=${existsSync(backupWant(home))}`)
-    return () => seen.push(`free scanned=${existsSync(mark)}`)
+    return () => {
+      put(join(home, 'decisions.json'), '[3]')
+      seen.push(`free scanned=${existsSync(mark)}`)
+    }
   }
   const out = backup({ ...cfg(ws, r), gitleaks: bin }, true, lock)
   expect(out.error).toBeUndefined()
@@ -149,7 +152,11 @@ test('d289.20: after the remote rejects a commit, the next backup pushes a fixed
     }
     const good = initial?.sha ?? null
     put(join(a, 'home', 'huge.txt'), 'too big')
-    expect(backup(cfg(a, rr), true).error).toContain('git push')
+    const refused = backup(cfg(a, rr), true)
+    expect(refused.error).toContain('git push')
+    const failedRecord = JSON.parse(readFileSync(join(a, 'home/backup.json'), 'utf8'))
+    expect(failedRecord.sha).toBe(good ?? undefined)
+    expect(failedRecord.error).toBe(refused.error)
     const rejected = sh('--git-dir', join(a, 'backup.git'), 'rev-parse', 'HEAD')
     rmSync(join(a, 'home', 'huge.txt'))
     put(join(a, 'home', 'decisions.json'), '[1]')
@@ -369,7 +376,15 @@ test('d289.19: with no gitleaks the backup refuses, and nothing stays staged', (
     'backup refused: gitleaks is missing',
   )
   expect(sh('--git-dir', join(ws, 'backup.git'), 'ls-files')).toBe('')
-  expect(backup(cfg(ws, r), true).error).toBeUndefined()
+  const good = backup(cfg(ws, r), true)
+  expect(good.error).toBeUndefined()
+  put(join(ws, 'home/decisions.json'), '[1]')
+  const refused = backup({ ...cfg(ws, r), gitleaks: '/no/gitleaks' }, true)
+  expect(refused.error).toBe('backup refused: gitleaks is missing')
+  expect(JSON.parse(readFileSync(join(ws, 'home/backup.json'), 'utf8'))).toMatchObject({
+    sha: good.sha,
+    error: refused.error,
+  })
 })
 
 test('secretFile finds the usual token shapes and no plain text', () => {
