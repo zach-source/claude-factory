@@ -8,6 +8,93 @@ const DECIDE = '/repo/bin/factory decide lifecycle-abc ship "looks good"'
 const ANSWER = '/repo/bin/factory decisions answer api api-7 "use postgres"'
 const START_OWNED = '/repo/bin/factory start lifecycle api api-9 --owned'
 
+const MONITOR_DENY = 'Monitor is disabled in the factory mod. Use Bash for shell commands.'
+const monitorInputs = [
+  { command: '/repo/bin/factory decide r1 ship' },
+  { command: 'FACTORY_AX_IMAGE=x factory start acme w-1' },
+  { command: '/repo/bin/factory status' },
+  { command: 'true' },
+  { command: 'true && factory decide r1 ship' },
+  { command: "factory 'decide' r1 ship" },
+  { command: 'factory dec\\\nide r1 ship' },
+  { ws: { url: 'wss://example.invalid/events' } },
+  { command: '' },
+  {},
+  { command: null },
+  { command: 42 },
+  { command: 'true', ws: { url: 'wss://example.invalid/events' } },
+  { command: 'true', futureMode: true },
+]
+
+for (const [i, input] of monitorInputs.entries()) {
+  test(`nsrax AC1: Monitor input ${i} has no downstream effects`, SLOW, async ($, on) => {
+    let executor = 0
+    let commands = 0
+    let sockets = 0
+    let asks = 0
+    let writes = 0
+    let processes = 0
+    on('tool.call', { tool: 'Monitor' }, (_$, e) => {
+      executor++
+      if (e.command) commands++
+      if (e.ws) sockets++
+      return { result: { task_id: 'mock-monitor' } } as never
+    })
+    on('tool.call', { tool: 'AskUserQuestion' }, () => {
+      asks++
+      return { deny: 'unexpected dialog' }
+    })
+    on('fs.write', () => {
+      writes++
+      return { value: undefined }
+    })
+    on('process.run', () => {
+      processes++
+      return { value: { exitCode: 0, stdout: '', stderr: '' } }
+    })
+    const result = await $.tool.call({
+      tool: 'Monitor',
+      description: 'x',
+      timeout_ms: 1000,
+      ...input,
+    } as never)
+    expect(executor).toBe(0)
+    expect(commands).toBe(0)
+    expect(sockets).toBe(0)
+    expect(asks).toBe(0)
+    expect(writes).toBe(0)
+    expect(processes).toBe(0)
+    expect(result.deny).toBe(MONITOR_DENY)
+  })
+}
+
+test('nsrax AC2: Monitor refuses every caller', SLOW, async ($, on) => {
+  const agents = [
+    { id: 'patrol-1', type: 'factory:patrol' },
+    { id: 'pm-1', type: 'factory:pm' },
+    { id: 'briefer-1', type: 'factory:briefer' },
+    { id: 'reviewer-1', type: 'factory:reviewer' },
+    { id: 'patrol-old', type: 'factory:patrol' },
+  ]
+  on('agent.list', () => ({ value: agents }) as never)
+  let ran = 0
+  on('tool.call', { tool: 'Monitor' }, () => {
+    ran++
+    return { result: { task_id: 'mock-monitor' } } as never
+  })
+  for (const agentId of [undefined, 'arbitrary', ...agents.map(a => a.id), 'unknown']) {
+    const result = await $.tool.call({
+      tool: 'Monitor',
+      command: '/repo/bin/factory decide r1 ship',
+      description: 'x',
+      timeout_ms: 1000,
+      agentId,
+    } as never)
+    expect(ran).toBe(0)
+    expect(result.deny).toBe(MONITOR_DENY)
+  }
+})
+
 test('the model decides a gate only after the person confirms it', SLOW, async ($, on) => {
   mock.clock(on) // a touched 'decide' command reads $.clock.now(), to hold that run from a patrol
   let answer = 'Deny'
