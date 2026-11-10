@@ -10,6 +10,7 @@ import {
   factoryOf,
   goalOf,
   isHandedOff,
+  isHoldLabel,
   isOwned,
   LINEAR_FILE_RULE,
   linearSourced,
@@ -59,6 +60,43 @@ test('a factory child of a parent that is not a factory bead starts on its own (
   expect(ids([bead('fx-9.2', { parent: 'fx-9' })], [], parents(epic))).toEqual([])
   // an assigned child stays out
   expect(ids([{ ...kid, assignee: 'zach' }], [], parents(epic, kid))).toEqual([])
+})
+
+test('literal hold labels protect owner authority (AC1)', () => {
+  for (const label of ['owner', 'human', 'rejected', 'held:', 'held:station', 'held:cluster:acme'])
+    expect(isHoldLabel(label)).toBe(true)
+  for (const label of ['ownerish', 'Owner', 'humane', 'held', 'rejected-by'])
+    expect(isHoldLabel(label)).toBe(false)
+})
+
+test('a direct parent hold denies each factory label placement (AC3)', () => {
+  for (const hold of [
+    'owner',
+    'human',
+    'rejected',
+    'held:',
+    'held:station',
+    'held:cluster:acme',
+    'decisions',
+  ]) {
+    for (const [childFactory, parentFactory] of [
+      [true, false],
+      [false, true],
+      [true, true],
+    ]) {
+      const parent = bead('fx-9', {
+        labels: [...(parentFactory ? ['factory'] : []), ...(hold === 'decisions' ? [] : [hold])],
+        ...(hold === 'decisions' && { metadata: { owner_decisions: ['wait'] } }),
+      })
+      const child = bead('fx-9.1', { parent: parent.id, labels: childFactory ? ['factory'] : [] })
+      expect(dispatchable([child], new Set(), 1, new Map([[parent.id, parent]]))).toEqual([])
+    }
+  }
+  for (const label of ['', 'ownerish', 'Owner', 'humane', 'held', 'rejected-by']) {
+    const parent = bead('fx-9', { labels: [label], metadata: { owner_decisions: false } })
+    const child = bead('fx-9.1', { parent: parent.id, labels: ['factory'] })
+    expect(dispatchable([child], new Set(), 1, new Map([[parent.id, parent]]))).toEqual([child])
+  }
 })
 
 test("the backlog counts each parent's closed children and marks open blockers, from the three listings", () => {

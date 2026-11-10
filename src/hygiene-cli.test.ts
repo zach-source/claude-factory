@@ -1,7 +1,7 @@
 // claude-factory-8bg: the hygiene sweep end to end, with a fake bd and a fake gh on PATH.
 // Fixtures use acme/widget names only.
 import { afterEach, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -262,21 +262,50 @@ test('factory queue under FACTORY_PATROL refuses discovered_from without the fac
   expect(factory(['queue', 'a', 'acme-1'], patrol).code).toBe(0)
 })
 
-test('factory queue under FACTORY_PATROL refuses a hold label; a person releases it (9kou.4)', () => {
-  for (const hold of ['human', 'rejected', 'held:station']) {
+test('patrol queue and named start refuse target holds; a person releases them (AC1, AC2)', () => {
+  for (const hold of ['owner', 'human', 'rejected', 'held:', 'held:station', 'held:cluster:acme']) {
+    for (const queued of [false, true]) {
+      setup([])
+      const labels = queued ? ['factory', hold] : [hold]
+      writeFileSync(
+        join(bin, 'bd'),
+        readFileSync(join(bin, 'bd'), 'utf8').replace(
+          /  show\) .*\n/,
+          `  show) case "$2" in acme-1) printf '%s' '${JSON.stringify([{ id: 'acme-1', labels }])}';; *) exit 1;; esac;;\n`,
+        ),
+      )
+      for (const args of [
+        ['queue', 'a', 'acme-1'],
+        ['start', 'lifecycle', 'a', 'acme-1'],
+      ]) {
+        const r = factory(args, { FACTORY_PATROL: '1' })
+        expect(r.code).not.toBe(0)
+        expect(r.err + r.out).toContain('a patrol cannot start it: a person queues it')
+        expect(r.err + r.out).toContain(`hold ${hold}`)
+        expect(callLines().some(l => /^(update|create|claim|comment)\b/.test(l))).toBe(false)
+        expect(existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')) : []).toEqual([])
+      }
+      expect(factory(['queue', 'a', 'acme-1']).code).toBe(0)
+      const update = callLines().find(l => l.startsWith('update acme-1'))!
+      expect(update).toContain(`--remove-label ${hold}`)
+      expect(update).toContain('--add-label factory')
+      expect(update).toContain('--unset-metadata owner_question')
+      expect(update).toContain('--unset-metadata owner_since')
+      expect(update).not.toContain('--unset-metadata owner_decisions')
+    }
+  }
+})
+
+test('patrol queue permits literal hold lookalikes (AC1)', () => {
+  for (const label of ['', 'ownerish', 'Owner', 'humane', 'held', 'rejected-by']) {
     setup([])
     writeFileSync(
       join(bin, 'bd'),
       readFileSync(join(bin, 'bd'), 'utf8').replace(
         /  show\) .*\n/,
-        `  show) case "$2" in acme-1) printf '%s' '[{"id":"acme-1","labels":["${hold}"]}]';; *) exit 1;; esac;;\n`,
+        `  show) printf '%s' '${JSON.stringify([{ id: 'acme-1', labels: label ? [label] : [] }])}';;\n`,
       ),
     )
-    const r = factory(['queue', 'a', 'acme-1'], { FACTORY_PATROL: '1' })
-    expect(r.code).not.toBe(0)
-    expect(r.err + r.out).toContain('a patrol cannot start it: a person queues it')
-    expect(callLines().some(l => l.startsWith('update acme-1'))).toBe(false)
-    expect(factory(['queue', 'a', 'acme-1']).code).toBe(0)
-    expect(callLines().find(l => l.startsWith('update acme-1'))).toContain(`--remove-label ${hold}`)
+    expect(factory(['queue', 'a', 'acme-1'], { FACTORY_PATROL: '1' }).code).toBe(0)
   }
 })
