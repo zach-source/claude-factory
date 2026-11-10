@@ -876,6 +876,7 @@ test('geo6 AC4 durable follow-up', () => {
     'Failed read blocks healthy.',
     'Failed create blocks healthy.',
     'Failed comment blocks healthy.',
+    'If a bead operation fails or the source bead is absent, report blocked; never infer success.',
     'Absent source bead blocks healthy with a question for the manager.',
     'Before healthy, record the confirmed follow-up ID in the source bead comment.',
     'Before healthy, record the confirmed follow-up ID in the soak summary.',
