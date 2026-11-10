@@ -365,7 +365,7 @@ const repairMr = (src: string, iid = 7) => ({
   source_branch: `factory/${src}`,
 })
 
-function repairFixture(src: string, pages: { out: string; code?: number }[]) {
+function repairFixture(src: string, pages: { out: string; code?: number }[], otherRig = false) {
   const repo = join(dir, 'repo')
   expect(
     Bun.spawnSync([
@@ -378,6 +378,18 @@ function repairFixture(src: string, pages: { out: string; code?: number }[]) {
       'https://gitlab.com/acme/sub/widget.git',
     ]).exitCode,
   ).toBe(0)
+  if (otherRig) {
+    const other = join(dir, 'other')
+    mkdirSync(join(other, '.beads'), { recursive: true })
+    expect(Bun.spawnSync(['git', '-C', other, 'init', '-q']).exitCode).toBe(0)
+    expect(
+      Bun.spawnSync(['git', '-C', other, 'remote', 'add', 'origin', 'https://gitlab.com/acme/other.git'])
+        .exitCode,
+    ).toBe(0)
+    const configured = read('rigs.json')
+    configured.push({ ...configured[0], name: 'b', repo: other })
+    writeFileSync(join(home(), 'rigs.json'), JSON.stringify(configured))
+  }
   const all = [
     { id: 'acme-1', title: 'parent', status: 'open' },
     { id: 'acme-1.1', title: 'child', status: 'closed', parent: 'acme-1' },
@@ -394,6 +406,7 @@ function repairFixture(src: string, pages: { out: string; code?: number }[]) {
   script('glab', [
     `echo "$*" >> "${join(dir, 'glab.calls')}"`,
     'case "$*" in',
+    `  "api --hostname gitlab.com projects/acme%2Fother/merge_requests?state=opened&per_page=100&page=1") printf '%s' '[]';;`,
     ...pages.map(
       (page, i) =>
         `  "api --hostname gitlab.com projects/acme%2Fsub%2Fwidget/merge_requests?state=opened&per_page=100&page=${i + 1}") ${page.code ? `exit ${page.code}` : `printf '%s' '${page.out}'`};;`,
@@ -463,6 +476,17 @@ test('6r645 AC2: a valid empty GitLab list permits the normal parent repair', ()
   repairFixture(src, [{ out: '[]' }])
   pass()
   expect(readFileSync(join(dir, 'bd.calls'), 'utf8')).toContain('close acme-1')
+})
+
+test('6r645 AC2: an unreadable rig does not stop a valid rig repair', () => {
+  const src = setup('https://gitlab.com/acme/widget.git')
+  repairFixture(src, [{ out: '{' }], true)
+  pass()
+  const calls = readFileSync(join(dir, 'bd.calls'), 'utf8')
+  expect(calls.match(/close acme-1 /g)).toHaveLength(1)
+  const log = readFileSync(join(home(), 'repairs.jsonl'), 'utf8')
+  expect(log).toContain('"rig":"b"')
+  expect(log).not.toContain('"rig":"a"')
 })
 
 for (const status of ['closed', 'deferred']) {

@@ -296,6 +296,7 @@ import {
   githubChecks,
   gitlabChecks,
   githubPulls,
+  gitlabOpenFacts,
   githubRows,
   githubSlugOf,
   githubWatchView,
@@ -10930,8 +10931,14 @@ export function unshipClosed(url: string, queue: Bead[], b: Pick<ReturnType<type
   return owner
 }
 
-/** the rig's pull requests of any state, newest 200; none on a forge without `gh` */
+/** Read the newest 200 GitHub PRs of all states, or all open GitLab MRs. */
 async function rigPrs(repo: string): Promise<PrFact[]> {
+  const origin = originRef(repo)
+  if (origin?.forge === 'gitlab') {
+    const facts = await gitlabOpenFacts(spawnGlab, origin.host, `${origin.owner}/${origin.repo}`, repo)
+    if (!facts) throw new Error('glab api merge_requests failed')
+    return facts
+  }
   const ref = rigRef(repo)
   if (!ref) return []
   const rows = await githubPulls(spawnGh, ref.slug, repo, { state: 'all', pages: 2 })
@@ -11023,7 +11030,7 @@ async function repairPass() {
           const res = path ? await spawnGh(['api', path], { cwd: rig.repo, timeout: 30_000 }) : null
           p.mergeable = res?.code === 0 ? parseGithubView(res.out)?.mergeable : undefined
         }
-      // ponytail: rigPrs reads the newest 200 PRs, so an older open PR holds nothing. Upgrade: a separate open-only list.
+      // ponytail: GitHub reads the newest 200 PRs. Upgrade: a separate open-only GitHub list.
       const held = heldBeads(prs, runBeadsOf(rig.repo))
       const todo = repairs(rig.name, every, prs, live, Date.now(), held).slice(0, REPAIR_CAP)
       const closed = new Set<string>()

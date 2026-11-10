@@ -93,6 +93,31 @@ test('6r645 AC2: a timeout or failed later page never returns partial GitLab fac
   }
 })
 
+test('6r645 AC2: an exact full page needs an empty next page', async () => {
+  let calls = 0
+  const result = await gitlabOpenFacts(
+    async () => ({
+      code: 0,
+      err: '',
+      out: JSON.stringify(
+        ++calls === 1
+          ? Array.from({ length: 100 }, () => ({
+              iid: 7,
+              state: 'opened',
+              web_url: 'https://gitlab.com/acme/widget/-/merge_requests/7',
+              source_branch: 'factory/run-1',
+            }))
+          : [],
+      ),
+    }),
+    'gitlab.com',
+    'acme/widget',
+    '/repo',
+  )
+  expect(result).toHaveLength(100)
+  expect(calls).toBe(2)
+})
+
 describe('repairs', () => {
   test('closes a bead whose ship_pr is merged', () => {
     const b = bead('a-1', { labels: ['ship'], metadata: { ship_pr: pr(5, 'MERGED').url } })

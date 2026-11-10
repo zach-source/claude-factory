@@ -962,6 +962,47 @@ export function githubRows(pulls: unknown): Json[] {
   })
 }
 
+/** Read all open GitLab MRs. Return null if any page lacks valid facts for this project. */
+export async function gitlabOpenFacts(glab: Gh, host: string, project: string, cwd: string) {
+  const facts: { number: number; url: string; state: string; headRefName: string }[] = []
+  for (let page = 1; ; page++) {
+    const res = await glab(
+      [
+        'api',
+        '--hostname',
+        host,
+        `projects/${encodeURIComponent(project)}/merge_requests?state=opened&per_page=100&page=${page}`,
+      ],
+      { cwd, timeout: 60_000 },
+    )
+    const rows = res.code === 0 ? asJson(res.out) : null
+    if (!Array.isArray(rows)) return null
+    for (const row of rows) {
+      if (!row || typeof row !== 'object' || Array.isArray(row)) return null
+      const mr = row as Record<string, unknown>
+      if (
+        !Number.isSafeInteger(mr.iid) ||
+        (mr.iid as number) <= 0 ||
+        mr.state !== 'opened' ||
+        typeof mr.web_url !== 'string' ||
+        typeof mr.source_branch !== 'string' ||
+        !mr.source_branch.trim()
+      )
+        return null
+      const ref = prRef(mr.web_url)
+      if (
+        ref?.forge !== 'gitlab' ||
+        ref.repo !== project ||
+        ref.number !== mr.iid ||
+        new URL(mr.web_url).host !== host
+      )
+        return null
+      facts.push({ number: ref.number, url: mr.web_url, state: 'OPEN', headRefName: mr.source_branch })
+    }
+    if (rows.length < 100) return facts
+  }
+}
+
 /** `GET repos/<slug>/pulls` pages, newest first, until a short page; null when a call fails */
 export async function githubPulls(
   gh: Gh,
