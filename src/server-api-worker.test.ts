@@ -435,6 +435,20 @@ describe('worker API', () => {
     expect(Object.values(s.rows()).map(r => r.kind)).toEqual(['mail', 'progress'])
   })
 
+  for (const kind of ['report', 'mail'] as const)
+    test(`${kind}: the text limit counts UTF-8 bytes`, async () => {
+      const s = setup()
+      for (const count of [51200, 51201]) {
+        const text = 'é'.repeat(count)
+        const b = kind === 'report' ? { outcome: 'ready', summary: text } : { to: 'manager', text }
+        expect(Buffer.byteLength(JSON.stringify(b))).toBeLessThan(128 * 1024)
+        const r = await s.post(`/v1/${kind}`, b)
+        expect(r.status).toBe(count === 51200 ? 200 : 400)
+      }
+      expect(s.calls).toHaveLength(1)
+      expect(Object.values(s.rows()).map(r => r.status)).toEqual(['applied', 'refused'])
+    })
+
   test('store: lease, corrupt file, 7 day window', async () => {
     const a = setup({ held: () => false })
     expect((await a.post('/v1/report', REP)).status).toBe(503)
@@ -464,10 +478,14 @@ describe('worker API', () => {
     await d.post('/v1/report', REP, { key: 'old-key-001', token: tok })
     expect(d.calls.length).toBe(1)
     d.tick(2 * DAY) // 8 days after the first call
+    await d.post('/v1/report', REP, { key: 'old-key-001', token: tok })
+    expect(d.calls.length).toBe(2)
+    expect(d.rows()['old-key-001'].at).toBe(T0 + 8 * DAY)
+    d.tick(8 * DAY)
     await d.post('/v1/report', REP, { key: 'new-key-001', token: tok })
     expect(d.rows()['old-key-001']).toBeUndefined()
     expect(d.rows()['new-key-001']).toBeDefined()
     await d.post('/v1/report', REP, { key: 'old-key-001', token: tok })
-    expect(d.calls.length).toBe(3)
+    expect(d.calls.length).toBe(4)
   })
 })
