@@ -48,6 +48,9 @@ test('mainChatRefusal rows (AC4)', () => {
     expect(existsSync(join(home, 'allow', 'x.json'))).toBe(true)
   }
   put(home, `${U}.json`, ok())
+  expect(r({ ...M, FACTORY_ALLOW: `../allow/${U}` })).toContain(DENIED)
+  expect(existsSync(join(home, 'allow', `${U}.json`))).toBe(true)
+  expect(r({ ...M, FACTORY_ALLOW: `${U}/` })).toContain(DENIED)
   expect(r({ ...M, FACTORY_ALLOW: U })).toBeUndefined()
   expect(existsSync(join(home, 'allow', `${U}.json`))).toBe(false)
   expect(readdirSync(join(home, 'allow')).filter(n => n.endsWith('.used'))).toEqual([])
