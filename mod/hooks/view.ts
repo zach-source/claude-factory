@@ -1345,13 +1345,9 @@ export function gatedCommand(
   const names = [...(who ? [who] : []), ...named]
   return {
     // only a person-decision kind is worth a dialog; a substitution or unreadable form alone is denied at once
-<<<<<<< HEAD
-    ask: kinds.length > 0,
-    kinds: kinds.map(k => k.id),
-=======
     // a kind found on a base read asks. One found only on the canonical read asks only if nothing else is wrong.
     ask: kinds.some(k => k.base) || (kinds.length > 0 && !substitution && !verbHidden && !unreadable),
->>>>>>> origin/main
+    kinds: kinds.map(k => k.id),
     question: `The manager model wants to ${names.join(' and ')}: ${shownCommand(unreadable ? rawCommand : command)}.${substitution ? ` ${substitution.detail}` : ''}${hidden.length ? ` The text not shown holds: ${hidden.map(k => `${k.phrase}${times(k.hidden)}`).join(' and ')}.` : ''} Allow it?`,
     deny: [
       ...(unreadable
