@@ -726,9 +726,13 @@ for (const [name, make] of unsafeCases) {
     writeFileSync(join(keep, 'mine.txt'), 'keep me')
     repoint(d, patch)
     const t = tip(id)
-    expect(factory(['gc']).code).toBe(0)
+    const out = traced(['gc'])
+    expect(out.code).toBe(0)
     expect(existsSync(d)).toBe(true)
     expect(readFileSync(join(keep, 'mine.txt'), 'utf8')).toBe('keep me')
+    expect(rmsUnder(out.calls, keep)).toEqual([])
+    expect(rmsUnder(out.calls, d)).toEqual([])
+    expect(appends(out.calls)).toEqual([])
     expect(tip(id)).toBe(t)
     expect(metricIds()).not.toContain(id)
     expect(readFileSync(join(home, 'gc.log'), 'utf8')).toContain(`refused ${id}`)
@@ -742,10 +746,13 @@ test('lt4u.7 AC4: an unreadable repo registration keeps a worktree dir with user
   const wt = join(home, 'worktrees', id)
   writeFileSync(join(wt, 'mine.txt'), 'keep me')
   repoint(d, { repo: join(dir, 'no-such-repo') })
-  factory(['gc'])
+  const out = traced(['gc'])
   expect(existsSync(d)).toBe(true)
   expect(readFileSync(join(wt, 'mine.txt'), 'utf8')).toBe('keep me')
   expect(metricIds()).not.toContain(id)
+  expect(rmsUnder(out.calls, wt)).toEqual([])
+  expect(rmsUnder(out.calls, d)).toEqual([])
+  expect(appends(out.calls)).toEqual([])
 })
 
 test('lt4u.7 AC5: gc.log holds the reason and scrubs URL credentials', () => {
@@ -806,7 +813,11 @@ const subKept = (name: string, change: (wt: string, repo: string, id: string) =>
   test(`lt4u.7 AC4: plain gc keeps a worktree whose submodule ${name}`, () => {
     const { id, d, wt } = subRun(change)
     const t = tip(id)
-    expect(factory(['gc']).code).toBe(0)
+    const out = traced(['gc'])
+    expect(out.code).toBe(0)
+    expect(rmsUnder(out.calls, wt)).toEqual([])
+    expect(rmsUnder(out.calls, d)).toEqual([])
+    expect(appends(out.calls)).toEqual([])
     expect(existsSync(d)).toBe(true)
     expect(existsSync(wt)).toBe(true)
     if (kept) expect(readFileSync(join(wt, kept), 'utf8')).toBe('u')
@@ -849,7 +860,12 @@ test('lt4u.7 AC4: an unregistered dir with a live git dir is kept; one with a de
   mkdirSync(wd, { recursive: true })
   writeFileSync(join(wd, '.git'), `gitdir: ${join(repo, '.git', 'worktrees', dead)}\n`)
   writeFileSync(join(wd, 'junk.txt'), 'x')
-  expect(factory(['gc']).code).toBe(0)
+  const out = traced(['gc'])
+  expect(out.code).toBe(0)
+  // control: the dead-link dir is removed recursively; the live-gitdir dir and its run are not
+  expect(rmsUnder(out.calls, wd).length).toBeGreaterThan(0)
+  expect(rmsUnder(out.calls, wl)).toEqual([])
+  expect(rmsUnder(out.calls, dl)).toEqual([])
   expect(existsSync(dl)).toBe(true)
   expect(readFileSync(join(wl, 'mine.txt'), 'utf8')).toBe('keep me')
   expect(existsSync(dd)).toBe(false)
@@ -949,4 +965,157 @@ test('lt4u.7 AC5: one failing metrics record keeps its run; the next run is reap
   const log = readFileSync(join(home, 'gc.log'), 'utf8')
   expect(log).toContain(`refused ${a}`)
   expect(log).toContain(`reaped ${b}`)
+})
+
+// ---- claude-factory-lt4u.8: a call trace in the child process. A zero-call assertion needs a positive control.
+type Call = {
+  op: 'rm' | 'append' | 'spawn'
+  path?: string
+  recursive?: boolean
+  data?: string
+  argv?: string[]
+}
+// The preload wraps node:fs rmSync/appendFileSync (metrics.jsonl only) and Bun.spawnSync, then calls the real ones.
+// GC_FAIL_ARGV (a JSON array) makes a spawn whose argv holds every element exit 128. GC_FAIL_FIRST_APPEND fails the first metrics append.
+const PRELOAD = `import { mock } from 'bun:test'
+import * as real from 'node:fs'
+const fs: any = { ...real }
+const T = process.env.GC_TRACE!
+const log = (o: object) => fs.appendFileSync(T, JSON.stringify(o) + '\\n')
+let failed = false
+mock.module('node:fs', () => ({
+  ...fs,
+  default: { ...fs },
+  rmSync: (p: any, o: any) => {
+    log({ op: 'rm', path: String(p), recursive: !!o?.recursive })
+    return fs.rmSync(p, o)
+  },
+  appendFileSync: (p: any, d: any, o: any) => {
+    if (String(p).endsWith('metrics.jsonl')) {
+      log({ op: 'append', path: String(p), data: String(d) })
+      if (process.env.GC_FAIL_FIRST_APPEND && !failed) {
+        failed = true
+        throw new Error('injected append failure')
+      }
+    }
+    return fs.appendFileSync(p, d, o)
+  },
+}))
+const spawn: any = Bun.spawnSync.bind(Bun)
+;(Bun as any).spawnSync = (a: any, ...r: any[]) => {
+  const argv: string[] = Array.isArray(a) ? a : a.cmd
+  log({ op: 'spawn', argv })
+  const need: string[] = JSON.parse(process.env.GC_FAIL_ARGV ?? '[]')
+  if (need.length && need.every(n => argv.includes(n)))
+    return { exitCode: 128, success: false, stdout: Buffer.from(''), stderr: Buffer.from('injected failure') }
+  return spawn(a, ...r)
+}
+`
+function traced(args: string[], env: Record<string, string> = {}) {
+  const pre = join(dir, 'trace-pre.ts')
+  const tf = join(dir, 'trace.jsonl')
+  writeFileSync(pre, PRELOAD)
+  rmSync(tf, { force: true })
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
+  const p = Bun.spawnSync(['bun', '--preload', pre, join(import.meta.dir, 'cli.ts'), ...args], {
+    env: {
+      ...laptop,
+      FACTORY_HOME: home,
+      FACTORY_SELF_UPDATE: '0',
+      FACTORY_NO_KICK: '1',
+      GC_TRACE: tf,
+      ...env,
+    },
+  })
+  const calls: Call[] = existsSync(tf)
+    ? readFileSync(tf, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map(l => JSON.parse(l))
+    : []
+  return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString(), calls }
+}
+/** recursive removals at or below a path (the lock file removal is not recursive) */
+const rmsUnder = (calls: Call[], p: string) =>
+  calls.filter(c => c.op === 'rm' && c.recursive && (c.path === p || c.path!.startsWith(p + '/')))
+const spawned = (calls: Call[], ...words: string[]) =>
+  calls.filter(c => c.op === 'spawn' && words.every(w => c.argv!.includes(w)))
+const appends = (calls: Call[]) => calls.filter(c => c.op === 'append')
+
+test('lt4u.8 control: the trace sees the removals, the worktree remove and the archive append of a real reap', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'done', finishedAt: OLD(), real: true })
+  const wt = join(home, 'worktrees', id)
+  const out = traced(['gc'])
+  expect(out.code).toBe(0)
+  expect(rmsUnder(out.calls, d).length).toBeGreaterThan(0)
+  expect(spawned(out.calls, 'worktree', 'remove', wt).length).toBe(1)
+  expect(spawned(out.calls, 'chmod', wt).length).toBe(1)
+  expect(appends(out.calls).filter(c => c.data!.includes(id)).length).toBe(1)
+})
+
+test('lt4u.8 AC4: an unlisted worktree dir that holds the repo is refused after the root and name checks', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'done', finishedAt: OLD() })
+  const wt = join(home, 'worktrees', id)
+  const repo = join(wt, 'inner-repo')
+  mkdirSync(repo, { recursive: true })
+  git(repo, 'init', '-q', '-b', 'main')
+  writeFileSync(join(wt, 'mine.txt'), 'keep me')
+  repoint(d, { worktree: wt, repo })
+  const out = traced(['gc'])
+  expect(out.code).toBe(0)
+  expect(readFileSync(join(home, 'gc.log'), 'utf8')).toContain(
+    `refused ${id}: refusing to delete ${wt}: the repo itself`,
+  )
+  expect(readFileSync(join(wt, 'mine.txt'), 'utf8')).toBe('keep me')
+  expect(existsSync(d)).toBe(true)
+  expect(metricIds()).not.toContain(id)
+  expect(appends(out.calls)).toEqual([])
+  expect(rmsUnder(out.calls, wt)).toEqual([])
+  expect(rmsUnder(out.calls, d)).toEqual([])
+})
+
+test('lt4u.8 AC4: a failed git worktree list for a valid repo keeps the worktree, the run and the branch', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'done', finishedAt: OLD(), real: true })
+  const wt = join(home, 'worktrees', id)
+  writeFileSync(join(wt, 'mine.txt'), 'keep me')
+  const t = tip(id)
+  const out = traced(['gc'], { GC_FAIL_ARGV: JSON.stringify(['worktree', 'list']) })
+  expect(out.code).toBe(0)
+  expect(spawned(out.calls, 'worktree', 'list').length).toBeGreaterThan(0)
+  expect(readFileSync(join(home, 'gc.log'), 'utf8')).toContain(`refused ${id}`)
+  expect(readFileSync(join(wt, 'mine.txt'), 'utf8')).toBe('keep me')
+  expect(existsSync(d)).toBe(true)
+  expect(tip(id)).toBe(t)
+  expect(metricIds()).not.toContain(id)
+  expect(spawned(out.calls, 'worktree', 'remove')).toEqual([])
+  expect(appends(out.calls)).toEqual([])
+  expect(rmsUnder(out.calls, wt)).toEqual([])
+  expect(rmsUnder(out.calls, d)).toEqual([])
+})
+
+test('lt4u.8 AC4: a failed top-level status after a clean submodule check keeps the worktree and does not force', () => {
+  const { id, d, wt } = subRun()
+  writeFileSync(join(wt, 'mine.txt'), 'keep me')
+  const t = tip(id)
+  const out = traced(['gc'], {
+    GC_FAIL_ARGV: JSON.stringify(['status', '--porcelain', '--ignore-submodules=none']),
+  })
+  expect(out.code).toBe(0)
+  // positive control: the failing status call ran, so the clean-submodule check had passed
+  expect(spawned(out.calls, 'status', '--ignore-submodules=none').length).toBe(1)
+  expect(spawned(out.calls, 'worktree', 'remove', '--force')).toEqual([])
+  expect(readFileSync(join(home, 'gc.log'), 'utf8')).toContain(`refused ${id}`)
+  expect(readFileSync(join(wt, 'mine.txt'), 'utf8')).toBe('keep me')
+  expect(existsSync(d)).toBe(true)
+  expect(tip(id)).toBe(t)
+  expect(metricIds()).not.toContain(id)
+  expect(appends(out.calls)).toEqual([])
+  expect(rmsUnder(out.calls, wt)).toEqual([])
+  expect(rmsUnder(out.calls, d)).toEqual([])
 })
