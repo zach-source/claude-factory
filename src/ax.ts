@@ -1149,11 +1149,29 @@ export function withDoltEgress(egress: Egress[] | undefined, rig?: DoltRig): Egr
   return has ? egress : [...(egress ?? []), rule]
 }
 
+/** Codex's ChatGPT login: only the /backend-api/codex/ paths open, and the gateway injects the vault tokens */
+export const CODEX_CHATGPT_RULE: Egress = {
+  hosts: ['chatgpt.com'],
+  pathPrefixes: ['/backend-api/codex/'],
+  headers: [
+    { header: 'Authorization', prefix: 'Bearer ', key: 'CODEX_CHATGPT' },
+    { header: 'ChatGPT-Account-ID', prefix: '', key: 'CODEX_CHATGPT_ACCOUNT' },
+  ],
+}
+/** Codex's API-key login: the gateway injects the vault key OPENAI */
+export const OPENAI_RULE: Egress = {
+  hosts: ['api.openai.com'],
+  key: 'OPENAI',
+  header: 'Authorization',
+  prefix: 'Bearer ',
+}
+
 /**
  * the manager's egress beyond a worker's defaults (Anthropic, GitHub, the caches): claude.ai for Claude's login,
  * and plain-HTTP (h2c) rules for the in-cluster services its VM calls: the AX server, the atenet router and the
  * policy broker. Through the gateway, plain HTTP to a service needs an `http` rule; an `https` rule fails.
  * A value that is not a URL adds no rule. A rig's beadsRemote adds its Dolt rule, and a --linear rig adds Linear's.
+ * The OpenAI API and the Codex ChatGPT login let the manager fall back to Codex when Claude is limited (y3f8w.1).
  * A laptop CURSOR_API_KEY (the pool meter) adds the api2.cursor.sh rules, with the vault key CURSOR_API_KEY on /auth/.
  */
 export function managerEgress(
@@ -1204,7 +1222,15 @@ export function managerEgress(
         { hosts: ['api2.cursor.sh'] },
       ]
     : []
-  return [{ hosts: ['claude.ai'] }, ...rules, ...dolt.values(), ...linear, ...cursor]
+  return [
+    { hosts: ['claude.ai'] },
+    ...rules,
+    ...dolt.values(),
+    ...linear,
+    OPENAI_RULE,
+    CODEX_CHATGPT_RULE,
+    ...cursor,
+  ]
 }
 
 /**
