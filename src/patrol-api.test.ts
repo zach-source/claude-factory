@@ -1,11 +1,13 @@
 import { afterAll, describe, expect, spyOn, test } from 'bun:test'
 import { createHash } from 'node:crypto'
+import { EventEmitter } from 'node:events'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { connect } from 'node:tls'
+import type { Socket } from 'node:net'
 import { patrolHandler, patrolListener, type PatrolIdentity } from './patrol-api'
 import { PatrolLease } from './patrol-lease'
-import { personCerts } from './server-api'
+import { personCerts, serveSocket } from './server-api'
 
 const token = `patrol_v1_${Buffer.alloc(32, 17).toString('base64url')}`
 const otherToken = `patrol_v1_${Buffer.alloc(32, 19).toString('base64url')}`
@@ -591,6 +593,16 @@ test('1ocuv AC1 AC2 real TLS checks raw targets and duplicate headers before app
     t.zero()
     for (const method of ['CONNECT', 'TRACE', 'TRACK', 'CUSTOM']) {
       expect(await raw(server.port, '/v1/patrol/snapshot', undefined, method)).toContain('HTTP/1.1 403')
+      const body = JSON.stringify({ epoch: t.epoch })
+      expect(
+        await raw(
+          server.port,
+          '/v1/patrol/lease/acquire',
+          `Authorization: Patrol ${token}\r\nContent-Type: application/json\r\nIdempotency-Key: test-key-0001\r\nContent-Length: ${Buffer.byteLength(body)}\r\n`,
+          method,
+          body,
+        ),
+      ).toContain('HTTP/1.1 403')
       t.zero()
     }
     for (const target of [
@@ -646,6 +658,71 @@ test('1ocuv AC1 AC2 real TLS checks raw targets and duplicate headers before app
         'POST',
       ),
     ).toContain('HTTP/1.1 400')
+    t.zero()
+  } finally {
+    server.stop()
+  }
+})
+
+test('1ocuv AC2 the read deadline also bounds a socket that sends partial headers', async () => {
+  let destroyed = false
+  let calls = 0
+  const socket = Object.assign(new EventEmitter(), {
+    setTimeout() {
+      return this
+    },
+    destroy() {
+      destroyed = true
+      this.emit('close')
+      return this
+    },
+  })
+  serveSocket(
+    socket as unknown as Socket,
+    async () => {
+      calls++
+      return Response.json({})
+    },
+    10,
+    { bodyMax: 4096, validTarget: () => true },
+  )
+  for (let i = 0; i < 5; i++) {
+    socket.emit('data', Buffer.from('G'))
+    await Bun.sleep(5)
+  }
+  expect(destroyed).toBe(true)
+  expect(calls).toBe(0)
+})
+
+test('1ocuv AC6 transport errors emit only the fixed unavailable audit event', async () => {
+  const t = setup()
+  const handle = Object.assign(
+    async () => {
+      throw new Error('zqsecret')
+    },
+    { invalid: t.handle.invalid },
+  )
+  const server = patrolListener({
+    port: 0,
+    cert: readFileSync(join(certDir, 'server.crt'), 'utf8'),
+    key: readFileSync(join(certDir, 'server.key'), 'utf8'),
+    handle,
+  })
+  try {
+    const response = await raw(server.port, '/v1/patrol/snapshot')
+    expect(response).toContain('HTTP/1.1 503')
+    expect(response.split('\r\n\r\n')[1]).toBe('{"error":"unavailable"}')
+    expect(t.audit).toEqual([
+      {
+        at: 1000,
+        epoch: t.epoch,
+        generation: null,
+        identity: null,
+        operation: 'unknown',
+        reason: 'unavailable',
+        status: 503,
+      },
+    ])
     t.zero()
   } finally {
     server.stop()
