@@ -144,6 +144,39 @@ const TURN = 'Allow for this turn'
 const ANSWER = '/repo/bin/factory decisions answer rig bead-1 "not now"'
 const tokenOf = (s: { commands: string[] }) => UUID.exec(s.commands.at(-1)!)?.[1]
 
+test('nsrax AC2: Monitor cannot use or change a turn Allow', SLOW, async ($, on) => {
+  const s = await session($, on, TURN)
+  let ran = 0
+  on('tool.call', { tool: 'Monitor' }, () => {
+    ran++
+    return { result: { task_id: 'mock-monitor' } } as never
+  })
+  await $.tool.call({ tool: 'Bash', command: DECIDE })
+  const before = [...s.files.entries()]
+  const commands = s.commands.length
+  const asks = s.asks()
+  let writes = 0
+  on('fs.write', () => {
+    writes++
+    return { value: undefined }
+  })
+  for (const agentId of [undefined, 'sub-1']) {
+    const result = await $.tool.call({
+      tool: 'Monitor',
+      command: DECIDE,
+      description: 'x',
+      timeout_ms: 1000,
+      agentId,
+    } as never)
+    expect(ran).toBe(0)
+    expect(result.deny).toBe('Monitor is disabled in the factory mod. Use Bash for shell commands.')
+  }
+  expect(writes).toBe(0)
+  expect([...s.files.entries()]).toEqual(before)
+  expect(s.commands.length).toBe(commands)
+  expect(s.asks()).toBe(asks)
+})
+
 test(
   'Allow for this turn writes a turn token, keeps it, and reuses it with no dialog',
   SLOW,
