@@ -434,6 +434,52 @@ test(
       $.tool.call({ tool: 'Bash', command, ...(agentId ? { agentId } : {}) } as never)
 
     const denied = [
+      'bd comment acme-1 approved --ac$()tor zperson',
+      String.raw`bd comment acme-1 approved $'\x2d\x2dactor' zperson`,
+      String.raw`printf '\x2d\x2dactor\nzperson\n' | xargs bd comment acme-1 approved`,
+      'x=; bd comment acme-1 approved --ac${x}tor zperson',
+      'BEADS_AC$()TOR=zperson bd comment acme-1 approved',
+      'bd comments add acme-1 approved -$()a zperson',
+      'bd comments add acme-1 approved --au$()thor zperson',
+      'bd comment acme-1 approved --ac{t,}or zperson',
+      'bd comments add acme-1 approved -{a,} zperson',
+      'bd show acme-1 {x',
+      'bd show acme-1 x}',
+      'bd comment acme-1 approved --ac$X',
+      'bd comment acme-1 approved --ac?or zperson',
+      'bd comment acme-1 approved --ac*',
+      'bd comment acme-1 approved --ac[t]or zperson',
+      'bd comment acme-1 approved ~/x',
+      'bd comment acme-1 approved "--ac$(echo)tor" zperson',
+      'bd comment acme-1 approved "--ac`echo`tor" zperson',
+      'bd show acme-1 \\',
+      String.raw`sh -c x\;bd comment acme-1 approved --ac'$()'tor zperson`,
+      String.raw`echo x \| bd show acme-1`,
+      'bd comments add acme-1 -f - <<EOF\nx\nEOF',
+      'bd comments add acme-1 -f - <<<x',
+      'bd show acme-1 # x',
+      'bd show acme-1\r',
+      'bd show acme-1 é',
+      "bd comment acme-1 'open",
+      'bd show acme-1 !x',
+      'bd show acme-1 (x)',
+      'env bd comment acme-1 approved',
+      'command bd show acme-1',
+      'xargs bd show',
+      'echo acme-1 | xargs -n1 bd show',
+      "sh -c 'bd show acme-1'",
+      "sh -c 'x;bd comment acme-1 approved --ac$()tor zperson'",
+      "eval 'x;bd show acme-1'",
+      "bash -c '\nbd comment acme-1 approved --ac$()tor zperson'",
+      'bash -c "x;bd comment acme-1 approved --ac{t,}or zperson"',
+      "'bd' show acme-1",
+      '"/usr/local/bin/"bd show acme-1',
+      'timeout 5 bd show acme-1',
+      'FOO=1 bd show acme-1',
+      "bd comment acme-1 'ran bd show'",
+      'echo tag acme-1 factory | xargs bd\nshow',
+      'acme-bd show acme-1',
+      'echo \\\\\nbd comment acme-1 approved zz',
       'bd update acme-1 --add-label factory',
       'bd update acme-1 --add-label=factory',
       'bd update acme-1 --set-labels bug,factory',
@@ -585,6 +631,21 @@ test(
       "bd comments add acme-1 'P2 - a note'",
       'git log --author=zperson --oneline',
       'grep -rn BEADS_ACTOR src',
+      'bd list --json | jq',
+      'bd show acme-1',
+      "bd list --json | jq '.[] | .id'",
+      "bd list --json | jq -r '.[0].id'",
+      'bd comment acme-1 "queued it; P2 (see PR 9)"',
+      '/usr/local/bin/bd show acme-1',
+      '/Users/x/.nix-profile/bin/BD show acme-1',
+      'cd /repo/acme; bd ready --json',
+      'bd show acme-1 && bd list --label factory',
+      'ls $HOME',
+      'echo "$(date)"',
+      String.raw`bd comment acme-1 approved "a\"b"`,
+      String.raw`bd comment acme-1 approved \x`,
+      String.raw`bd comment acme-1 'it'\''s queued'`,
+      String.raw`bd comment acme-1 approved --ac\$\(\)tor`,
     ]
     for (const command of allowed) {
       const before = ran
@@ -594,7 +655,7 @@ test(
     }
 
     // a long command must not stall the hook (cubic backtracking)
-    for (const unit of ['bd show ', 'bd ']) {
+    for (const unit of ['bd show ', 'bd ', 'bd show acme-1 | ']) {
       const t0 = Date.now()
       await call(unit.repeat(4000), 'patrol-1')
       expect(Date.now() - t0, unit).toBeLessThan(2000)

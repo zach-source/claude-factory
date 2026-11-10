@@ -1169,11 +1169,42 @@ const BD_READ = new Set([
   'comment',
   'undefer',
 ])
+/** Rule B (claude-factory-tm9of): the command with each quoted char, quote and backslash pair masked as \0, or null
+ * when bash can expand a char (plain text outside a closed character set, $ or backtick in double quotes, an
+ * unclosed quote, a last backslash). */
+function plainText(command: string): string | null {
+  let state: 'plain' | 'single' | 'double' = 'plain'
+  let out = ''
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!
+    if (state === 'single') {
+      if (c === "'") state = 'plain'
+      out += '\0'
+    } else if (c === '\\') {
+      if (++i >= command.length) return null
+      out += '\0\0'
+    } else if (state === 'double') {
+      if (c === '"') state = 'plain'
+      else if (c === '$' || c === '`') return null
+      out += '\0'
+    } else if (c === "'" || c === '"') {
+      state = c === "'" ? 'single' : 'double'
+      out += '\0'
+    } else if (/[A-Za-z0-9 \t\n_./:=,@%+|&;>-]/.test(c)) out += c
+    else return null
+  }
+  return state === 'plain' ? out : null
+}
+
 /**
  * [SECURITY] true when the command runs bd with a verb that is not a read (claude-factory-0wv6).
  * This is an allowlist. A list of label spellings never closes, because bd (cobra) has flag aliases,
  * flags before the verb and verb aliases. The shell drops `\`, `'` and `"`, so this code drops them first.
- * It is best-effort: a verb that a variable or a command output hides gets through. It is linear.
+ * claude-factory-tm9of: when the text holds a bd word, it also denies a character that bash can expand outside
+ * single quotes (a closed character set; a backslash pair is literal), and a bd word that is not the first word
+ * of a command in the outer shell (xargs bd, env bd, sh -c '...bd', a quoted bd).
+ * It is best-effort only against a bd word that the hook cannot see: a variable, a command output, an interpreter
+ * or a script makes the bd name (follow-up claude-factory-z62pl). It is linear.
  * claude-factory-8njd: it also denies a bd command that sets the comment author: BEADS_ACTOR, a long flag
  * that abbreviates --actor or --author (3 or more letters), or, with the word comments, a short flag word
  * with the letter a. Quotes do not protect the text (fail closed).
@@ -1182,6 +1213,15 @@ export function bdWrite(command: string): boolean {
   const s = command.replace(/[\\'"]/g, '')
   if (/--add-label|--set-labels/.test(s)) return true
   const bd = /\bbd\b/i.test(s)
+  if (bd) {
+    const p = plainText(command)
+    if (p === null) return true
+    // Rule C: each bd word must be the plain command word of a part of the outer shell
+    const words = p
+      .split(/[;&|\n]/)
+      .filter(part => /^(?:[\w./-]*\/)?bd$/i.test(/^[ \t]*([^ \t>]*)/.exec(part)![1]!)).length
+    if (words !== (s.match(/\bbd\b/gi) ?? []).length) return true
+  }
   if (bd && s.includes('BEADS_ACTOR')) return true
   if (bd && /(?<![\w-])--(?:act(?:or?)?|aut(?:h(?:or?)?)?)(?![\w-])/.test(s)) return true
   if (bd && /\bcomments\b/.test(s) && /(?<![\w-])-[A-Za-z]*a/.test(s)) return true
@@ -1264,12 +1304,21 @@ function shownCommand(command: string): string {
  * mid-word) and matches across the quoted newline ([\s\S] instead of [^\n]) rather
  * than testing the raw text verbatim. A factory command with a shell substitution outside single quotes, or
  * a form this cannot read, is gated too: untrusted text in a template argument must not run on the laptop. */
-export function gatedCommand(rawCommand: string): { question: string; deny: string; ask: boolean } | null {
+export function gatedCommand(
+  rawCommand: string,
+): { question: string; deny: string; ask: boolean; kinds: string[] } | null {
   // claude-factory-0jr2.6: a comment line that ends in a backslash. Ask with the raw text, and match the kinds on the full join.
   const unreadable = commentContinues(rawCommand)
   const command = unreadable ? rawCommand.replace(/\\\n/g, '') : joinLines(rawCommand)
   // `factory` as a command word (`factory`, `bin/factory`), not a part of a path such as `acme-factory/x`
-  const at = /(?<![\w.-])factory(?![\w./-])/.test(command) ? substitutionIn(rawCommand) : -1
+  const baseTexts = unreadable
+    ? [rawCommand.replace(/\\\n/g, '\n'), rawCommand.replace(/\\\n/g, '')]
+    : [command]
+  const at = baseTexts.some(t => CALLER.test(t) || CALLER.test(strip(t)) || cliCall(strip(t)))
+    ? substitutionIn(rawCommand)
+    : -1
+  // claude-factory-6tl1: the first word after the caller must be a literal word
+  const verbHidden = baseTexts.some(t => VERB_HIDDEN.test(t))
   let substitution: { phrase: string; deny: string; detail: string } | undefined
   if (at >= 0) {
     // the head stops at 300 characters, so show the text around the first hit too. Do not split a surrogate pair at either edge.
@@ -1296,26 +1345,37 @@ export function gatedCommand(rawCommand: string): { question: string; deny: stri
     unreadable
       ? [(t: string) => t.replace(/\\\n/g, '\n'), (t: string) => t.replace(/\\\n/g, '')]
       : [joinLines]
-  ).map(f => {
-    const text = f(rawCommand)
-    // the cut is in the coordinates of the text that shownCommand cuts: the joined text, or the raw text of an unreadable form
-    return {
-      text,
-      cut: unreadable ? f(cutText(rawCommand, CUT).replace(/\\$/, '')).length : cutText(text, CUT).length,
-    }
-  })
+  )
+    .map(f => {
+      const text = f(rawCommand)
+      // the cut is in the coordinates of the text that shownCommand cuts: the joined text, or the raw text of an unreadable form
+      return {
+        text,
+        cut: unreadable ? f(cutText(rawCommand, CUT).replace(/\\$/, '')).length : cutText(text, CUT).length,
+        canonical: false,
+      }
+    })
+    .flatMap(r => {
+      // the canonical read: the strip copy with each hidden word read as `factory`. A cut that splits a word drops that word.
+      const s = strip(r.text)
+      let h = strip(r.text.slice(0, r.cut))
+      if (h.length < s.length && /\S/.test(s[h.length]!)) h = h.replace(/\S+$/, '')
+      return [r, { text: canon(s), cut: canon(h).length, canonical: true }]
+    })
   const kinds = GATED_KINDS.flatMap(k => {
     const per = reads.map(r => {
       const ends = kindEnds(r.text, k.re, k.tail)
-      return { count: ends.length, hidden: ends.filter(end => end > r.cut).length }
+      return { count: ends.length, hidden: ends.filter(end => end > r.cut).length, base: !r.canonical }
     })
     const count = Math.max(...per.map(x => x.count))
-    return count ? [{ ...k, count, hidden: Math.max(...per.map(x => x.hidden)) }] : []
+    const base = per.some(x => x.base && x.count > 0)
+    return count ? [{ ...k, count, base, hidden: Math.max(...per.map(x => x.hidden)) }] : []
   })
-  if (!unreadable && !substitution && !kinds.length) return null
+  if (!unreadable && !substitution && !verbHidden && !kinds.length) return null
   const times = (n: number) => (n > 1 ? ` (${n} times)` : '')
   const named = [
     ...(substitution ? [substitution.phrase] : []),
+    ...(verbHidden ? ['run a factory command whose verb or an argument is not a literal word'] : []),
     ...kinds.map(k => `${k.phrase}${times(k.count)}`),
   ]
   const hidden = kinds.filter(k => k.hidden > 0)
@@ -1325,7 +1385,9 @@ export function gatedCommand(rawCommand: string): { question: string; deny: stri
   const names = [...(who ? [who] : []), ...named]
   return {
     // only a person-decision kind is worth a dialog; a substitution or unreadable form alone is denied at once
-    ask: kinds.length > 0,
+    // a kind found on a base read asks. One found only on the canonical read asks only if nothing else is wrong.
+    ask: kinds.some(k => k.base) || (kinds.length > 0 && !substitution && !verbHidden && !unreadable),
+    kinds: kinds.map(k => k.id),
     question: `The manager model wants to ${names.join(' and ')}: ${shownCommand(unreadable ? rawCommand : command)}.${substitution ? ` ${substitution.detail}` : ''}${hidden.length ? ` The text not shown holds: ${hidden.map(k => `${k.phrase}${times(k.hidden)}`).join(' and ')}.` : ''} Allow it?`,
     deny: [
       ...(unreadable
@@ -1334,11 +1396,62 @@ export function gatedCommand(rawCommand: string): { question: string; deny: stri
           ]
         : []),
       ...(substitution ? [substitution.deny] : []),
+      ...(verbHidden
+        ? [
+            'The person did not confirm this command. Write the factory verb as a literal word, with no $, backtick, * ? [ or {. Write each argument with no brace glued to a word. Pass free text by file.',
+          ]
+        : []),
       ...kinds.map(k => k.deny),
     ].join(' '),
   }
 }
 
+/** the shell drops these before it runs a word */
+const strip = (s: string) => s.replace(/[\\'"]/g, '')
+/** the CLI by its source file: `bun src/cli.ts`, `bun run x/cli.ts`, `node cli.js` */
+const CLI = String.raw`(?:^|[\s;&|(])(?:[^\s;&|()]*/)?(?:bun|node|run)\s+(?:\S*/)?cli(?:\.\w+)?`
+/** the factory CLI as a command word */
+const CALLER = new RegExp(String.raw`(?<![\w.-])factory(?![\w./-])|${CLI}(?=[\s;&|),}]|$)`)
+/** A runner word (bun, node, run) and each later cli word. The call starts at the first runner word and ends with the text. No character ends it, because this guard cannot split shell text into commands. One linear word scan. */
+function cliCall(t: string): { start: number; ends: number[] } | null {
+  let start = -1
+  const ends: number[] = []
+  for (const m of t.matchAll(/[^\s;&|()]+/g)) {
+    const w = m[0]
+    if (start >= 0 && /(?:^|\/)cli(?:\.\w+)?$/.test(w)) ends.push(m.index! + w.length)
+    else if (start < 0 && /(?:^|\/)(?:bun|node|run)$/.test(w)) start = m.index!
+  }
+  return start >= 0 && ends.length ? { start, ends } : null
+}
+const VERB_AFTER = /\s+[^\s$\x60*?[{]*[$\x60*?[{]/y
+/** a word the hook cannot read as a literal command name */
+const HIDDEN = /[$`*?[)]|(?:^|[/;&|])cli(?:\.\w+)?$/
+const one = (p: string) => (HIDDEN.test(p) ? 'factory' : p)
+/** the strip copy with each such word read as `factory`, so GATED_KINDS match it; a brace word reads as its parts */
+const canon = (s: string) =>
+  s.replace(/\S+/g, w =>
+    w.includes('{') ? `${w.split(/[{,}]/).filter(Boolean).map(one).join(' ')} factory` : one(w),
+  )
+/** the caller word, then a verb word with a hidden part */
+const VERB_FIRST = new RegExp(String.raw`(?:(?<![\w.-])factory|${CLI})\s+[^\s$\x60*?[{]*[$\x60*?[{]`)
+/** a brace group glued to a word: `a{b,c}`, `a{1..2}`, `{a,b}c`. Each run stops at the next brace, comma or space, so the scan is linear. */
+const GLUED_BRACE = /[\w-]\{+[^\s{},]*[,}]|[,{][^\s{},]*\}+[\w-]/
+/** a non-literal verb word after the caller word, or a brace word anywhere after it (no bound, no split on `;&|`: the strip copy lost the quotes) */
+const VERB_HIDDEN = {
+  test: (t: string) => {
+    const s = strip(t)
+    const c = cliCall(s)
+    if (c) {
+      if (GLUED_BRACE.test(s.slice(c.start))) return true
+      for (const end of c.ends) {
+        VERB_AFTER.lastIndex = end
+        if (VERB_AFTER.test(s)) return true
+      }
+    }
+    const i = s.search(CALLER)
+    return VERB_FIRST.test(s) || (i >= 0 && GLUED_BRACE.test(s.slice(i)))
+  },
+}
 /** Return match ends. A tail cut prevents repeated scans of a suffix with no tail. */
 export function kindEnds(text: string, re: RegExp, tail?: RegExp): number[] {
   if (tail) {
@@ -1350,40 +1463,47 @@ export function kindEnds(text: string, re: RegExp, tail?: RegExp): number[] {
 }
 
 /** The gated kinds in the order the question names them. Each regex has the g flag, so use matchAll, not test. */
-export const GATED_KINDS: { re: RegExp; tail?: RegExp; phrase: string; deny: string }[] = [
+export const GATED_KINDS: { id: string; re: RegExp; tail?: RegExp; phrase: string; deny: string }[] = [
   {
+    id: 'decide',
     re: /\bfactory\s+decide\b/g,
     phrase: 'decide a factory gate',
     deny: 'The person did not confirm this gate decision. Ask them which outcome they want.',
   },
   {
+    id: 'answer',
     re: /\bfactory\s+decisions\s+answer\b/g,
     phrase: "answer a person's bd decision",
     deny: 'The person did not confirm this answer. Ask them what they want to say instead.',
   },
   {
+    id: 'owned',
     re: /\bfactory\s+start\b[\s\S]*?--owned\b/g,
     tail: /--owned\b/g,
     phrase: "start a bead carrying its owner's decisions",
     deny: 'The person did not confirm starting this owner-only bead.',
   },
   {
+    id: 'wiki-init',
     re: /\bfactory\s+wiki\b[\s\S]*?\binit\b/g,
     tail: /\binit\b/g,
     phrase: 'create the factory wiki and set its remote',
     deny: 'The person did not confirm this wiki init. Ask them to run it.',
   },
   {
+    id: 'image',
     re: /\bfactory\s+image\b/g,
     phrase: 'build and push a factory image to a registry',
     deny: 'The person did not confirm this image push. Ask them to run it.',
   },
   {
+    id: 'token',
     re: /\bfactory\s+token\s+(use|best)\b/g,
     phrase: 'change the live Claude token slot',
     deny: 'The person did not confirm this token swap. Ask them to run it.',
   },
   {
+    id: 'settings',
     re: /\bfactory\s+settings\s+(?:set|unset)\b/g,
     phrase: 'change a factory setting that sets what a worker runs, reaches or spends',
     deny: 'The person did not confirm this settings change. Ask them to run it.',

@@ -195,3 +195,221 @@ test('the question counts the later hits that it does not show', SLOW, async () 
     expect(question(command), command).not.toContain('are not shown')
   }
 })
+
+test('a brace word after the caller is denied with no dialog', SLOW, async ($, on) => {
+  const { n } = harness(on, 'Allow')
+  const rows = [
+    `${F} start lifecycle acme w-2 --o{w,w}ned`,
+    `${F} start lifecycle acme w-2 --own{ed,}`,
+    `${F} start lifecycle acme w-2 '--o'{w,w}'ned'`,
+    `${F} wiki in{i,i}t`,
+    `${F} decisions an{s,s}wer r1 x`,
+    `${F} start lifecycle acme w-2 ${'a'.repeat(300)} --o{w,w}ned`,
+    `${F} start lifecycle acme w-2 ${'a'.repeat(5000)} --o{w,w}ned`,
+    `${F} start lifecycle acme w-2 'x;y' --o{w,w}ned`,
+    `${F} start lifecycle acme w-2 'x\ny' --o{w,w}ned`,
+    `${F} start lifecycle acme w-2 x\\; --o{w,w}ned`,
+    `${F} start lifecycle acme w-2 --own{{ed,},}`,
+    `${F} start lifecycle acme w-2 {x,{--own,}}ed`,
+    `${F} start lifecycle acme w-2 {--o,--ow}ned`,
+    `${F} status; echo a{b,c}d`,
+    `${F} start lifecycle acme w-2 --own{e..e}d`,
+    `${F} start lifecycle acme w-2 --owne{d..d}`,
+    `${F} start lifecycle acme w-2 {--owne..--owne}d`,
+    `${F} decisions {a..a}nswer r1 x`,
+    `${F} wiki ini{t..t}`,
+    `${F} decisions an{s..s}wer r1 x`,
+    `${F} start lifecycle acme w-2 --o{1..2}ned`,
+    `${F} start lifecycle acme w-2 --o{a..c}ned`,
+    `${F} start lifecycle acme w-2 --o{w,'w x'}ned`,
+  ]
+  for (const command of rows) {
+    const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(r.deny, command).toContain('literal word')
+  }
+  expect(n.asked).toBe(0)
+  expect(n.ran).toBe(0)
+})
+
+test('a plain word or JSON near the caller is not denied', SLOW, () => {
+  for (const c of [
+    `${F} mail r1 plan '{"a":1,"b":2}'`,
+    `${F} mail r1 plan '{"a":1}'`,
+    `echo a{b,c}d; ${F} status`,
+    'cp /tmp/factory/a{b,c}.md .',
+    'ls /x/factory-notes/a{b,c}d',
+    `${F} status`,
+    'ls -la',
+    'wc -l src/cli.ts src/*.ts',
+    'bun test x; cat src/cli.ts',
+    'gh run view 1 --log | grep -c cli',
+  ])
+    expect(gatedCommand(c), c).toBeNull()
+})
+
+test('a non-literal verb word after a literal caller is denied with no dialog', SLOW, async ($, on) => {
+  const { n } = harness(on, 'Allow')
+  const rows = [
+    '/usr/bin/bun src/cli.ts dec* r1 ship',
+    `${F} dec* r1 ship`,
+    `${F} de{c,}ide r1 ship`,
+    `${F} deci?e r1 ship`,
+    `${F} [d]ecide r1 ship`,
+    `${F} dec${BT}true${BT}ide r1 ship`,
+    `bash -c '${F} "$0" r1 ship' decide`,
+    'bun src/cli.ts dec* r1 ship',
+    'bun --smol src/cli.ts dec* r1 ship',
+    'bun --cwd /x run --smol src/cli.ts dec* r1 ship',
+    'V=decide; bun --smol src/cli.ts $V r1 ship',
+    'bun --smol src/cli.ts start lifecycle acme w-2 --o{w,w}ned',
+    'bun --smol src/cli.ts decisions an{s,s}wer r1 x',
+    'bun --smol src/cli.ts wiki in{i,i}t',
+    'V=decide; bun --define \'a:"b;c"\' src/cli.ts $V r1 ship',
+    "V=decide; bun --cwd 'a;b' /repo/src/cli.ts $V r1 ship",
+    "bun --cwd 'a;b' /repo/src/cli.ts start lifecycle acme w-2 --o{w,w}ned",
+    "bun --cwd 'a;b' src/cli.ts wiki in{i,i}t",
+    "bun --cwd 'a|b' src/cli.ts dec* r1 ship",
+    "bun --cwd 'a(b' src/cli.ts dec* r1 ship",
+    'bun --cwd a\\;b src/cli.ts dec* r1 ship',
+    'bun -i src/cli.ts dec* r1 ship',
+    'bun --bun /x/src/cli.ts dec* r1 ship',
+    'bun --config=x.toml src/cli.ts dec* r1 ship',
+    'bun --cwd /x src/cli.ts dec* r1 ship',
+    'bun run --smol src/cli.ts dec* r1 ship',
+    'bun src/cli.ts start lifecycle acme w-2 --own{e..e}d',
+    'bun src/cli.ts ima* x',
+    'V=decide; bun --cwd $(pwd) src/cli.ts $V r1 ship',
+    'bun --cwd $(pwd) src/cli.ts dec* r1 ship',
+    'bun --cwd $(pwd) src/cli.ts start lifecycle acme w-2 --o{w,w}ned',
+    'bun --cwd $(true;pwd) src/cli.ts dec* r1 ship',
+    'bun --define a=$((1)) src/cli.ts dec* r1 ship',
+    'bun --cwd <(true) src/cli.ts dec* r1 ship',
+    'bun --cwd >(true) src/cli.ts dec* r1 ship',
+    `bun --cwd ${BT}true;pwd${BT} src/cli.ts dec* r1 ship`,
+    'bun --cwd @(x) src/cli.ts dec* r1 ship',
+    "bun --define $'a\\'b;c' src/cli.ts dec* r1 ship",
+    'bun src/cli.ts status; bun --smol src/cli.ts dec* r1 ship',
+    'bun install\ncat src/cli.ts *.md',
+  ]
+  for (const command of rows) {
+    const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(r.deny, command).toContain('literal word')
+  }
+  expect(n.asked).toBe(0)
+  expect(n.ran).toBe(0)
+})
+
+test(
+  'the substitution gate also fires on the strip copy and on a source-file caller',
+  SLOW,
+  async ($, on) => {
+    const { n } = harness(on, 'Allow')
+    for (const command of [
+      `${F.replace('factory', "fact''ory")} mail r1 plan "$(id)"`,
+      'bun src/cli.ts mail r1 plan "$(id)"',
+      'bun --smol src/cli.ts mail r1 plan "$(id)"',
+      'bun --cwd \'a;b\' /repo/src/cli.ts mail r1 plan "$(id)"',
+      '/usr/bin/bun src/cli.ts mail r1 plan "$(id)"',
+      'bun --cwd $(pwd) src/cli.ts mail r1 plan "$(id)"',
+    ]) {
+      const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+      expect(r.deny, command).toContain('shell substitution')
+    }
+    expect(n.asked).toBe(0)
+    expect(n.ran).toBe(0)
+  },
+)
+
+test('plain commands near the caller word stay ungated', SLOW, async ($, on) => {
+  const { n } = harness(on, 'Deny')
+  const rows = [
+    'ls /x/factory-notes',
+    'echo $HOME',
+    'ls *.md',
+    `${F} start lifecycle api "fix the thing"`,
+    'grep -n x src/cli.ts',
+    'cat src/cli.ts',
+    'wc -l src/cli.ts src/*.ts',
+    '(cd /w/rig && grep -n decide src/cli.ts)',
+    "gh pr view 1 --json title --jq '{a: .title, b: .x}'",
+  ]
+  for (const command of rows) {
+    const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(r.deny, command).toBeUndefined()
+  }
+  expect(n.asked).toBe(0)
+  expect(n.ran).toBe(rows.length)
+})
+
+test(
+  'a substitution deny stays a deny when the kind comes only from the canonical read',
+  SLOW,
+  async ($, on) => {
+    const { n } = harness(on, 'Allow')
+    for (const command of [
+      `${F} mail r1 plan "$(id) decide"`,
+      'F=/repo/bin/factory; for r in $(cat s); do $F decide $r ship; done',
+    ]) {
+      const r = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+      expect(r.deny, command).toContain('shell substitution')
+    }
+    const c = await $.tool.call({
+      tool: 'Bash',
+      command: 'echo hi #x\\\n/repo/bin/f*y decide r1 ship',
+      description: 'x',
+    })
+    expect(c.deny).toContain('Remove the backslash at the end of the comment line')
+    expect(n.asked).toBe(0)
+    expect(n.ran).toBe(0)
+  },
+)
+
+test('gatedCommand runs in linear time on hostile text', SLOW, () => {
+  const texts = [
+    '$'.repeat(200000),
+    'f*y '.repeat(50000),
+    '/repo/bin/factory ' + 'a*'.repeat(100000),
+    "'".repeat(200000),
+    '$ start '.repeat(25000),
+    '/repo/bin/factory start '.repeat(8000),
+    '$ wiki '.repeat(28000),
+    '{a,'.repeat(66000),
+    '/'.repeat(200000),
+    'x/bun '.repeat(33000),
+    '/repo/bin/factory {a,'.repeat(20000),
+    'bun '.repeat(50000),
+    'bun --x '.repeat(30000) + 'src/cli.ts dec*',
+    '/repo/bin/factory a{'.repeat(40000),
+    '/repo/bin/factory x{'.repeat(40000) + ',',
+    '/repo/bin/factory ' + '{'.repeat(200000),
+    '/repo/bin/factory ' + 'a{b,'.repeat(50000),
+    '/repo/bin/factory ' + 'a{'.repeat(100000) + ' ',
+    '/repo/bin/factory x{' + 'a{'.repeat(100000),
+    '/repo/bin/factory x' + ',a'.repeat(100000) + '}',
+    '/repo/bin/factory x' + ','.repeat(200000),
+    ('/repo/bin/factory a' + ' b'.repeat(50) + ';').repeat(3000),
+    '/repo/bin/factory x' + '{'.repeat(200000),
+    '/repo/bin/factory x' + ',}'.repeat(100000),
+    '/repo/bin/factory ' + 'a{{'.repeat(66000),
+    '/repo/bin/factory x{' + '.'.repeat(200000),
+    '/repo/bin/factory x' + '{a'.repeat(100000),
+    '/repo/bin/factory x' + '.'.repeat(200000) + '}',
+    '/repo/bin/factory ' + ',a}'.repeat(60000),
+    '/repo/bin/factory ' + 'a{b '.repeat(50000),
+    '/repo/bin/factory ' + ';{a,b}'.repeat(30000),
+    'bun --x src/cli.ts '.repeat(10000),
+    "bun --cwd 'a;b' ".repeat(20000) + 'src/cli.ts dec*',
+    '/repo/bin/factory ' + '{,'.repeat(100000),
+    '/repo/bin/factory start '.repeat(4000) + 'a{b,c}',
+    'bun ' + 'src/cli.ts;'.repeat(20000),
+    'bun' + ' src/cli.ts'.repeat(20000),
+    'bun ' + 'src/cli.ts x;'.repeat(20000),
+    'bun ' + 'src/cli.ts '.repeat(10000) + 'dec*',
+    'bun $( '.repeat(30000) + 'src/cli.ts dec*',
+  ]
+  for (const [i, t] of texts.entries()) {
+    const t0 = performance.now()
+    gatedCommand(t)
+    expect(performance.now() - t0, `row ${i + 1}`).toBeLessThan(2000)
+  }
+})

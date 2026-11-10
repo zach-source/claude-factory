@@ -213,3 +213,30 @@ test('a local install refuses a home whose manager runs in AX', () => {
     herdrInstall.localRefusal('/h', undefined, { holder: 'p', kind: 'herdr', at: now }, now),
   ).toBeUndefined()
 })
+
+test('a remote job runs direct in the foreground: no detached shell that hc exec would kill', () => {
+  const cfg = { cli: 'factory', home: '/w/home', machine: 'f-manager' }
+  expect(herdr.directJob(cfg, ['tick', '--board'])).toEqual([
+    'env',
+    ['FACTORY_HOME=/w/home', 'factory', 'tick', '--board'],
+  ])
+})
+
+test('interviewItems counts the beads of `factory decisions` once each, plus the live gates (claude-factory-hpmc.22)', () => {
+  const decisions = {
+    rigs: [
+      {
+        rig: 'a',
+        beads: [
+          { id: 'a-1', title: 't', kind: 'bead' },
+          { id: 'a-2', title: 't', kind: 'owned' },
+        ],
+      },
+      { rig: 'b', beads: [{ id: 'b-1', title: 't', kind: 'owned' }] },
+    ],
+  }
+  expect(herdr.interviewItems([], decisions)).toHaveLength(3)
+  expect(herdr.interviewItems(runs, decisions).length - 3).toBe(
+    runs.filter((r: { gate?: unknown }) => r.gate).length,
+  )
+})
