@@ -128,8 +128,11 @@ The plan recheck at `3191f744` received the same denial before Bun started.
 PR #834 remains open and draft: https://github.com/zach-source/claude-factory/pull/834.
 The authorized plain command, `bun test src/worker-hook-qn8a21.test.ts`, also received a denial before Bun started.
 Baseline: not runnable, hook false positive.
-Per manager direction, this gap does not block the plan or implementation.
-Keep AC1 through AC4 and both existing tasks. Record unavailable local evidence and obtain final-head CI evidence.
+The latest manager message directs a blocked report until the person selects a test environment, unit-only scope, or abort.
+The next plan recheck at `fa97bd2d` received the same denial for the plain command before Bun started.
+This direction supersedes the earlier instruction to proceed without the baseline.
+Keep AC1 through AC4 and both existing tasks until the person supplies direction.
+Do not send this plan to implement as ready or reduce AC4 without that decision.
 Do not bypass the hook or claim that an unexecuted test passed.
 
 Commit the AC1 through AC3 regression tests before the fix.
