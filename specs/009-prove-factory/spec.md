@@ -35,54 +35,99 @@ DeepMind proved properties of compiled AArch64 machine code of libsignal. Their 
 
 The factory has no workflow that proves properties of code. The `lifecycle` workflow tests code. Tests find bugs in the cases that they run. A proof covers all inputs that the theorem names. This feature adds a `prove` workflow. A rig can then prove properties of its own code and keep the proofs checked.
 
-### Upstream reuse and licenses (checked 2026-11-10)
+### Upstream reuse and licenses (checked 2026-11-10, upstream `main` at `808b4b7ffef1`)
 
-| Part | Where | License | Use in v1 |
+| Part | Where | License | Use in phase 1 |
 | --- | --- | --- | --- |
 | Lean AArch64 Linux semantics, `ProofLib`, `c_spec` and `rust_spec` DSLs, `rust-obj2lean` | `arm64-semantics/` in google-deepmind/code-verification | Apache-2.0 (`arm64-semantics/LICENSE`) | Yes, as a pinned Lake dependency. Its README says that downstream repos can use it as a submodule or a Lake dependency. |
 | `comparator` | <https://github.com/leanprover/comparator> | Apache-2.0 | Yes, pinned. |
 | `landrun` (the Landlock sandbox that `comparator` uses) | <https://github.com/Zouuup/landrun> | MIT | Yes, pinned. |
-| The repo root and its case studies | google-deepmind/code-verification | The root `LICENSE` names the license of each third-party part. GitHub shows `NOASSERTION`. | No. Do not copy the libsignal files: they are AGPL-3.0-only. |
+| The repo root, its scripts and its case studies | google-deepmind/code-verification | Apache-2.0 by the root README ("All code is licensed under the Apache License, Version 2.0", copyright 2026 Google LLC). The root `LICENSE` file lists only the third-party exceptions (MIT parts and the AGPL-3.0 libsignal files). GitHub cannot read a license from that file, so it shows `NOASSERTION`. | Not needed. The factory writes its own `comparator` run script. Do not copy the libsignal files: they are AGPL-3.0-only. |
 | `third_party/libsignal` | same repo | AGPL-3.0-only | No. |
 
-The factory does not copy upstream files into this repo. Each rig that uses `prove` pins the upstream commit. The rig keeps the upstream `LICENSE` and `NOTICE` text with the dependency.
+Result: the factory can reuse the AArch64 semantics and `comparator`. The license of each part that phase 1 uses is clear, so this is not an owner question. Neither repo has a release. Thus each rig pins a commit, not a version. The factory does not copy upstream files into this repo. Each rig that uses `prove` keeps the upstream `LICENSE` text with the dependency.
 
 ## Decisions (owner, 2026-11-10)
 
 | Topic | Decision |
 | --- | --- |
-| Proof target for v1 | The proofs are about the compiled machine code, as DeepMind did. The theorem talks about the AArch64 machine code that a pinned compiler makes. It does not talk about a Lean model of the code. |
+| Proof target | The proofs are about the compiled code that ships, as DeepMind did. The theorem talks about the machine code (or the WebAssembly code) that a pinned compiler makes. It does not talk about a hand-written Lean model of the code. |
+| Shared pipeline | All languages use the same pipeline: spec writer, reviewers, vacuity and mutation checks, the held-out spec, the provers, and a gatekeeper with the Lean kernel and `comparator`. |
 | Semantics | Reuse the DeepMind Lean AArch64 Linux semantics and `comparator`, because the licenses permit it (see the table above). |
+| Languages by priority | Go and TypeScript first. Rust is supported. Python maybe. Java is a note only. |
+| One target path for each language | Each language has one path to a compiled artifact (see "Target paths by language"). |
+| Proven artifact | The proven artifact must be the artifact that ships. The spec names the gap for each language where this is not fully true. |
 | Person steps | Each person step is a decision of the factory (a gate). The person answers it from any front end. |
-| Later proof targets | A Lean model tied to the code by differential tests, and a Rust verifier (Verus, or Aeneas to Lean), are later steps. They are not in v1. |
+| Later proof targets | A Lean model tied to the code by differential tests, and a Rust verifier (Verus, or Aeneas to Lean), are not in this spec. |
 
-### Limits of v1
+This decision replaces an earlier draft. That draft put Go and TypeScript in later work.
 
-The upstream semantics models one process with these limits. Thus v1 has the same limits.
+### Phases (owner, 2026-11-10)
+
+| Phase | Scope | Depends on |
+| --- | --- | --- |
+| 1 | Go: the shared pipeline, the `prove` workflow, and the Go path on the AArch64 semantics. Pilot: `HostnamePattern.Matches` in `substrate`. Go holds most of the logic of our rigs. | The upstream AArch64 semantics and `comparator`. |
+| 2 | TypeScript cores through `.wasm`. | The research on a WebAssembly semantics in Lean (it runs now). A separate spec or a spec amendment adds this phase. |
+| 3 | Rust and C native (static musl `aarch64`). Python through `.wasm` or a Rust extension. | Phase 1 for Rust and C. Phase 2 for Python through `.wasm`. |
+| — | Java stays a note. | — |
+
+This spec has the full detail for phase 1 only. Phases 2 and 3 are later work. Each one gets beads under the epic, and each one is blocked until its dependency is done.
+
+### Pilot of phase 1
+
+The pilot is `HostnamePattern.Matches` in `substrate` (`internal/egresspolicy/egresspolicy.go`). Reasons:
+
+- It is a pure leaf function. It does no I/O and it does not allocate: a comment in the code says that `dotSuffix` is built once "so Matches does not allocate per call".
+- It is security-relevant. It decides which host names the egress policy lets out. A match bug lets traffic out.
+- It has a real historical bug for the historical-bug check. Before commit `6621f2b4`, an empty host name matched a pattern with an empty exact name. The theorem must be false on that old code.
+- It has a twin in Rust (`pattern_matches`), and a comment says that the two "must agree". One Lean reference matcher can serve both. Phase 3 can then prove the Rust twin against the same reference.
+- It is small (11 lines), but it calls `strings.CutSuffix` and `strings.Contains`. `strings.Contains` with a one-byte string calls `internal/bytealg.IndexByteString`, which is hand-written arm64 assembly. So the pilot also tests the instruction coverage and the hook contracts.
+
+Other Go candidates (not the pilot): the other pure parsers and matchers in `internal/egresspolicy` (for example `ParseHostnamePattern` and the CIDR checks). They allocate or return errors, so they need the `mallocgc` hook.
+
+### Limits of the AArch64 semantics
+
+The upstream semantics models one process with these limits:
 
 - One thread. No threads, no concurrent memory.
 - Static linking. No dynamic loader, no shared libraries at run time.
 - No signals. Panic paths end in `SIGABRT`.
-- User-mode AArch64 Linux, with a small set of system calls.
-- The pinned toolchain: `rustc` 1.98.1, target `aarch64-unknown-linux-musl` (or C built static with musl). Lean `v4.34.0`.
+- User-mode AArch64 Linux, with a small set of system calls (31) and instructions (467).
+- The pinned toolchain upstream: `rustc` 1.98.1, target `aarch64-unknown-linux-musl`, and Lean `v4.34.0`.
 
-So v1 fits Rust or C code that builds static with musl for `aarch64`. It fits best a pure function with no I/O: a parser, a matcher, a policy decision, an encoder. It does not fit:
+Each path below works inside these limits, or it uses a different semantics.
 
-- JIT code. Our TypeScript runs on bun, and bun compiles it at run time. There is no fixed machine code to prove.
-- The Go runtime. It starts threads and uses signals for preemption and for its garbage collector.
-- Code that needs threads, an async runtime, the network or dynamic loading (for example, a `tokio` program).
+### Target paths by language
 
-### Rigs and v1 fit (checked 2026-11-10)
+| Priority | Language | Target layer | The shipped artifact | Gap between the proof and the shipped artifact |
+| --- | --- | --- | --- | --- |
+| 1 (phase 1) | Go | Function-level proofs on the `GOARCH=arm64 CGO_ENABLED=0` proof build, on the AArch64 semantics. Runtime calls (`runtime.mallocgc`, write barriers, `morestack`, `panic`) are hooked routines with trusted contracts that the owner approves. DeepMind hooks crypto routines in the same way. The proof run uses `GODEBUG=asyncpreemptoff=1` and `GOMAXPROCS=1`. The path adds a trusted spec of the Go `ABIInternal` calling convention and of the AArch64 instructions that Go emits and that the upstream semantics does not have. | Production stays on amd64. The proof covers the arm64 binary of the same commit and the same compiler, not the shipped amd64 binary. | The arm64 to amd64 gap: the brief and the trusted base name it for each proof. The hooked runtime routines are trusted, not proved. The production binary runs with many threads and with async preemption. The proof covers one function on one goroutine. |
+| 2 (phase 2) | TypeScript | bun compiles TypeScript at run time (JIT), so there is no fixed machine code. The proven core is compiled ahead of time to WebAssembly (with AssemblyScript or Rust). bun runs that same `.wasm` file in production. The proof is against a WebAssembly semantics in Lean. | The same `.wasm` file. | No mature WebAssembly semantics exists in Lean on 2026-11-10. WasmCert-Coq (Coq) and an Isabelle mechanization exist, and a small Lean package (`wasm` on Reservoir) exists. A port or new work can be necessary. bun's WebAssembly engine is trusted. The TypeScript glue that calls the `.wasm` is not proved. Alternative: a Rust native module through `bun:ffi`, on the Rust path. |
+| 3 (phase 3) | Rust and C | Static musl `aarch64` code on the AArch64 semantics, as is. This path is also the base that the Go path builds on. | A static musl `aarch64` binary or object. | If the shipped form is a `cdylib` (dynamic loading) or another target, the proof does not cover it. |
+| 3 (phase 3, maybe) | Python | The same idea as TypeScript: the core goes to WebAssembly, or to a Rust extension (PyO3) on the Rust path. `mypyc` output links `libpython`, so it does not fit. | The `.wasm` file or the extension. | The Python glue is not proved. The Python runtime is trusted. |
+| Note only | Java | Java runs on a JIT. Only a GraalVM `native-image` binary can fit, and its runtime has a garbage collector and threads. | — | No work planned. |
 
-| Rig | Code | Fits v1 | Note |
-| --- | --- | --- | --- |
-| `substrate` | Go, plus one Rust crate: the Envoy egress-policy dynamic module (`cmd/dataplane/envoy/dynamic-modules/egress-policy`) | Yes, in part | Its pure functions (`pattern_matches`, `transport_verdict`, `tls_verdict`) fit. v1 proves them as a static musl `aarch64` build of the crate's pure core. The shipped `cdylib` that Envoy loads is a different build. The proof does not cover it (later step). The Go code does not fit. |
-| `stek` | Python, plus one Rust crate (`validate`) | No | The crate uses `tokio` with many threads, `reqwest` and the network. A pure helper can fit later, if one is moved into a crate of its own. |
-| Go rigs (six rigs, which include `blocks-operator` and `beveil`) | Go | No | The Go runtime uses threads and signals. Later step: a Lean model with differential tests. |
-| TypeScript rigs (`claude-factory`, `fabriek`, `sluis`) | TypeScript on bun | No | JIT code. Later step: a Lean model with differential tests. |
-| Config rigs (`fabriek-flux` and two others) | Nix, Python, manifests | No | No compiled code. |
+A path fits a pure function with no I/O best: a parser, a matcher, a policy decision, an encoder.
+
+### Rigs and target paths (checked 2026-11-10)
+
+| Path | Rigs | Code that can fit |
+| --- | --- | --- |
+| Go | `substrate`, `blocks-operator`, `beveil` and four other rigs (seven Go rigs) | Leaf pure functions. Example: `HostnamePattern.Matches` in `substrate` (`internal/egresspolicy`). |
+| TypeScript | `claude-factory`, `fabriek`, `sluis`, and the TypeScript parts of two Go rigs | A pure core that moves to WebAssembly. Example: a rule check in `src/machine.ts` (`validate`). |
+| Rust and C | `substrate` (the Envoy egress-policy crate), `stek` (the `validate` crate) | `pattern_matches`, `transport_verdict` and `tls_verdict` in `substrate`. `pattern_matches` is the Rust twin of the Go `HostnamePattern.Matches`: a comment in the code says that the two must agree. The `stek` crate uses `tokio` with many threads and the network. Only a pure helper in a crate of its own can fit. |
+| Python (maybe) | `stek` and three config rigs | Not checked. The config rigs hold Nix, manifests and scripts, with no core to prove. |
+| Java | none | — |
 
 The full list of rig names is in the factory home (`rigs.json`). This table names a rig only if its name is public.
+
+## Clarifications
+
+### Session 2026-11-10
+
+- Q: What are the proofs about: a Lean model of the code tied to it by differential tests, a Rust verifier (Verus, or Aeneas to Lean), or the compiled code? → A: The compiled code that ships, as DeepMind did (owner, 2026-11-10). The factory reuses the upstream Lean AArch64 Linux semantics (Apache-2.0) and `comparator` (Apache-2.0, with `landrun`, MIT). The Lean model and the Rust verifier are not in this spec.
+- Q: Which languages, and in which order? → A: Go and TypeScript first, Rust supported, Python maybe, Java a note only (owner, 2026-11-10). Each language has one target path. The proven artifact must be the artifact that ships, and the spec names each gap. See "Target paths by language".
+- Q: Which language path is phase 1? → A: Go, because Go holds most of our logic (owner, 2026-11-10). Phase 1 proves functions of the `GOARCH=arm64 CGO_ENABLED=0` proof build on the AArch64 semantics. Runtime calls are hooked with contracts that the owner approves. Production stays on amd64, and the spec names that gap. Phase 2 is TypeScript cores through `.wasm`. Phase 3 is Rust and C native, and Python through `.wasm`. Java stays a note. Pilot (recommended): `HostnamePattern.Matches` in `substrate`. See "Pilot of phase 1".
 
 ## User Scenarios & Testing _(mandatory)_
 
@@ -92,13 +137,13 @@ The person starts `prove` on a rig. A spec-writer agent reads the rig's code. It
 
 **Why this priority**: A proof is only as good as the statement. A wrong statement gives a proof that means nothing. The person must own what the factory proves.
 
-**Independent Test**: Start `prove` on the `substrate` rig. The run stops at a decision. The decision lists properties of the egress-policy functions. The person answers from the CLI. The run continues with the picked properties only.
+**Independent Test**: Start `prove` on the `substrate` rig. The run stops at a decision. The decision lists properties of `HostnamePattern.Matches`. The person answers from the CLI. The run continues with the picked properties only.
 
 **Acceptance Scenarios**:
 
-1. **Given** a rig with Rust code that fits v1. **When** the person starts `prove`. **Then** the run stops at the decision "pick properties". The decision shows each property, its function and its draft statement.
+1. **Given** a rig with Go code that fits the phase 1 path. **When** the person starts `prove`. **Then** the run stops at the decision "pick properties". The decision shows each property, its function and its draft statement.
 2. **Given** that decision, **When** the person answers it from any front end, **Then** the core records the answer. The run continues with the same result in all four front ends.
-3. **Given** a rig with no code that fits v1. **When** the person starts `prove`. **Then** the run ends with the reason "no code fits v1". It names the limit that each part of the code breaks.
+3. **Given** a rig with no code that fits a path of this spec. **When** the person starts `prove`. **Then** the run ends with the reason "no code fits". It names the limit that each part of the code breaks.
 
 ---
 
@@ -191,7 +236,7 @@ A prover finds that a statement is false for the real code, or that it cannot be
 
 If the critic accepts, the run stops at the decision "approve amendment". If the person approves, the factory applies the amendment to the held-out copy and records it. If an amendment makes the statement weaker so that it fits the code, the critic refuses it. The factory files a bead on the rig: the code can have a bug.
 
-**Why this priority**: Real code often differs from the first statement. Without this step, a run stops for good, or a prover weakens the statement in secret. It is P2 because v1 can stop the run and ask the person instead.
+**Why this priority**: Real code often differs from the first statement. Without this step, a run stops for good, or a prover weakens the statement in secret. It is P2 because phase 1 can stop the run and ask the person instead.
 
 **Independent Test**: A prover proposes an amendment that adds a false hypothesis, and the critic refuses it. A prover proposes a necessary, small amendment, and the critic accepts it. The run stops at the decision. The person approves it. The held-out copy changes, and the record names the person.
 
@@ -263,7 +308,13 @@ The person sees the prove run, its station, its decisions and its gatekeeper res
   - gatekeeper
   - repair
 - **FR-003**: A rig MUST be able to start `prove` on a bead (`factory:prove`) and at a station (`prove@repair`), as with other workflows.
-- **FR-004**: The workflow MUST refuse code that does not fit v1. It MUST name the limit that the code breaks (threads, dynamic linking, signals, JIT, an unsupported target).
+- **FR-004**: The workflow MUST refuse code that does not fit a path that the factory has. It MUST name the limit that the code breaks (threads, dynamic linking, signals, JIT, I/O, an unsupported target or language).
+- **FR-004a**: Phase 1 MUST support the Go path: function-level proofs on the `GOARCH=arm64 CGO_ENABLED=0` proof build of the same commit and compiler as production.
+- **FR-004b**: The Go path MUST have a trusted spec of the Go `ABIInternal` calling convention for arm64.
+- **FR-004c**: The Go path MUST hook the runtime calls (`runtime.mallocgc`, the write barriers, `runtime.morestack`, `runtime.gopanic` and the panic entry points) with contracts. The owner MUST approve each contract with a decision before a proof can use it.
+- **FR-004d**: The Go path MUST add the AArch64 instructions that the Go compiler and the Go runtime assembly emit and that the upstream semantics does not have. Each added instruction MUST pass differential tests against the upstream test tools (Unicorn, Sail or `qemu-aarch64`), as the upstream instructions do.
+- **FR-004e**: The proof run MUST use `GODEBUG=asyncpreemptoff=1` and `GOMAXPROCS=1`.
+- **FR-004f**: The brief and the trusted base of each Go proof MUST name the gap: production runs the amd64 binary, and the proof covers the arm64 binary.
 
 **Decisions**
 
@@ -339,8 +390,9 @@ The person sees the prove run, its station, its decisions and its gatekeeper res
 
 ### Measurable Outcomes
 
-- **SC-001**: One property of the `substrate` egress-policy crate is proved, checked by the gatekeeper and merged with a CI job. The person does no step by hand other than the decisions.
+- **SC-001**: One property of `HostnamePattern.Matches` in `substrate` is proved on its arm64 proof build, checked by the gatekeeper and merged with a CI job. The person does no step by hand other than the decisions.
 - **SC-002**: The gatekeeper refuses 100% of a set of bad proofs (`sorry`, a new axiom, a weaker theorem, old machine code, a changed statement) and accepts the good proof.
+- **SC-001a**: The theorem of the pilot is proved false on the code before commit `6621f2b4` (the historical-bug check).
 - **SC-003**: Each approved theorem has a vacuity witness and at least one mutation test that the Lean kernel checks.
 - **SC-004**: After a change to a proved function, CI fails in the same pull request, and the factory files one bead and queues one repair run.
 - **SC-005**: The person answers each prove decision from each of the four front ends, and the core gives the same result.
@@ -348,17 +400,18 @@ The person sees the prove run, its station, its decisions and its gatekeeper res
 
 ## Assumptions
 
-- The upstream `rust_spec` DSL and `subroutine_ok` can state a contract for a Rust function that takes a string slice. The plan must confirm this with a small case first.
+- The upstream `subroutine_ok` and the separation-logic predicates can state a contract for a Go function under `ABIInternal`. The upstream DSLs are for C and Rust only, so a Go surface is new trusted code. The plan must confirm this with a small case first.
+- The Go toolchain version is the version in the rig's `go.mod` (`go 1.27.0` in `substrate` on 2026-11-10). The proof pins it.
 - The rig's proof code lives in the rig's repo, in one directory (for example, `proofs/`), as a Lake package.
 - A Linux runner with at least 16 GB of memory is available to the factory. A laptop on macOS cannot run `comparator`.
 - The existing gate and decision operations of the core (`gates.decide`, `gates.brief`, `decisions.list`, `decisions.answer`) are enough for the prove decisions. Spec 008 already makes them reach all front ends.
-- The upstream semantics is correct for the code that v1 proves. The brief names it as trusted.
+- The upstream semantics is correct for the code that phase 1 proves. The brief names it as trusted.
 
 ## Dependencies
 
 - Spec 008 (front-end parity): the core interface and the gate operations.
 - google-deepmind/code-verification `arm64-semantics/` (Apache-2.0), `comparator` (Apache-2.0) and `landrun` (MIT).
-- Lean `v4.34.0` through elan, `rustc` 1.98.1 with the `aarch64-unknown-linux-musl` target, `ld.lld`.
+- Lean `v4.34.0` through elan. The Go toolchain of the rig (`GOARCH=arm64`). `rustc` 1.98.1 to build the upstream tools.
 - The `ship` workflow for the pull request and the merge. The person merges.
 - The `sweeps` workflow for the proof check on the default branch.
 
@@ -366,7 +419,9 @@ The person sees the prove run, its station, its decisions and its gatekeeper res
 
 - A Lean model of the code tied to it by differential tests. Later step, for Go and TypeScript rigs.
 - A Rust verifier (Verus, or Aeneas to Lean). Later step.
+- Phase 2 (TypeScript through `.wasm`) and phase 3 (Rust and C native, Python). This spec lists them and the epic has beads for them, but they need their own spec work.
+- A proof of the amd64 binary that production runs. There is no x86-64 semantics.
 - Proofs about the shipped `cdylib` that Envoy loads (dynamic linking).
 - Threads, signals, dynamic linking and async code. These wait for upstream support.
-- Proofs about a protocol or a security game (as DeepMind did for Signal). v1 proves function contracts.
+- Proofs about a protocol or a security game (as DeepMind did for Signal). Phase 1 proves function contracts.
 - Changes to the upstream semantics. The factory reports an upstream bug. It does not fix it in this repo.
