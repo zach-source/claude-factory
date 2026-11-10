@@ -1,6 +1,9 @@
+import { stripLiveRunVars } from './worker-hook-test-env'
 import { expect, test } from 'bun:test'
 import { join } from 'node:path'
 import { clampTimeout } from './worker-hook'
+
+stripLiveRunVars()
 
 // claude-factory-p0yt: a Bash call's timeout never runs past the station's deadline
 const NOW = 1_000_000
