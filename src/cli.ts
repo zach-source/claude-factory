@@ -7157,8 +7157,8 @@ function removeRun(id: string): Run {
 }
 /**
  * Reaps every done or aborted run older than `days` with removeRun(). It also removes a dead launch script.
- * It follows the rules in gc.gcPlan(). A run that removeRun() refuses keeps all its files. gc.log and the
- * console name it with the reason, and the pass goes on with the next run.
+ * It follows the rules in gc.gcPlan(). If removeRun() throws, the run directory stays. Earlier steps can remove
+ * the worktree. gc.log and the caller output name the refusal. The pass continues with the next run.
  *
  * `--dry-run` prints the runs it would reap. It deletes nothing (claude-factory-503.1, claude-factory-lt4u).
  */
@@ -13413,7 +13413,7 @@ const usage = `factory — herdr software factories on xstate
                                      starts one, at most hourly, FACTORY_GC_MS; FACTORY_GC=0 turns it off)
   gc --worktrees [--dry-run] [--rig NAME]   finished runs: drop a worktree, and its factory/* branch
                                      once it is merged, or its PR is closed and its bead is closed;
-                                     never a live run or an unmerged branch; --dry-run only prints
+                                     never a live run or a branch that fails these rules; --dry-run only prints
                                      what it would remove, without a stamp or journal (each tick starts one, at most daily,
                                      FACTORY_GC_WORKTREES_MS; FACTORY_GC_WORKTREES=0 turns it off)
                                      Both gc forms use gc.run locally or POST /v1/gc in server mode.
