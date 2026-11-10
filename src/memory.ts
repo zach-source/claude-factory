@@ -2442,7 +2442,7 @@ ${journal.join('\n') || '(nothing new)'}`
 
 /** the first value flag in `args` whose next word is missing or starts with `--` (claude-factory-svah) */
 export function bareValueFlag(args: string[], flags: readonly string[]): string | undefined {
-  void args
-  void flags
-  return undefined
+  return args.find(
+    (w, i) => flags.includes(w) && (args[i + 1] === undefined || args[i + 1]!.startsWith('--')),
+  )
 }
