@@ -1390,6 +1390,11 @@ export const GATED_KINDS: { id: string; re: RegExp; tail?: RegExp; phrase: strin
     phrase: 'change the live Claude token slot',
     deny: 'The person did not confirm this token swap. Ask them to run it.',
   },
+  {
+    re: /\bfactory\s+settings\s+(?:set|unset)\b/g,
+    phrase: 'change a factory setting that sets what a worker runs, reaches or spends',
+    deny: 'The person did not confirm this settings change. Ask them to run it.',
+  },
 ]
 
 // Cadence and log caps. The mod and `factory patrol --once` (src/once.ts) use the same values.
