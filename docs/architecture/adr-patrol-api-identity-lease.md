@@ -221,43 +221,73 @@ Inspect `git diff origin/main -- deploy src/server.ts src/cli.ts src/once.ts src
 
 ### AC6: Complete checks and audit contract
 
-Proof: `bun run test`, `bun run typecheck`, `bun run format:check`, `bun audit`, and `gitleaks detect --log-opts=origin/main..HEAD`.
-Required CI checks must pass on the final PR head: test, plugin, typecheck, and format.
+Proof: run `bun run test`, `bun run typecheck`, `bun run format:check`, `bun audit`, and `gitleaks detect --log-opts=origin/main..HEAD`.
+Apply the evidence rules below to local failures. A failed local command must never appear as a pass.
+Required CI checks must pass on the final PR head: test, plugin, typecheck, and format. Require the Nix job too.
 Audit tests must assert the exact field set and no token, digest, body, free text, or raw error.
 Report tool gaps plainly. No AC in this dormant increment is must-see-live.
 
-### AC6 recovery plan after three partial passes
+### AC6 evidence boundary after four partial passes
 
 Task `claude-factory-1ocuv.6` remains open. Tasks `.1` through `.5` remain closed.
 The AX parent fix retains the separate real-bd test and every test limit.
-The remaining gate evidence does not establish a patrol regression.
-Do not change patrol behavior to address an unrelated scan-time failure.
+The prior recovery plan combined patrol proof, unrelated scanner repairs, and unavailable VM inputs into one task.
+It supplied no terminal rule for those input gaps. Repeated main merges also invalidated the prior head evidence.
+This section replaces that recovery plan. It changes the evidence boundary, not any test or runtime behavior.
 
-Use this order for the next implementation pass:
+Evidence at plan head `2f18dd26`, against fetched main `8d6a84ed`:
 
-1. Read task `.6` and its comments. Check the draft PR head and its required checks.
-2. Compare the local tools with `.github/workflows/ci.yml`. Use Bun 1.4.4 and Prettier 3.9.9.
-3. Run the focused `src/worker-hook-38jm.test.ts` suite without concurrent checks. Record each failed row and its duration.
-4. Measure the same rows at `origin/main` in this worktree. Restore only the files that this comparison changes.
-5. Select one measured scanner cost. State one hypothesis before a code change.
-6. Make one minimal fix. Keep the existing assertions, input sizes, and time limits.
-7. Repeat the baseline command. Reject the fix if the target still fails after two attempts.
-8. Commit a successful fix before its separate guard mutations. Push before the next task.
-9. Repeat the focused home-guard and worker-hook failures from task `.6` in sequence.
-10. Merge `origin/main`, then run the complete CI-equivalent gate at the final head.
+- The complete diff has eight files. No scanner, home guard, token guard, model module, package manifest, or lockfile differs.
+- `bun test --timeout 30000 src/worker-hook-38jm.test.ts` gives 57 passes and two failures.
+- Its 40000-word rows take 590.15 ms and 593.26 ms. Each unchanged limit is 500 ms.
+- Existing beads `claude-factory-qn8a.121` and `.107` record these failures before this patrol change.
+- `.github/workflows/ci.yml` explicitly excludes mod types because unattended CI cannot create the required session files.
+- The journal records 30 model-download failures and unrelated local time failures. Their cause is not a patrol diagnosis.
 
-The full test command must retain `PKGGATE_E2E_REQUIRE=1` and `PG_SCRATCH_REQUIRE=1`.
-Use a script in `.scratch/` for these environment variables and the required local tools.
-Run the complete plugin check, root type check, format check, audit, and secret scan.
-Run `bun run typecheck` separately. Report absent generated mod types as a local input gap.
-The CI root type check does not prove the mod type check.
-Report failed model downloads separately from tests that execute and fail.
-Do not bypass network limits or obtain live credentials for model data.
-Do not close `.6` from a focused pass or an older green CI head.
-The final report must retain each unresolved local failure and the exact-head CI result.
+Do not optimize the worker hook in this run. The rig goal puts that epic last.
+Keep all assertions, input sizes, time limits, required checks, and model tests unchanged.
+Do not add a local skip, a CI exception, fake mod types, or a network workaround.
 
-This plan adds no activation, credential change, scanner bypass, larger limit, or weaker assertion.
-It does not authorize a ready report while a required check remains incomplete.
+The final evidence table must apply these closed rules:
+
+| Local result | Required disposition |
+| --- | --- |
+| Any AC1 through AC5 failure, audit failure, or changed-code regression | Fix in this run; no exception |
+| The two 38JM AC8 time failures | Record under `claude-factory-qn8a.121`; require unchanged code and green full CI |
+| Existing long shell or trap-chain time failures | Record under `claude-factory-qn8a.107`; require unchanged code and green full CI |
+| Existing home-guard time failure | Record under `claude-factory-2ha7f`; require unchanged code and green full CI |
+| Model tests fail because model download is unavailable | Record under `claude-factory-d7qpg`; require those tests to execute successfully in CI |
+| Generated mod config or session types absent | Report mod types unverified; require root types and plugin tests locally and in CI |
+| Nix dependency download fails before compilation | Report local build unverified; require exact-head Nix build and smoke test |
+| Any other failure, changed failure class, missing CI test, or incomplete CI | Keep `.6` open; fix or report the specific external blocker |
+
+For each time failure, cite the exact test, duration, unchanged limit, and existing bead.
+Check the test, implementation, local imports, package manifest, and lockfile against the fetched main commit.
+If any relevant input differs, the exception does not apply without a same-environment baseline reproduction.
+An empty diff proves equal source, not equal machine speed. Do not label the cause as VM load without evidence.
+The five CI jobs must refer to the final PR head, not an older green head or an unrelated main run.
+The test job must execute the complete suite with `PKGGATE_E2E_REQUIRE=1` and `PG_SCRATCH_REQUIRE=1`.
+No failed required check qualifies for an exception. Follow the brief's runner-loss rule when applicable.
+
+The next pass has one remaining task, `.6`, with a 120-minute budget:
+
+1. Read the PR, task, and final diff. Merge main once if necessary, before the final checks. Budget: 10 minutes.
+2. Run AC1 through AC5 and the full local gate with the CI tools and required environment variables. Budget: 60 minutes.
+3. Run root types, plugin, format, audit, and secret checks. Record mod and Nix input gaps separately. Budget: 15 minutes.
+4. Write one evidence addendum in this ADR, then commit it. Check the ADR with Prettier and `git diff --check`.
+5. Push the commit and inspect all five exact-head CI jobs. Close `.6` only under the table above. Budget: 35 minutes.
+
+The full local test command remains `bun run test`; run the plugin command separately if the test phase fails.
+Use a `.scratch/` script for environment variables and tool setup. Do not change the package scripts or CI workflow.
+After the evidence-only commit, prior local checks remain valid for unchanged code; CI must prove the new commit.
+A later source merge or fix invalidates affected local evidence. Repeat the affected checks before the final report.
+If CI exceeds the pass budget, report blocked on PR 825 and its exact SHA. Do not restart scanner repair work.
+No new regression tests are needed for this evidence-only task. Any actual fix needs a test that fails first.
+The existing patrol mutations remain valid while their source and tests remain unchanged.
+The final report must list local failures even when the acceptance evidence comes from green exact-head CI.
+
+This split adds no production risk or new dependency on the separate repair beads.
+No existing bug becomes more frequent, wider, or longer: the patrol listener remains dormant.
 
 ## Test plan and tasks
 
