@@ -10,6 +10,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -3487,9 +3488,14 @@ test('laptopSandbox wraps on darwin and fails closed elsewhere', () => {
   const empty = laptopSandbox('claude', wt, { ...mac, env: { CODEX_HOME: '' } })
   expect(empty).toContain(join(home, '.codex'))
   expect(empty).not.toContain('(subpath "")')
-  // the worktree's real path is not found: a file where a dir should be
+  // a file where a dir should be: realPath resolves the parent, so no throw
   writeFileSync(join(home, 'file'), 'x')
   expect(refused(() => laptopSandbox('claude', join(home, 'file', 'x'), mac))).toBeUndefined()
+  // a symlink loop (ELOOP): realPath returns undefined, so the launch is refused
+  symlinkSync('loop', join(home, 'loop'))
+  const loop = refused(() => laptopSandbox('claude', join(home, 'loop', 'x'), mac))
+  expect(loop).toMatchObject({ type: 'FAIL', seq: 1 })
+  expect(loop?.reason).toContain('cannot find the real path')
 })
 
 // claude-factory-o7h6h: launch() asks the sandbox first and wraps the worker. A child process, as above.
