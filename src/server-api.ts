@@ -478,6 +478,8 @@ type CallRow = {
 }
 
 const WEEK = 7 * DAY
+// a row keeps the call args only when their JSON is this short; else it keeps the byte count
+const ARGS_MAX = 2048
 // the same cap as OUTBOX_MAX_BYTES in src/worker.ts
 const TEXT_MAX = 102_400
 const WORKER_KINDS = { '/v1/report': 'report', '/v1/mail': 'mail', '/v1/progress': 'progress' } as const
@@ -623,9 +625,10 @@ export function workerHandler(o: {
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
         return bad(400, 'body must be an object')
       const b = parsed as Record<string, unknown>
-      args = Object.fromEntries(
+      const cut = Object.fromEntries(
         Object.entries(b).map(([k, v]) => [k, typeof v === 'string' ? v.slice(0, 500) : v]),
       )
+      args = JSON.stringify(cut).length <= ARGS_MAX ? cut : { bytes: Buffer.byteLength(raw) }
       for (const [k, v] of Object.entries({ run: claims.run, node: claims.node, seq: claims.seq }))
         if (Object.hasOwn(b, k) && b[k] !== v)
           return bad(403, `the token is for run ${claims.run} node ${claims.node} seq ${claims.seq}`)

@@ -179,6 +179,20 @@ describe('worker API', () => {
     expect(s.calls.length).toBe(1)
   })
 
+  test('row size: a big nested value or many keys do not grow the refused row', async () => {
+    const big = { ...REP, run: Array.from({ length: 12000 }, () => 'x'.repeat(5)) }
+    const many = Object.fromEntries(Array.from({ length: 1500 }, (_, i) => [`k${i}`, 1]))
+    for (const bodyIn of [big, { ...REP, ...many }]) {
+      const s = setup()
+      const r = await s.post('/v1/report', bodyIn)
+      expect([400, 403]).toContain(r.status)
+      const row = Object.values(s.rows())[0]!
+      expect(row.status).toBe('refused')
+      expect(JSON.stringify(row).length).toBeLessThan(4096)
+      expect(s.calls.length).toBe(0)
+    }
+  })
+
   test('token: each bad token is refused before any row', async () => {
     const s = setup()
     const good = s.token()
