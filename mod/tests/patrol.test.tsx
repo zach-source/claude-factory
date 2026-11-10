@@ -14,6 +14,7 @@ const OUTSIDE_TEXT = [
   '/fixture/home/other/a',
   '/fixture/home/text-other/a',
   '/fixture/home/text/../a',
+  '/fixture/home/text/sub/../../a',
   '/fixture/home/text',
   '/fixture/home/text/',
   '',
@@ -35,6 +36,8 @@ const INSIDE_TEXT = [
   '/fixture/home/text/sub/a',
   '/fixture/home/text//a',
   '/fixture/home/text/sub/../a',
+  '/fixture/home/text/./a',
+  '/../../fixture/home/text/a',
   '/fixture/home/text/space 雪',
   '/fixture/home/text/$literal;`name`',
   '/fixture/home/text/back\\slash',
@@ -87,7 +90,13 @@ for (const home of ['/fixture/home', '', undefined, 'relative', '/fixture/\0home
   })
 }
 
-for (const home of ['/fixture/home', '/fixture/home/', '/fixture/home space']) {
+for (const home of [
+  '/fixture/home',
+  '/fixture/home/',
+  '/fixture/home space',
+  '/fixture/other/../home',
+  '/fixture//home',
+]) {
   test(`oxib AC2 allowed paths with home ${home}`, SLOW, async ($, on) => {
     const clock = mock.clock(on)
     const files = new Map<string, string>()

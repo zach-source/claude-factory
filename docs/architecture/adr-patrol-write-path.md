@@ -48,6 +48,8 @@ The closed path grammar is:
 Use the platform path library, where the mod runtime supports it. Do not add a dependency or a shell subprocess.
 Tests must exercise the actual mod runtime to prove that the chosen API works there.
 Keep the predicate local unless the mod runtime needs an existing shared path utility.
+The runtime rejected `node:path` in the implementation test.
+Use a local component normalizer because the runtime permits only relative imports and `claude-code`.
 
 This is lexical confinement, not filesystem isolation.
 The hook does not resolve symlinks or detect hard links, mounts, or concurrent path replacement.
@@ -57,7 +59,8 @@ The upgrade path is an OS boundary or a writer with directory-relative, no-follo
 Bash redirects, Edit, NotebookEdit, and other tools are outside this rule.
 Do not claim that this hook prevents all patrol writes outside `text/`.
 
-Change `mod/hooks/register.tsx`, `mod/tests/patrol.test.tsx`, and one release bullet at the end of Unreleased in `CHANGELOG.md`.
+Change `mod/hooks/register.tsx` and `mod/tests/patrol.test.tsx`.
+The implement brief prohibits a changelog entry or version change. The release step writes the changelog.
 Use `mod/tests/gate.test.ts` only if an existing settings hook needs a composition regression.
 Retain any settings protection from `claude-factory-qh8v2.4` if it lands first.
 The tasks do not depend on that bead and must not stack on its branch.
