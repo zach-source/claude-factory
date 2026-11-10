@@ -859,6 +859,7 @@ test('geo6 AC3 health gate', () => {
 
 test('geo6 AC4 durable follow-up', () => {
   for (const sentence of [
+    'The next follow-up and record rules apply only to deadline-based healthy with unseen output.',
     'Before deadline-based healthy, search `bd list -l verify:live --status open,in_progress,blocked` and read candidate bodies.',
     'Reuse one active bead only when the source release bead matches.',
     'Reuse requires the same release version.',
