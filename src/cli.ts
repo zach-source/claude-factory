@@ -9125,6 +9125,8 @@ function refusePatrolDiscovered(b: ReturnType<typeof beads>, x: Bead) {
       // next stays null: refused below
     }
     if (!next) return no(`has a parent ${p} the patrol cannot read`)
+    if (seen.size === 1 && (next.labels?.some(isHoldLabel) || isOwned(next)))
+      no(`has a parent ${p} with a hold`)
     cur = next
   }
 }

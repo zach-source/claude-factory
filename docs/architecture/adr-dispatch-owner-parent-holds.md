@@ -34,6 +34,7 @@ This shared rule covers dispatch and PM candidates without extra `bd` calls.
 In `rigFacts`, filter the candidate's own hold labels before the 40-candidate cap.
 Retain the existing owner, open-child, and Linear filters.
 The patrol target check uses the shared label predicate; preserve its existing ancestor discovery checks.
+The patrol also refuses a direct parent with a hold label or `owner_decisions`.
 
 Files: `src/beads.ts`, `src/cli.ts`, and the four test files in AC1 through AC4.
 No new module, dependency, flag, or factory definition is necessary.

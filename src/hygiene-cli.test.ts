@@ -296,6 +296,40 @@ test('jmvx AC1 AC2 patrol queue and named start refuse target holds; a person re
   }
 })
 
+test('jmvx AC3 patrol queue and named start refuse direct parent holds', () => {
+  const holds = ['owner', 'human', 'rejected', 'held:', 'held:station', 'held:cluster:acme']
+  for (const label of [...holds, 'decisions', '', 'ownerish', 'Owner', 'humane', 'held', 'rejected-by']) {
+    for (const verb of ['queue', 'start']) {
+      setup([])
+      const parent = {
+        id: 'acme-1',
+        labels: label === 'decisions' ? [] : [label],
+        ...(label === 'decisions' && { metadata: { owner_decisions: ['answer'] } }),
+      }
+      const child = { id: 'acme-1.1', parent: 'acme-1', labels: ['factory'] }
+      writeFileSync(
+        join(bin, 'bd'),
+        readFileSync(join(bin, 'bd'), 'utf8').replace(
+          /  show\) .*\n/,
+          `  show) case "$2" in acme-1) printf '%s' '${JSON.stringify([parent])}';; acme-1.1) printf '%s' '${JSON.stringify([child])}';; *) exit 1;; esac;;\n`,
+        ),
+      )
+      const args = verb === 'queue' ? ['queue', 'a', child.id] : ['start', 'lifecycle', 'a', child.id]
+      const r = factory(args, { FACTORY_PATROL: '1' })
+      if (holds.includes(label) || label === 'decisions') {
+        expect(r.code).not.toBe(0)
+        expect(r.err + r.out).toContain('parent acme-1 with a hold')
+        expect(callLines().some(l => /^(update|create|claim|comment)\b/.test(l))).toBe(false)
+        expect(existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')) : []).toEqual([])
+      } else {
+        expect(r.err + r.out).not.toContain('a patrol cannot start it')
+        if (verb === 'queue') expect(r.code).toBe(0)
+        else expect(callLines()).toContain('children acme-1.1 --json --actor factory')
+      }
+    }
+  }
+})
+
 test('jmvx AC1 patrol queue permits literal hold lookalikes', () => {
   for (const label of ['', 'ownerish', 'Owner', 'humane', 'held', 'rejected-by']) {
     setup([])
