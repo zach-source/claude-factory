@@ -55,7 +55,7 @@ test('AC2: the gap file holds the four seed gaps and the Herdr mod tab gaps (hpm
     ['runners.show', 19, 'Runners'],
     ['runs.screen', 20, 'AX worker screens'],
   ] as const
-  expect(parseGaps(readFileSync(GAPS_FILE, 'utf8'))).toEqual([
+  expect(parseGaps(readFileSync(GAPS_FILE, 'utf8')).filter(g => g.op !== 'gc.run')).toEqual([
     row('cli', 'claude-factory-hpmc.8'),
     row('claude-mod', 'claude-factory-hpmc.9'),
     row('herdr-mod', 'claude-factory-hpmc.10'),
@@ -84,6 +84,32 @@ test('AC2: the gap file holds the four seed gaps and the Herdr mod tab gaps (hpm
       reason,
     })),
   ])
+})
+
+test('n69b2 AC6 gc has exactly three explicit front-end gaps with open beads', () => {
+  const gaps = parseGaps(readFileSync(GAPS_FILE, 'utf8')).filter(g => g.op === 'gc.run')
+  expect(gaps.map(g => [g.frontEnd, g.bead])).toEqual([
+    ['web', 'claude-factory-5aweq'],
+    ['claude-mod', 'claude-factory-j3zj6'],
+    ['herdr-mod', 'claude-factory-zsuj2'],
+  ])
+  expect(() => parseGaps(JSON.stringify([...gaps, gaps[0]]))).toThrow('duplicate')
+  expect(() => parseGaps(JSON.stringify([{ ...gaps[0], op: 'unknown.gc' }]))).toThrow('not in the catalog')
+  for (const status of ['open', 'closed']) {
+    const lines: string[] = []
+    expect(
+      parity({
+        file: GAPS_FILE,
+        print: line => lines.push(line),
+        show: id => ({
+          code: 0,
+          out: JSON.stringify([{ id, status: gaps.some(g => g.bead === id) ? status : 'open' }]),
+          err: '',
+        }),
+      }),
+    ).toBe(status === 'open' ? 0 : 1)
+    if (status === 'closed') expect(lines.filter(line => line.includes('gc.run'))).toHaveLength(3)
+  }
 })
 
 test('AC3: a generic view that cannot run catalog.echo is a problem unless a gap covers it', async () => {

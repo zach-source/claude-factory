@@ -13409,13 +13409,15 @@ const usage = `factory — herdr software factories on xstate
   gc [--days N] [--dry-run]          done or aborted runs older than N days (default 7, FACTORY_GC_DAYS):
                                      remove the whole run as rm does (worktree, state; the branch stays,
                                      its record goes to metrics.jsonl; refusals go to gc.log) and a dead
-                                     launch script; --dry-run prints the runs it would reap, deleting nothing (each tick
+                                     launch script; --dry-run prints eligible runs without removal and can write gc.stamp (each tick
                                      starts one, at most hourly, FACTORY_GC_MS; FACTORY_GC=0 turns it off)
   gc --worktrees [--dry-run] [--rig NAME]   finished runs: drop a worktree, and its factory/* branch
                                      once it is merged, or its PR is closed and its bead is closed;
                                      never a live run or an unmerged branch; --dry-run only prints
-                                     what it would remove (each tick starts one, at most daily,
+                                     what it would remove, without a stamp or journal (each tick starts one, at most daily,
                                      FACTORY_GC_WORKTREES_MS; FACTORY_GC_WORKTREES=0 turns it off)
+                                     Both gc forms use gc.run locally or POST /v1/gc in server mode.
+                                     Use each flag once. Do not mix --days with --worktrees or --rig with plain gc.
   sweep                              one run per due (rig, sweep) pass, under factory "sweeps"
                                      (factories/sweeps.ts), parked at that station; writes
                                      sweeps.json and sweeps.jsonl (each tick starts one, at most

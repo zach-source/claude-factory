@@ -85,7 +85,7 @@ Supported positive decimal, fraction, and exponent values remain valid.
 Runtime files: `src/core/catalog.ts`, new `src/core/ops/gc.ts`, `src/cli.ts`, and `src/client.ts`.
 Change `src/server-api.ts` only if result plumbing needs it; use its existing catalog dispatch and transport guards.
 Add the three `gc.run` rows to `parity-gaps.json`. Keep unrelated gaps.
-Update the existing gc help and append one Unreleased changelog bullet at implementation.
+Update the existing gc help. The release step owns the changelog and version.
 Tests use the existing core, client, server, gc, and parity suites named below.
 
 - A catalog bridge back to the CLI leaves policy in a front end and risks recursion.
@@ -209,7 +209,7 @@ Do not run even plain dry-run against production in plan or verify: it can write
 
 1. `claude-factory-n69b2.1`: AC1 through AC5 tests. Check the expected baseline failures. Budget: 25 minutes.
 2. `claude-factory-n69b2.2`: core operation, port, CLI converter, output, and server route. Check AC1 through AC5. Budget: 55 minutes.
-3. `claude-factory-n69b2.3`: gap rows, help, changelog, mutations, and final checks. Check AC6 and the final head. Budget: 40 minutes.
+3. `claude-factory-n69b2.3`: gap rows, help, mutations, and final checks. Check AC6 and the final head. Budget: 40 minutes.
 
 Each task depends on the prior task. The report lists the assigned child IDs.
 
