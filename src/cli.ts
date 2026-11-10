@@ -11777,7 +11777,7 @@ async function rigListLines(print: Print) {
     if (r.mergeAuthority === true)
       print(`  merge authority: ship release station, ${mergeAuthority(r) ?? 'no origin: off'}`)
     if (r.mcp) print(`  mcp: ${safe.mcp}`)
-    for (const [k, v] of Object.entries(safe.params ?? {})) print(`  param ${k}: ${v}`)
+    for (const k of Object.keys(safe.params ?? {})) print(`  param ${k}: <hidden>`)
     if (safe.linear) {
       const extra = [
         safe.linear.projects?.length ? `projects ${safe.linear.projects.join('|')}` : '',

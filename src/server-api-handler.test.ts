@@ -13,6 +13,7 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
   const calls: Call[] = []
   let lastEnv: Record<string, string | undefined> = {}
   const logs: string[] = []
+  let boardCalls = 0
   const run = async (argv: string[], text?: string): Promise<RunResult> => {
     calls.push({ argv, text })
     return { code: 0, out: '{"ok":1}\n', err: '', ...o.result }
@@ -59,10 +60,10 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
       run,
       callTimeoutMs,
       port: { ...port, ...over },
-      board: () => (o.board === undefined ? null : o.board),
+      board: () => (boardCalls++, o.board === undefined ? null : o.board),
       log: l => logs.push(l),
     })
-  return { home, calls, logs, h: make(), make, env: () => lastEnv }
+  return { home, calls, logs, h: make(), make, env: () => lastEnv, boards: () => boardCalls }
 }
 type H = ReturnType<typeof setup>['h']
 const get = (h: H, path: string, headers: Record<string, string> = {}) =>
@@ -225,6 +226,15 @@ describe('refusals make zero calls', () => {
     ['unknown path', h => get(h, '/v1/nope'), 404],
     ['rigs with a query', h => get(h, '/v1/rigs?x=1'), 400],
     ['events with an extra segment', h => get(h, '/v1/events/x'), 404],
+    ['events with a duplicate after', h => get(h, '/v1/events?after=1&after=2'), 400],
+    ['events with an unknown query', h => get(h, '/v1/events?x=1'), 400],
+    ['board POST', h => post(h, '/v1/board', {}), 404],
+    ['board with Authorization', h => get(h, '/v1/board', { authorization: 'x' }), 403],
+    ['board with a query', h => get(h, '/v1/board?x=1'), 400],
+    ['board with a duplicate query', h => get(h, '/v1/board?x=1&x=2'), 400],
+    ['rigs POST', h => post(h, '/v1/rigs', {}), 404],
+    ['rigs with Authorization', h => get(h, '/v1/rigs', { authorization: 'x' }), 403],
+    ['rigs with a duplicate query', h => get(h, '/v1/rigs?x=1&x=2'), 400],
     ['events POST', h => post(h, '/v1/events', {}), 404],
     ['events with Authorization', h => get(h, '/v1/events?after=zz', { authorization: '' }), 403],
     ['rigs PUT', h => h(new Request('http://x/v1/rigs/a', { method: 'PUT', body: '{}' }), 'ip'), 404],
@@ -285,6 +295,8 @@ describe('refusals make zero calls', () => {
       const r = await f(t.h)
       expect(r.status).toBe(status)
       expect(t.calls.length).toBe(0)
+      expect(t.boards()).toBe(0)
+      expect(t.h.subscribers()).toBe(0)
       expect(existsSync(join(t.home, 'client-idempotency.json'))).toBe(false)
       expect(existsSync(join(t.home, 'client-actions.jsonl'))).toBe(false)
     })
@@ -476,6 +488,7 @@ describe('events query grammar', () => {
       expect(r.status).toBe(200)
       expect(r.headers.get('content-type')).toBe('text/event-stream; charset=utf-8')
       expect(t.calls).toEqual([])
+      expect(t.boards()).toBe(0)
       await r.body!.cancel()
     })
   for (const q of bad)
@@ -483,10 +496,220 @@ describe('events query grammar', () => {
       const t = setup()
       expect((await get(t.h, `/v1/events${q}`)).status).toBe(400)
       expect(t.calls).toEqual([])
+      expect(t.boards()).toBe(0)
+      expect(t.h.subscribers()).toBe(0)
     })
 })
 
 describe('events replay and ring', () => {
+  test('events carry no private rig data, replay and live', async () => {
+    const t = setup()
+    const rig = { name: 'r', env: { FOO: 'zqsecret' }, params: { FOO: 'zqsecret' }, beadsRemote: 'zqsecret' }
+    t.h.publish({ rigs: [rig], n: 1 })
+    t.h.publish({ rigs: 'zqsecret', n: 9 })
+    const r = await get(t.h, '/v1/events')
+    setTimeout(() => t.h.publish({ rigs: [{ ...rig, repo: 'x' }], n: 2 }), 10)
+    const text = await frames(r, 2)
+    expect(text).not.toContain('zqsecret')
+    expect(text).toContain('"repo":"x"')
+    expect(text).not.toContain('"n":9')
+  })
+  const privRows: [string, Record<string, unknown>][] = [
+    ['env.FOO', { env: { FOO: 'zqsecret' } }],
+    ['env.API_KEY', { env: { API_KEY: 'zqsecret' } }],
+    ['params.FOO', { params: { FOO: 'zqsecret' } }],
+    ['params.API_KEY', { params: { API_KEY: 'zqsecret' } }],
+    ['beadsRemote', { beadsRemote: 'zqsecret' }],
+    ['beadsRemote url', { beadsRemote: 'https://u:zqsecret@h/r.git' }],
+    ['unknown', { extra: 'zqsecret' }],
+    ['unknown linear', { linear: { team: ['t'], extra: 'zqsecret' } }],
+    ['unknown linearSync', { linearSync: { at: 1, extra: 'zqsecret' } }],
+  ]
+  const kinds: [string, Record<string, unknown>][] = [
+    ['normal', {}],
+    ['halted', { halt: { mode: 'stop' } }],
+    ['read-only', { readOnly: true }],
+  ]
+  for (const runner of ['ax', 'herdr'])
+    for (const [kind, extra] of kinds)
+      for (const [name, priv] of privRows)
+        test(`events project ${name} (${runner}, ${kind}) before replay and live`, async () => {
+          const t = setup()
+          const rig = {
+            name: 'r',
+            repo: 'a',
+            factory: 'f',
+            goal: 'g',
+            sandboxClass: 'c',
+            runner,
+            maxRuns: 2,
+            sweeps: ['s1', 's2'],
+            ...priv,
+          }
+          const src = {
+            rigs: [rig],
+            runs: [1],
+            lease: 'L',
+            manager: { m: 1 },
+            reviews: [{ r: 1 }],
+            reviewed: ['x'],
+            halt: true,
+            ...extra,
+          }
+          const before = JSON.stringify(src)
+          t.h.publish(src)
+          const r = await get(t.h, '/v1/events')
+          setTimeout(() => t.h.publish({ ...src, rigs: [{ ...rig, repo: 'b' }] }), 10)
+          const text = await frames(r, 2)
+          const pub = {
+            name: 'r',
+            repo: 'a',
+            factory: 'f',
+            maxRuns: 2,
+            sweeps: ['s1', 's2'],
+            goal: 'g',
+            runner,
+            sandboxClass: 'c',
+            ...('linear' in priv ? { linear: { team: ['t'] } } : {}),
+            ...('linearSync' in priv ? { linearSync: { at: 1 } } : {}),
+          }
+          const { rigs: _rigs, ...rest } = src
+          expect(text).toBe(
+            frame(1, { rigs: [pub], ...rest }) + frame(2, { rigs: [{ ...pub, repo: 'b' }], ...rest }),
+          )
+          expect(JSON.stringify(src)).toBe(before)
+          expect(t.calls.length).toBe(0)
+          expect(t.boards()).toBe(0)
+          expect(t.logs.join('\n')).not.toContain('zqsecret')
+        })
+  test('events preserve the complete display and both frozen sources', async () => {
+    const t = setup()
+    const freeze = (o: unknown): void => {
+      if (o && typeof o === 'object') {
+        Object.freeze(o)
+        for (const v of Object.values(o)) freeze(v)
+      }
+    }
+    const rig = {
+      name: 'r',
+      repo: 'a',
+      factory: 'f',
+      goal: 'g',
+      runner: 'ax',
+      sandboxClass: 'c',
+      maxRuns: 3,
+      sweeps: ['s2', 's1', 's3'],
+      linear: { team: ['t2', 't1'], projects: ['p2', 'p1'], labels: ['l2', 'l1'] },
+      linearSync: { at: 5, pulled: 4, created: 3, updated: 2, stripped: 1, unrouted: 6, error: 'e' },
+      env: { FOO: 'zqsecret', API_KEY: 'zqsecret' },
+      params: { FOO: 'zqsecret' },
+      beadsRemote: 'https://u:zqsecret@h/r.git',
+    }
+    const other = {
+      runs: [{ id: 'x' }],
+      lease: 'L',
+      manager: { m: 1 },
+      reviews: [{ r: 1 }],
+      reviewed: ['x'],
+      halt: { mode: 'stop' },
+    }
+    const replaySource = { rigs: [rig], ...other }
+    const liveSource = { rigs: [{ ...rig, repo: 'b' }], ...other }
+    const replaySnap = JSON.stringify(replaySource)
+    const liveSnap = JSON.stringify(liveSource)
+    freeze(replaySource)
+    freeze(liveSource)
+    t.h.publish(replaySource)
+    const r = await get(t.h, '/v1/events')
+    setTimeout(() => t.h.publish(liveSource), 10)
+    const text = await frames(r, 2)
+    const pub = {
+      name: 'r',
+      repo: 'a',
+      factory: 'f',
+      maxRuns: 3,
+      sweeps: ['s2', 's1', 's3'],
+      goal: 'g',
+      runner: 'ax',
+      sandboxClass: 'c',
+      linear: { team: ['t2', 't1'], projects: ['p2', 'p1'], labels: ['l2', 'l1'] },
+      linearSync: { at: 5, pulled: 4, created: 3, updated: 2, stripped: 1, unrouted: 6, error: 'e' },
+    }
+    expect(text).toBe(
+      frame(1, { rigs: [pub], ...other }) + frame(2, { rigs: [{ ...pub, repo: 'b' }], ...other }),
+    )
+    const late = await get(t.h, '/v1/events?after=0')
+    expect(await frames(late, 2)).toBe(text)
+    expect(JSON.stringify(replaySource)).toBe(replaySnap)
+    expect(JSON.stringify(liveSource)).toBe(liveSnap)
+    expect(text).not.toContain('zqsecret')
+    expect(t.logs.join('\n')).not.toContain('zqsecret')
+    expect(t.calls.length).toBe(0)
+    expect(t.boards()).toBe(0)
+  })
+  const badRigs: [string, unknown][] = [
+    ['rigs string', 'zqsecret'],
+    ['null entry', [null]],
+    ['primitive entry', ['zqsecret']],
+    ['array entry', [['zqsecret']]],
+    ['name object', [{ name: { x: 'zqsecret' } }]],
+    ['maxRuns NaN', [{ maxRuns: NaN, repo: 'zqsecret' }]],
+    ['sweeps object member', [{ sweeps: [{ x: 'zqsecret' }] }]],
+    ['linear null', [{ linear: null, repo: 'zqsecret' }]],
+    ['linear array', [{ linear: ['zqsecret'] }]],
+    ['linear team object', [{ linear: { team: [{ x: 'zqsecret' }] } }]],
+    ['linearSync array', [{ linearSync: ['zqsecret'] }]],
+    ['linearSync error object', [{ linearSync: { error: { x: 'zqsecret' } } }]],
+    ['linearSync at string', [{ linearSync: { at: 'zqsecret' } }]],
+    ['linear primitive', [{ linear: 'zqsecret' }]],
+    ['linearSync null', [{ linearSync: null, repo: 'zqsecret' }]],
+    ['linearSync primitive', [{ linearSync: 'zqsecret' }]],
+    ...['repo', 'factory', 'goal', 'runner', 'sandboxClass', 'maxRuns', 'sweeps'].map(
+      (k): [string, unknown] => [`${k} object`, [{ [k]: { x: 'zqsecret' } }]],
+    ),
+    ...['team', 'projects', 'labels'].map((k): [string, unknown] => [
+      `linear.${k} object`,
+      [{ linear: { [k]: { x: 'zqsecret' } } }],
+    ]),
+    ...['at', 'pulled', 'created', 'updated', 'stripped', 'unrouted'].map((k): [string, unknown] => [
+      `linearSync.${k} object`,
+      [{ linearSync: { [k]: { x: 'zqsecret' } } }],
+    ]),
+  ]
+  for (const when of ['before subscription', 'with a subscriber'])
+    for (const [name, rigs] of badRigs)
+      test(`events reject malformed rig data (${name}, ${when}) without cache or delivery change`, async () => {
+        const t = setup()
+        const bad = { rigs, n: 9 }
+        const before = JSON.stringify(bad)
+        t.h.publish({ rigs: [{ name: 'ok' }], n: 1 })
+        if (when === 'before subscription') t.h.publish(bad)
+        const r = await get(t.h, '/v1/events')
+        setTimeout(() => {
+          if (when !== 'before subscription') t.h.publish(bad)
+          t.h.publish({ rigs: [{ name: 'ok2' }], n: 2 })
+        }, 10)
+        const text = await frames(r, 2)
+        expect(text).toBe(
+          frame(1, { rigs: [{ name: 'ok' }], n: 1 }) + frame(2, { rigs: [{ name: 'ok2' }], n: 2 }),
+        )
+        expect(text).not.toContain('zqsecret')
+        expect(JSON.stringify(bad)).toBe(before)
+        expect(t.logs.join('\n')).not.toContain('zqsecret')
+        expect(t.boards()).toBe(0)
+        const late = await get(t.h, '/v1/events?after=1')
+        expect(await frames(late, 1)).toBe(frame(2, { rigs: [{ name: 'ok2' }], n: 2 }))
+        expect(t.calls.length).toBe(0)
+      })
+  test('events deduplicate the public view', async () => {
+    const t = setup()
+    t.h.publish({ rigs: [{ name: 'r', env: { A: 'zqsecret' } }] })
+    t.h.publish({ rigs: [{ name: 'r', env: { A: 'other' }, params: { B: 'c' } }] })
+    t.h.publish({ rigs: [{ name: 'r2' }] })
+    expect(await frames(await get(t.h, '/v1/events'), 2)).toBe(
+      frame(1, { rigs: [{ name: 'r' }] }) + frame(2, { rigs: [{ name: 'r2' }] }),
+    )
+  })
   test('replay then live, each event once', async () => {
     const t = setup()
     t.h.publish({ a: 1 })

@@ -3,7 +3,7 @@
 // The goldens come from origin/main f80d1fe0, before the move. The same bytes must hold after it.
 // The fixtures copy gatebrief-cli.test.ts: a run `r1` at a gate and a run `r2` at `verify`.
 import { afterAll, beforeAll, expect, test } from 'bun:test'
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
@@ -172,7 +172,9 @@ beforeAll(() => {
         protectedBranches: ['main'],
         mergeAuthority: true,
         mcp: '/x/mcp.json',
-        params: { tier: 'small' },
+        params: { tier: 'small', FOO: 'zqsecret', API_KEY: 'zqsecret', empty: '' },
+        env: { FOO: 'zqsecret' },
+        beadsRemote: 'https://user:zqsecret@example.test/x',
         linear: { team: ['T1'], projects: ['p1'], labels: ['l1'] },
       },
       {
@@ -302,7 +304,7 @@ const GOLD: Record<string, Row> = {
   },
   n2: {
     code: 0,
-    out: 'alpha  <RA>  lifecycle  busy 0/2  sweeps none\n  goal: ship acme\n  slo: true\n  drift: true\n  agent: claude\n  person-only contexts: acme-prod\n  protected branches: main\n  merge authority: ship release station, no origin: off\n  mcp: /x/mcp.json\n  param tier: small\n  linear: team T1, projects p1, labels l1 (pulled 3, unrouted 1, 10m ago, list truncated at 50 pages)\nbeta  <RB>  lifecycle  busy 0  sweeps s1,s2\n  merge authority: ship release station, acme/widget\n  linear: team T2 (error 10m ago: boom)\ngamma  <RG>  lifecycle  busy 0  sweeps tidy\ndelta  <REPO>  lifecycle  busy 1  sweeps none\ntown: busy 1/16, stuck 0\n',
+    out: 'alpha  <RA>  lifecycle  busy 0/2  sweeps none\n  goal: ship acme\n  slo: true\n  drift: true\n  agent: claude\n  person-only contexts: acme-prod\n  protected branches: main\n  merge authority: ship release station, no origin: off\n  mcp: /x/mcp.json\n  param tier: <hidden>\n  param FOO: <hidden>\n  param API_KEY: <hidden>\n  param empty: <hidden>\n  linear: team T1, projects p1, labels l1 (pulled 3, unrouted 1, 10m ago, list truncated at 50 pages)\nbeta  <RB>  lifecycle  busy 0  sweeps s1,s2\n  merge authority: ship release station, acme/widget\n  linear: team T2 (error 10m ago: boom)\ngamma  <RG>  lifecycle  busy 0  sweeps tidy\ndelta  <REPO>  lifecycle  busy 1  sweeps none\ntown: busy 1/16, stuck 0\n',
     err: '',
   },
   m: {
@@ -375,6 +377,23 @@ test('the server answers the CLI bytes for the rig list', () => {
   expect(a).toEqual({ status: 200, body: GOLD.n2!.out })
   const [b] = serverGet(H0, ['/v1/rigs'])
   expect(b).toEqual({ status: 200, body: GOLD.n0!.out })
+})
+
+test('rigs.list hides every param value', () => {
+  const [a] = serverGet(H2, ['/v1/rigs'])
+  expect(a!.body).not.toContain('zqsecret')
+  for (const k of ['tier', 'FOO', 'API_KEY', 'empty']) expect(a!.body).toContain(`param ${k}: <hidden>`)
+  expect(a!.body).not.toContain('small')
+})
+
+test('rig reads by the CLI and the API leave the stored rigs unchanged', () => {
+  const files = ['rigs.json', 'linear-sync.json'].map(f => join(H2, f))
+  const read = () => files.map(f => readFileSync(f, 'utf8'))
+  const before = read()
+  expect(before[0]).toContain('zqsecret')
+  serverGet(H2, ['/v1/rigs', '/v1/rigs'])
+  Bun.spawnSync([CLI, 'rig', 'list'], { env: cleanEnv(H2), timeout: 30_000 })
+  expect(read()).toEqual(before)
 })
 
 test('a refusal of the server holds the CLI stderr line', () => {
