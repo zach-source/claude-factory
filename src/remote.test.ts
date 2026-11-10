@@ -612,6 +612,19 @@ test('yn9ag AC3: blank producer text and malformed boundaries cause no append or
   expect(existsSync(bd.marker)).toBe(false)
 })
 
+test('yn9ag AC3: outbox usage refuses each malformed literal form', () => {
+  for (const cmd of ['report', 'mail']) {
+    const prefix = cmd === 'report' ? ['r', '1', 'ready'] : ['r', 'manager']
+    const usage = cmd === 'report' ? worker.OUTBOX_USAGE.report : worker.OUTBOX_USAGE.mail
+    for (const tail of [['--'], ['--', ' '], ['--', 'text', 'extra']])
+      expect(worker.outboxUsage(cmd, [...prefix, ...tail])).toBe(usage)
+    expect(worker.outboxUsage(cmd, [...prefix, '--', '--wake'])).toBeNull()
+  }
+  expect(worker.outboxUsage('mail', ['r', 'manager', '--wake', '--', 'text', 'extra'])).toBe(
+    worker.OUTBOX_USAGE.mail,
+  )
+})
+
 test('yn9ag AC3: canonical argv byte cap includes boundaries and multibyte text', () => {
   const argv = ['mail', 'r', 'manager', '--', 'é']
   const prefix = argv.slice(0, -1).join('').length
