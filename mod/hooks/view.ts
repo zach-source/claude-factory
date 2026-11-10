@@ -1264,7 +1264,7 @@ function shownCommand(command: string): string {
  * mid-word) and matches across the quoted newline ([\s\S] instead of [^\n]) rather
  * than testing the raw text verbatim. A factory command with a shell substitution outside single quotes, or
  * a form this cannot read, is gated too: untrusted text in a template argument must not run on the laptop. */
-export function gatedCommand(rawCommand: string): { question: string; deny: string; ask: boolean } | null {
+export function gatedCommand(rawCommand: string): { question: string; deny: string; ask: boolean; kinds: string[] } | null {
   // claude-factory-0jr2.6: a comment line that ends in a backslash. Ask with the raw text, and match the kinds on the full join.
   const unreadable = commentContinues(rawCommand)
   const command = unreadable ? rawCommand.replace(/\\\n/g, '') : joinLines(rawCommand)
@@ -1326,6 +1326,7 @@ export function gatedCommand(rawCommand: string): { question: string; deny: stri
   return {
     // only a person-decision kind is worth a dialog; a substitution or unreadable form alone is denied at once
     ask: kinds.length > 0,
+    kinds: kinds.map(k => k.id),
     question: `The manager model wants to ${names.join(' and ')}: ${shownCommand(unreadable ? rawCommand : command)}.${substitution ? ` ${substitution.detail}` : ''}${hidden.length ? ` The text not shown holds: ${hidden.map(k => `${k.phrase}${times(k.hidden)}`).join(' and ')}.` : ''} Allow it?`,
     deny: [
       ...(unreadable
@@ -1350,35 +1351,41 @@ export function kindEnds(text: string, re: RegExp, tail?: RegExp): number[] {
 }
 
 /** The gated kinds in the order the question names them. Each regex has the g flag, so use matchAll, not test. */
-export const GATED_KINDS: { re: RegExp; tail?: RegExp; phrase: string; deny: string }[] = [
+export const GATED_KINDS: { id: string; re: RegExp; tail?: RegExp; phrase: string; deny: string }[] = [
   {
+    id: 'decide',
     re: /\bfactory\s+decide\b/g,
     phrase: 'decide a factory gate',
     deny: 'The person did not confirm this gate decision. Ask them which outcome they want.',
   },
   {
+    id: 'answer',
     re: /\bfactory\s+decisions\s+answer\b/g,
     phrase: "answer a person's bd decision",
     deny: 'The person did not confirm this answer. Ask them what they want to say instead.',
   },
   {
+    id: 'owned',
     re: /\bfactory\s+start\b[\s\S]*?--owned\b/g,
     tail: /--owned\b/g,
     phrase: "start a bead carrying its owner's decisions",
     deny: 'The person did not confirm starting this owner-only bead.',
   },
   {
+    id: 'wiki-init',
     re: /\bfactory\s+wiki\b[\s\S]*?\binit\b/g,
     tail: /\binit\b/g,
     phrase: 'create the factory wiki and set its remote',
     deny: 'The person did not confirm this wiki init. Ask them to run it.',
   },
   {
+    id: 'image',
     re: /\bfactory\s+image\b/g,
     phrase: 'build and push a factory image to a registry',
     deny: 'The person did not confirm this image push. Ask them to run it.',
   },
   {
+    id: 'token',
     re: /\bfactory\s+token\s+(use|best)\b/g,
     phrase: 'change the live Claude token slot',
     deny: 'The person did not confirm this token swap. Ask them to run it.',
