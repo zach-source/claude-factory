@@ -10,7 +10,11 @@ async function session(
   $: any,
   on: any,
   answer: string,
-  opts: { home?: string; failWrite?: boolean; onBash?: (command: string, files: Map<string, string>) => void } = {},
+  opts: {
+    home?: string
+    failWrite?: boolean
+    onBash?: (command: string, files: Map<string, string>) => void
+  } = {},
 ) {
   const clock = mock.clock(on)
   const home = opts.home ?? '/home/acme'
@@ -21,7 +25,9 @@ async function session(
   on('ui.status', () => ({ value: undefined }))
   on('process.run', (_: any, e: any) => {
     if (e.argv.includes('tick'))
-      return { value: { exitCode: 0, stdout: JSON.stringify({ manager: [], rigs: [], runs: [] }), stderr: '' } }
+      return {
+        value: { exitCode: 0, stdout: JSON.stringify({ manager: [], rigs: [], runs: [] }), stderr: '' },
+      }
     if (e.argv.includes('home')) return { value: { exitCode: 0, stdout: home, stderr: '' } }
     return { value: { exitCode: 0, stdout: '', stderr: '' } }
   })

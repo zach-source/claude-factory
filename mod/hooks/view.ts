@@ -1264,7 +1264,9 @@ function shownCommand(command: string): string {
  * mid-word) and matches across the quoted newline ([\s\S] instead of [^\n]) rather
  * than testing the raw text verbatim. A factory command with a shell substitution outside single quotes, or
  * a form this cannot read, is gated too: untrusted text in a template argument must not run on the laptop. */
-export function gatedCommand(rawCommand: string): { question: string; deny: string; ask: boolean; kinds: string[] } | null {
+export function gatedCommand(
+  rawCommand: string,
+): { question: string; deny: string; ask: boolean; kinds: string[] } | null {
   // claude-factory-0jr2.6: a comment line that ends in a backslash. Ask with the raw text, and match the kinds on the full join.
   const unreadable = commentContinues(rawCommand)
   const command = unreadable ? rawCommand.replace(/\\\n/g, '') : joinLines(rawCommand)
@@ -1391,6 +1393,7 @@ export const GATED_KINDS: { id: string; re: RegExp; tail?: RegExp; phrase: strin
     deny: 'The person did not confirm this token swap. Ask them to run it.',
   },
   {
+    id: 'settings',
     re: /\bfactory\s+settings\s+(?:set|unset)\b/g,
     phrase: 'change a factory setting that sets what a worker runs, reaches or spends',
     deny: 'The person did not confirm this settings change. Ask them to run it.',

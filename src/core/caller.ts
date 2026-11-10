@@ -56,7 +56,15 @@ export function managerSender(env: Env, cwd: string, run: { worktree?: string; r
 }
 
 /** claude-factory-6g6ud: the ids of the GATED_KINDS rows (mod/hooks/view.ts). A test keeps both lists equal. */
-export const MAIN_CHAT_KINDS = ['decide', 'answer', 'owned', 'wiki-init', 'image', 'token'] as const
+export const MAIN_CHAT_KINDS = [
+  'decide',
+  'answer',
+  'owned',
+  'wiki-init',
+  'image',
+  'token',
+  'settings',
+] as const
 
 /** the gated kind a command does, else undefined. A closed table: `decisions propose` is not gated (the interview prompt runs it). */
 export function mainChatKind(
@@ -69,6 +77,7 @@ export function mainChatKind(
   if (cmd === 'wiki' && args.includes('init')) return 'wiki-init'
   if (cmd === 'image') return 'image'
   if (cmd === 'token' && args.length > 0 && args[0] !== 'list') return 'token'
+  if (cmd === 'settings' && (args[0] === 'set' || args[0] === 'unset')) return 'settings'
   return undefined
 }
 

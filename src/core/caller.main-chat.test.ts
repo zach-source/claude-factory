@@ -19,8 +19,11 @@ test('mainChatKind is a closed table (AC3)', () => {
   expect(k('token', ['best'])).toBe('token')
   expect(k('token', [])).toBeUndefined()
   expect(k('token', ['list'])).toBeUndefined()
+  expect(k('settings', ['set', 'a', 'b'])).toBe('settings')
+  expect(k('settings', ['unset', 'a'])).toBe('settings')
+  expect(k('settings', ['list'])).toBeUndefined()
   expect(k('status', [])).toBeUndefined()
-  expect(new Set(MAIN_CHAT_KINDS)).toEqual(new Set(GATED_KINDS.map(g => g.id)))
+  expect(new Set<string>(MAIN_CHAT_KINDS)).toEqual(new Set(GATED_KINDS.map(g => g.id)))
 })
 
 const fresh = () => {
