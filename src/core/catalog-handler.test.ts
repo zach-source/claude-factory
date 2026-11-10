@@ -225,6 +225,135 @@ describe('input checks', () => {
     const r = await get(setup(() => 'idle').h, '/v1/board')
     expect(r.headers.get('content-type')).toBe('application/json')
   })
+  test('board.show omits private rig fields', async () => {
+    const rig = {
+      name: 'alpha',
+      repo: 'acme/widget',
+      factory: 'lifecycle',
+      maxRuns: 0,
+      sweeps: [],
+      goal: 'ship acme',
+      runner: 'ax',
+      sandboxClass: 'gvisor',
+      linear: { team: ['T1'], projects: ['p1'], labels: ['l1'], zqExtra: 'zqsecret' },
+      linearSync: {
+        at: 5,
+        pulled: 3,
+        created: 1,
+        updated: 2,
+        stripped: 0,
+        unrouted: 1,
+        error: 'boom',
+        zqExtra: 'zqsecret',
+      },
+      env: { FOO: 'zqsecret', API_KEY: 'zqsecret' },
+      params: { FOO: 'zqsecret', API_KEY: 'zqsecret' },
+      beadsRemote: 'https://user:zqsecret@example.test/x',
+      zqUnknown: 'zqsecret',
+    }
+    const bare = { name: 'beta', repo: 'acme/gadget', factory: 'lifecycle', env: { FOO: 'zqsecret' } }
+    const { h, calls, logs } = setup(() => ({ runs: [{ id: 'r1' }], halt: null, rigs: [rig, bare] }))
+    const r = await get(h, '/v1/board')
+    const text = await r.text()
+    expect(r.status).toBe(200)
+    expect(text).not.toContain('zqsecret')
+    for (const k of ['env', 'params', 'beadsRemote', 'zqUnknown', 'zqExtra']) expect(text).not.toContain(k)
+    const body = JSON.parse(text)
+    expect(body.runs).toEqual([{ id: 'r1' }])
+    expect(body.rigs[0]).toEqual({
+      name: 'alpha',
+      repo: 'acme/widget',
+      factory: 'lifecycle',
+      maxRuns: 0,
+      sweeps: [],
+      goal: 'ship acme',
+      runner: 'ax',
+      sandboxClass: 'gvisor',
+      linear: { team: ['T1'], projects: ['p1'], labels: ['l1'] },
+      linearSync: { at: 5, pulled: 3, created: 1, updated: 2, stripped: 0, unrouted: 1, error: 'boom' },
+    })
+    expect(body.rigs[1]).toEqual({ name: 'beta', repo: 'acme/gadget', factory: 'lifecycle' })
+    expect(calls).toEqual([])
+    expect(logs.join('')).not.toContain('zqsecret')
+  })
+  test('board.show projection preserves internal state', async () => {
+    const src = Object.freeze({
+      runs: [],
+      rigs: Object.freeze([{ name: 'a', repo: 'r', factory: 'f', env: { FOO: 'zqsecret' } }]),
+    })
+    const { h } = setup(() => src)
+    await get(h, '/v1/board')
+    expect(await (await get(h, '/v1/board')).json()).toEqual({
+      runs: [],
+      rigs: [{ name: 'a', repo: 'r', factory: 'f' }],
+    })
+    expect(src.rigs[0]!.env.FOO).toBe('zqsecret')
+    expect(await (await get(setup(() => ({ runs: [] })).h, '/v1/board')).json()).toEqual({ runs: [] })
+    expect(await (await get(setup(() => ({ rigs: [] })).h, '/v1/board')).json()).toEqual({ rigs: [] })
+  })
+  test('board.show keeps halt, mail, lease and review fields and both runners', async () => {
+    const rest = {
+      runs: [{ id: 'r1', review: { round: 2 } }],
+      halt: { mode: 'stop' },
+      mail: [{ to: 'manager', text: 'hi' }],
+      lease: { holder: 'm1' },
+    }
+    const rigs = [
+      { name: 'a', repo: 'r1', factory: 'f', runner: 'ax', env: { K: 'zqsecret' } },
+      { name: 'b', repo: 'r2', factory: 'f', runner: 'herdr', params: { K: 'zqsecret' } },
+    ]
+    const r = await get(setup(() => ({ ...rest, rigs })).h, '/v1/board')
+    const body = (await r.json()) as { rigs: unknown }
+    expect(body).toEqual({
+      ...rest,
+      rigs: [
+        { name: 'a', repo: 'r1', factory: 'f', runner: 'ax' },
+        { name: 'b', repo: 'r2', factory: 'f', runner: 'herdr' },
+      ],
+    })
+  })
+  test('POST /v1/board and /v1/rigs give no rig data', async () => {
+    const { h, calls } = setup(() => ({ rigs: [{ name: 'a', repo: 'r', factory: 'f' }] }))
+    for (const p of ['/v1/board', '/v1/rigs']) {
+      const r = await post(h, p, {})
+      expect(r.status).toBeGreaterThanOrEqual(400)
+      expect(await r.text()).not.toContain('"rigs"')
+    }
+    expect(calls).toEqual([])
+  })
+  const okRig = { name: 'a', repo: 'r', factory: 'f' }
+  const badLeaves: Record<string, unknown>[] = [
+    ...['name', 'repo', 'factory', 'goal', 'runner', 'sandboxClass'].map(k => ({ [k]: { env: 'zqsecret' } })),
+    { maxRuns: 'zqsecret' },
+    { maxRuns: { env: 'zqsecret' } },
+    { sweeps: [{ env: 'zqsecret' }] },
+    { sweeps: 'zqsecret' },
+    { linear: { team: [{ env: 'zqsecret' }] } },
+    { linear: { team: 'zqsecret' } },
+    { linear: { projects: [{ a: 'zqsecret' }] } },
+    { linear: { labels: [['zqsecret']] } },
+    { linear: ['zqsecret'] },
+    ...['at', 'pulled', 'created', 'updated', 'stripped', 'unrouted'].map(k => ({
+      linearSync: { [k]: { beadsRemote: 'zqsecret' } },
+    })),
+    { linearSync: { error: { beadsRemote: 'zqsecret' } } },
+    { linearSync: 'zqsecret' },
+  ]
+  for (const bad of badLeaves)
+    test(`board.show refuses ${JSON.stringify(Object.keys(bad))} ${JSON.stringify(bad).length} without echo`, async () => {
+      const { h, calls } = setup(() => ({ rigs: [{ ...okRig, ...bad }] }))
+      const r = await get(h, '/v1/board')
+      expect(r.status).toBe(500)
+      expect(await r.text()).not.toContain('zqsecret')
+      expect(calls).toEqual([])
+    })
+  test('board.show fails on a malformed rig without echoing it', async () => {
+    for (const rigs of ['zqsecret', { x: 'zqsecret' }, ['zqsecret'], [null]]) {
+      const r = await get(setup(() => ({ rigs })).h, '/v1/board')
+      expect(r.status).toBe(500)
+      expect(await r.text()).not.toContain('zqsecret')
+    }
+  })
   test('the board gives 503 before the first tick', async () => {
     expect((await get(setup().h, '/v1/board')).status).toBe(503)
   })
@@ -297,4 +426,133 @@ describe('runs.screen', () => {
     expect(auth.status).toBe(403)
     expect(calls).toEqual([])
   })
+})
+
+describe('rig endpoints: refusals and controls', () => {
+  const counted = (rigs: unknown = [{ name: 'a', repo: 'r', factory: 'f' }]) => {
+    const home = mkdtempSync(join(tmpdir(), 'cat-r-'))
+    const n = { board: 0, port: 0, run: 0 }
+    const p = new Proxy({} as Port, {
+      get: () => () => {
+        n.port++
+        throw new Error('port must not be called')
+      },
+    })
+    const run = async (): Promise<RunResult> => {
+      n.run++
+      return { code: 0, out: 'ok\n', err: '' }
+    }
+    const logs: string[] = []
+    const board = () => {
+      n.board++
+      return { rigs }
+    }
+    return { n, logs, h: clientHandler({ home, run, port: p, board, log: s => logs.push(s) }) }
+  }
+  const refusals: [string, string, RequestInit | undefined, number][] = []
+  for (const p of ['/v1/board', '/v1/rigs']) {
+    refusals.push(['Authorization header', p, { headers: { authorization: 'Bearer zqsecret' } }, 403])
+    refusals.push(['unknown query', p + '?zq=zqsecret', undefined, 400])
+    refusals.push(['duplicate query', p + '?zq=1&zq=2', undefined, 400])
+    refusals.push([
+      'POST',
+      p,
+      { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } },
+      404,
+    ])
+  }
+  for (const [what, p, init, status] of refusals)
+    test(p + ' ' + what + ' gives ' + status + ' and calls nothing', async () => {
+      const t = counted()
+      const r = await t.h(new Request('http://x' + p, init), '1.2.3.4')
+      expect(r.status).toBe(status)
+      expect(await r.text()).not.toContain('zqsecret')
+      expect(t.n).toEqual({ board: 0, port: 0, run: 0 })
+      expect(t.logs.join('')).not.toContain('zqsecret')
+    })
+
+  const secretRows = {
+    'env.FOO': { env: { FOO: 'zqsecret' } },
+    'env.API_KEY': { env: { API_KEY: 'zqsecret' } },
+    'params.FOO': { params: { FOO: 'zqsecret' } },
+    'params.API_KEY': { params: { API_KEY: 'zqsecret' } },
+    beadsRemote: { beadsRemote: 'https://u:zqsecret@example.test/x' },
+  }
+  const shapes: [string, (rigs: unknown[]) => Record<string, unknown>][] = [
+    ['normal', rigs => ({ runs: [{ id: 'r1', review: { round: 1 } }], halt: null, rigs })],
+    ['halted', rigs => ({ runs: [], halt: { mode: 'stop', at: 5 }, rigs })],
+    ['read-only', rigs => ({ readOnly: true, runs: [], halt: null, rigs })],
+  ]
+  const deepFreeze = <T>(o: T): T => {
+    if (o && typeof o === 'object') {
+      Object.freeze(o)
+      for (const v of Object.values(o)) deepFreeze(v)
+    }
+    return o
+  }
+  for (const [shape, mk] of shapes)
+    for (const [row, extra] of Object.entries(secretRows))
+      for (const runner of ['ax', 'herdr'])
+        test(
+          'board.show ' + shape + ' board hides ' + row + ' on a ' + runner + ' rig, source unchanged',
+          async () => {
+            const rig = { name: 'a', repo: 'r', factory: 'f', runner, ...extra }
+            const src = deepFreeze({
+              ...mk([rig]),
+              mail: [{ to: 'manager', text: 'hi' }],
+              lease: { holder: 'm1' },
+            }) as any
+            const before = JSON.stringify(src)
+            const t = counted()
+            const h = clientHandler({
+              home: mkdtempSync(join(tmpdir(), 'cat-r-')),
+              run: async () => {
+                t.n.run++
+                return { code: 0, out: '', err: '' }
+              },
+              port: new Proxy({} as Port, {
+                get: () => () => {
+                  t.n.port++
+                  throw new Error('port')
+                },
+              }),
+              board: () => src,
+              log: s => t.logs.push(s),
+            })
+            for (let i = 0; i < 2; i++) {
+              const r = await get(h, '/v1/board')
+              const text = await r.text()
+              expect(r.status).toBe(200)
+              expect(text).not.toContain('zqsecret')
+              const body = JSON.parse(text)
+              expect(body.rigs).toEqual([{ name: 'a', repo: 'r', factory: 'f', runner }])
+              expect(body.mail).toEqual(src.mail)
+              expect(body.lease).toEqual(src.lease)
+              expect(body.halt).toEqual(src.halt)
+              expect(body.runs).toEqual(src.runs)
+            }
+            expect(JSON.stringify(src)).toBe(before)
+            expect(t.n.port).toBe(0)
+            expect(t.n.run).toBe(0)
+            expect(t.logs.join('')).not.toContain('zqsecret')
+          },
+        )
+
+  for (const key of ['linear', 'linearSync'])
+    for (const [what, v] of [
+      ['null', null],
+      ['array', ['zqsecret']],
+      ['primitive', 'zqsecret'],
+      ['number', 7],
+    ] as [string, unknown][])
+      test('board.show ' + key + ' ' + what + ': no echo, no calls', async () => {
+        const t = counted([{ name: 'a', repo: 'r', factory: 'f', [key]: v }])
+        const r = await get(t.h, '/v1/board')
+        const text = await r.text()
+        expect(text).not.toContain('zqsecret')
+        expect(r.status).toBe(500)
+        expect(t.n.port).toBe(0)
+        expect(t.n.run).toBe(0)
+        expect(t.logs.join('')).not.toContain('zqsecret')
+      })
 })

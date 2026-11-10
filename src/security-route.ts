@@ -1,5 +1,5 @@
 // The runner decides whether a build goes to the security station.
-// It reads changed paths, the plan's Security-sensitive line and the bead labels.
+// It reads changed paths, the rig's sensitivePaths, the plan's Security-sensitive line and the bead labels.
 // Pure functions, no I/O.
 
 /** A reviewer's reason to send a not-required route to security: one line `Security-reason: <path>:<line> <text>`. */
@@ -72,6 +72,25 @@ export function planSecurity(summary: string | undefined): 'yes' | 'no' | undefi
   return loose ? 'yes' : undefined
 }
 
+/** One rig sensitivePaths entry: a repo path or directory (segments of letters, digits, . _ -; no . or .. segment; no glob). */
+export const SENSITIVE_ENTRY =
+  /^(?!.{201})(?!(?:.*\/)?\.\.?(?:\/|$))[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*\/?$/
+
+/** The rig's sensitivePaths: [] when unset, the list when every entry is valid, else null (malformed). */
+export function rigPaths(v: unknown): string[] | null {
+  if (v === undefined) return []
+  if (!Array.isArray(v) || !v.every(e => typeof e === 'string' && SENSITIVE_ENTRY.test(e))) return null
+  return v
+}
+
+const rigHit = (p: string, list: string[]): string => {
+  const e = list.find(x => {
+    const d = x.replace(/\/$/, '')
+    return p === d || p.startsWith(d + '/')
+  })
+  return e === undefined ? '' : `rig:${e}`
+}
+
 export type SecurityRoute = { required: boolean; why: string[] }
 
 // A file name can hold a newline: strip control characters and clip before it goes in a brief.
@@ -81,12 +100,14 @@ export function securityRoute(facts: {
   paths: string[] | null
   plan?: string
   labels: string[] | null
+  rigPaths?: string[] | null
 }): SecurityRoute {
   const why: string[] = []
   if (facts.paths === null) why.push('paths unknown')
   if (facts.labels === null) why.push('bead labels unknown')
+  if (facts.rigPaths === null) why.push('rig sensitivePaths malformed')
   const hits = (facts.paths ?? []).flatMap(p => {
-    const r = sensitivePath(p)
+    const r = sensitivePath(p) || rigHit(p, facts.rigPaths ?? [])
     return r ? [`${clean(p)} (${r})`] : []
   })
   why.push(...hits.slice(0, 5))
