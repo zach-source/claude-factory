@@ -56,23 +56,20 @@ export class PatrolLease {
     )
       this.current = undefined
     const current = this.current
+    if (operation === 'acquire') {
+      if (current && !current.terminal && (current.owner !== owner || !current.keys.has(key))) return refuse()
+    } else if (
+      !current ||
+      current.owner !== owner ||
+      body.generation !== current.generation ||
+      (current.terminal && operation !== 'complete')
+    )
+      return refuse()
     const prior = this.replays.has(key)
     if (operation === 'acquire') {
-      if (
-        (current && !current.terminal && (current.owner !== owner || !current.keys.has(key))) ||
-        (current?.terminal && prior) ||
-        (!current && prior)
-      )
-        return refuse()
+      if ((current?.terminal && prior) || (!current && prior)) return refuse()
     } else {
-      if (
-        !current ||
-        current.owner !== owner ||
-        body.generation !== current.generation ||
-        (prior && !current.keys.has(key)) ||
-        (current.terminal && (operation !== 'complete' || !prior))
-      )
-        return refuse()
+      if ((prior && !current!.keys.has(key)) || (current!.terminal && !prior)) return refuse()
     }
     const replay = this.lookup(key)
     if (replay) {

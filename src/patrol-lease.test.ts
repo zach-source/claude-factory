@@ -153,6 +153,26 @@ describe('1ocuv AC4 remote lease exclusion and replay', () => {
     expect(t.lookup).not.toHaveBeenCalled()
     expect(t.acquire('new-acquire')).toEqual(newer)
   })
+  test('identity and generation fences precede even the replay key index', () => {
+    const t = setup()
+    const first = t.first()
+    const index = spyOn((t.lease as unknown as { replays: Map<string, unknown> }).replays, 'has')
+    const who = { ...principal, id: 'second', digest: 'b'.repeat(64) }
+    expect(
+      t.lease.mutate(who, 'acquire', { epoch: t.lease.epoch }, 'other-key', [principal, who]).status,
+    ).toBe(409)
+    expect(t.call('renew', { epoch: t.lease.epoch, generation: 'stale' }, 'stale-key').status).toBe(409)
+    expect(index).not.toHaveBeenCalled()
+    t.time(first.expiresAt)
+    expect(
+      t.call(
+        'complete',
+        { epoch: t.lease.epoch, generation: first.generation, outcome: 'success' },
+        'expired-key',
+      ).status,
+    ).toBe(409)
+    expect(index).not.toHaveBeenCalled()
+  })
   test('restart refuses an old epoch before replay', () => {
     const old = setup().first()
     const t = setup()
