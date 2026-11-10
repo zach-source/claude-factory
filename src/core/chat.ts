@@ -68,7 +68,10 @@ export const queue = new Map<string, Promise<void>>()
 
 const append = (path: string, t: Turn) => appendFileSync(path, JSON.stringify(t) + '\n')
 
-export function send(ctx: Ctx, a: { id: string; text: string; front: Front }): Promise<RunResult> {
+export function send(
+  ctx: Ctx,
+  a: { id: string; text: string; front: Front; approve?: string },
+): Promise<RunResult> {
   return inProc(async print => {
     refuseWorker(ctx.env, 'chat', true)
     const path = conversationFile(ctx.home, a.id)
@@ -139,7 +142,7 @@ export function send(ctx: Ctx, a: { id: string; text: string; front: Front }): P
 }
 
 /** the body of `factory chat-guard`, the PreToolUse Bash hook of a chat turn: every result but allow gives code 2 */
-export function guardHook(stdin: string): { code: number; err: string } {
+export function guardHook(stdin: string, _home = '', _args: string[] = []): { code: number; err: string } {
   let command: unknown
   try {
     command = JSON.parse(stdin)?.tool_input?.command

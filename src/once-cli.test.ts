@@ -352,3 +352,16 @@ test('chat-guard allows reads, asks for a gate and fails closed', () => {
     err: 'the hook input has no Bash command\n',
   })
 })
+
+test('chat-guard takes an approval hash and fails closed on bad arguments', () => {
+  const ask = '/repo/bin/factory decide lifecycle-abc ship "looks good"'
+  const hash = new Bun.CryptoHasher('sha256').update(ask).digest('hex')
+  const guard = (args: string[], command: string) =>
+    factory(['chat-guard', ...args], JSON.stringify({ tool_input: { command } }))
+  mkdirSync(join(home, 'conversations'), { recursive: true })
+  writeFileSync(join(home, 'conversations', 'c.approve'), hash)
+  expect(guard(['c', hash], ask).code).toBe(0)
+  expect(existsSync(join(home, 'conversations', 'c.approve'))).toBe(false)
+  expect(guard(['c', hash], ask).code).toBe(2)
+  expect(guard(['c'], 'factory status')).toEqual({ code: 2, out: '', err: 'bad chat-guard arguments\n' })
+})

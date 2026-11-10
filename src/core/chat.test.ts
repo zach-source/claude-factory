@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -208,7 +209,8 @@ test('the turn runs with the chat guard', async () => {
   expect(c.input).toBe('a')
 })
 
-const hook = (command: unknown) => guardHook(JSON.stringify({ tool_input: { command } }))
+const hook = (command: unknown, args: string[] = [], h = home) =>
+  guardHook(JSON.stringify({ tool_input: { command } }), h, args)
 
 test('guardHook allows, asks, denies and fails closed', () => {
   expect(hook('/repo/bin/factory status')).toEqual({ code: 0, err: '' })
@@ -281,4 +283,195 @@ test('a turn with usage adds a chat row to manager-usage.jsonl', async () => {
     cacheRead: 3,
     output: 2,
   })
+})
+
+const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex')
+const ASK = '/repo/bin/factory decide lifecycle-abc ship "looks good"'
+const DENY = '/repo/bin/factory mail r1 plan "$(id)"'
+const askOf = (c: string) => {
+  const v = check(c, 'manager')
+  if (v.decision !== 'ask') throw new Error('the fixture must ask')
+  return v.question
+}
+const askRow = (id: string, c: string) => ({
+  commands: [{ id, command: c }],
+  asks: [{ id, question: askOf(c) }],
+})
+const hookArgs = (c: ModelCall): string[] => {
+  const cmd = (c.settings as { hooks: { PreToolUse: { hooks: { command: string }[] }[] } }).hooks
+    .PreToolUse[0]!.hooks[0]!.command
+  return cmd.split('chat-guard')[1]!.split(' ').filter(Boolean)
+}
+const approveFile = (id: string) => join(home, 'conversations', `${id}.approve`)
+const raw = (id: string) => readFileSync(join(home, 'conversations', `${id}.jsonl`), 'utf8')
+const ASK_MSG = (c: string) =>
+  askOf(c) + '\nthe person must approve this command; a chat turn cannot run it: tell the person\n'
+const REFUSED = 'factory: the approval is refused: '
+
+test('approve: the hook runs the approved command one time', async () => {
+  seed('c', [mgr('s-1', askRow('t2', ASK))])
+  const seen: ReturnType<typeof hook>[] = []
+  const m = fakeModel(c => {
+    const a = hookArgs(c)
+    seen.push(hook(ASK, a), hook(ASK, a))
+    return ok()
+  })
+  const r = await send(ctxOf(m.chatModel), { id: 'c', text: 'yes', front: 'web', approve: 't2' })
+  expect(r.code).toBe(0)
+  expect(seen).toEqual([
+    { code: 0, err: '' },
+    { code: 2, err: ASK_MSG(ASK) },
+  ])
+  const p = lines('c').find(t => t.who === 'person')
+  expect(p).toMatchObject({ text: 'yes', approve: 't2' })
+  expect(m.calls[0]!.input.startsWith('yes')).toBe(true)
+  expect(m.calls[0]!.input.endsWith(ASK)).toBe(true)
+  expect(m.calls[0]!.input).toContain('The person approved one run of this exact command in this turn:')
+})
+
+test('approve: only the exact text runs', async () => {
+  const L = '/repo/bin/factory decide lifecycle-abc ship "' + 'a'.repeat(400) + '"'
+  const M = L.slice(0, -2) + 'b"'
+  expect(askOf(L)).toBe(askOf(M))
+  seed('c', [mgr('s-1', askRow('t2', L))])
+  const seen: number[] = []
+  const m = fakeModel(c => {
+    const a = hookArgs(c)
+    seen.push(hook(M, a).code, hook(L + ' ', a).code, hook(L, a).code, hook(L, a).code)
+    return ok()
+  })
+  await send(ctxOf(m.chatModel), { id: 'c', text: 'yes', front: 'web', approve: 't2' })
+  expect(seen).toEqual([2, 2, 0, 2])
+})
+
+test('approve: a deny stays denied', async () => {
+  seed('c', [mgr('s-1', { commands: [{ id: 't3', command: DENY }], asks: [{ id: 't3', question: 'q' }] })])
+  const before = raw('c')
+  const m = fakeModel()
+  const r = await send(ctxOf(m.chatModel), { id: 'c', text: 'yes', front: 'web', approve: 't3' })
+  expect(r.code).toBe(1)
+  expect(r.err).toContain(REFUSED)
+  expect(m.calls.length).toBe(0)
+  expect(raw('c')).toBe(before)
+  expect(existsSync(approveFile('c'))).toBe(false)
+  // the hook itself
+  writeFileSync(approveFile('c'), sha(DENY))
+  const d = check(DENY, 'manager')
+  if (d.decision !== 'deny') throw new Error('the fixture must deny')
+  expect(hook(DENY, ['c', sha(DENY)])).toEqual({ code: 2, err: d.reason + '\n' })
+  expect(existsSync(approveFile('c'))).toBe(true)
+})
+
+test('approve: bad ids are refused with no side effect', async () => {
+  const cases: [string, string[]][] = [
+    ['unknown', [mgr('s-1', askRow('t2', ASK))]],
+    ['t1', [mgr('s-1', askRow('t1', ASK)), mgr('s-1', askRow('t2', ASK))]],
+    ['t1', [mgr('s-1', { commands: [{ id: 't1', command: 'factory status' }], asks: [] })]],
+    [
+      't2',
+      [mgr('s-1', { commands: [{ id: 't2', command: ASK }], asks: [{ id: 't2', question: 'forged' }] })],
+    ],
+    ['t2', [JSON.stringify({ who: 'person', text: 'x', front: 'cli', at: 1 })]],
+  ]
+  for (const [approve, rows] of cases) {
+    seed('c', rows)
+    const before = raw('c')
+    const m = fakeModel()
+    const r = await send(ctxOf(m.chatModel), { id: 'c', text: 'yes', front: 'web', approve })
+    expect([r.code, r.err.startsWith(REFUSED)]).toEqual([1, true])
+    expect(m.calls.length).toBe(0)
+    expect(raw('c')).toBe(before)
+    expect(existsSync(approveFile('c'))).toBe(false)
+  }
+  const m = fakeModel()
+  const r = await send(ctxOf(m.chatModel), { id: 'n', text: 'yes', front: 'web', approve: 't2' })
+  expect(r.code).toBe(1)
+  expect(existsSync(join(home, 'conversations'))).toBe(false)
+})
+
+test('approve: malformed stored entries are refused', async () => {
+  for (const extra of [
+    { asks: 'x', commands: [{ id: 't2', command: ASK }] },
+    { asks: [{ id: 't2', question: 5 }], commands: [{ id: 't2', command: ASK }] },
+    { asks: [{ id: 't2', question: askOf(ASK) }], commands: [{ id: 't2', command: 5 }] },
+  ]) {
+    seed('c', [mgr('s-1', extra)])
+    const m = fakeModel()
+    const r = await send(ctxOf(m.chatModel), { id: 'c', text: 'yes', front: 'web', approve: 't2' })
+    expect([r.code, r.err.startsWith(REFUSED)]).toEqual([1, true])
+    expect(m.calls.length).toBe(0)
+  }
+})
+
+test('approve: the approval lasts one turn and the core cleans up', async () => {
+  seed('c', [mgr('s-1', askRow('t2', ASK))])
+  const m = fakeModel()
+  const ctx = ctxOf(m.chatModel)
+  await send(ctx, { id: 'c', text: 'yes', front: 'web', approve: 't2' })
+  expect(existsSync(approveFile('c'))).toBe(false)
+  await send(ctx, { id: 'c', text: 'again', front: 'web' })
+  expect(hookArgs(m.calls[1]!)).toEqual([])
+  expect(m.calls[1]!.input).toBe('again')
+  expect(hook(ASK, hookArgs(m.calls[1]!)).code).toBe(2)
+  // the model call throws
+  seed('d', [mgr('s-1', askRow('t2', ASK))])
+  const t = fakeModel(() => {
+    throw new Error('boom')
+  })
+  await send(ctxOf(t.chatModel), { id: 'd', text: 'yes', front: 'web', approve: 't2' })
+  expect(existsSync(approveFile('d'))).toBe(false)
+})
+
+test('approve: the hook argument grammar fails closed', () => {
+  const h = sha(ASK)
+  for (const args of [['c'], ['c', h, 'x'], ['c', h.toUpperCase()], ['c', h.slice(1)], ['../x', h]])
+    for (const c of ['/repo/bin/factory status', ASK])
+      expect(hook(c, args)).toEqual({ code: 2, err: 'bad chat-guard arguments\n' })
+  expect(guardHook('{}', home, ['c'])).toEqual({ code: 2, err: 'bad chat-guard arguments\n' })
+})
+
+test('approve: the hook does not throw on a bad approval file', () => {
+  const args = ['c', sha(ASK)]
+  mkdirSync(join(home, 'conversations'), { recursive: true })
+  expect(hook(ASK, args).code).toBe(2) // missing
+  writeFileSync(approveFile('c'), sha('other'))
+  expect(hook(ASK, args).code).toBe(2) // another hash
+  rmSync(approveFile('c'))
+  mkdirSync(approveFile('c'))
+  expect(hook(ASK, args).code).toBe(2) // a folder
+})
+
+test('approve: a write failure records no person turn', async () => {
+  seed('c', [mgr('s-1', askRow('t2', ASK))])
+  const before = raw('c')
+  mkdirSync(approveFile('c'))
+  writeFileSync(join(approveFile('c'), 'x'), 'x')
+  const m = fakeModel()
+  const r = await send(ctxOf(m.chatModel), { id: 'c', text: 'yes', front: 'web', approve: 't2' })
+  expect(r.code).toBe(1)
+  expect(m.calls.length).toBe(0)
+  expect(raw('c')).toBe(before)
+})
+
+test('approve: a cleanup failure does not hide the manager turn', async () => {
+  seed('c', [mgr('s-1', askRow('t2', ASK))])
+  const m = fakeModel(() => {
+    rmSync(approveFile('c'), { force: true })
+    mkdirSync(approveFile('c'))
+    writeFileSync(join(approveFile('c'), 'x'), 'x')
+    return ok()
+  })
+  const r = await send(ctxOf(m.chatModel), { id: 'c', text: 'yes', front: 'web', approve: 't2' })
+  expect(r.code).toBe(0)
+  expect(lines('c').at(-1)).toMatchObject({ who: 'manager', text: 'answer' })
+})
+
+test('a half line at the end of the file does not hide the real manager turn', async () => {
+  mkdirSync(join(home, 'conversations'), { recursive: true })
+  writeFileSync(join(home, 'conversations', 'c.jsonl'), '{"who":"manager"')
+  const m = fakeModel()
+  await send(ctxOf(m.chatModel), { id: 'c', text: 'x', front: 'cli' })
+  const t = shown('c').turns
+  expect(t.at(-1)).toMatchObject({ who: 'manager', text: 'answer' })
+  expect(t.length).toBe(2)
 })

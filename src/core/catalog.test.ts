@@ -177,7 +177,12 @@ describe('CATALOG', () => {
       ['id', 'id', true, undefined],
       ['text', 'text', true, undefined],
       ['front', 'enum', true, ['cli', 'web', 'claude-mod', 'herdr-mod']],
+      ['approve', 'id', false, undefined],
     ])
+    expect(readBody(send, { id: 'c' }, { text: 'x', front: 'web', approve: 'toolu_01A' })).toMatchObject({
+      approve: 'toolu_01A',
+    })
+    expect(readBody(send, { id: 'c' }, { text: 'x', front: 'web', approve: '../x' })).toBe('bad body')
     expect(show).toMatchObject({
       summary: 'Show a manager conversation: its session and its turns.',
       rights: 'read',

@@ -391,10 +391,22 @@ export const CATALOG: Op[] = makeCatalog([
           f('id', 'id', true, 'the conversation id'),
           f('text', 'text', true, 'the message to the manager'),
           f('front', 'enum', true, 'the front end that sends', ['cli', 'web', 'claude-mod', 'herdr-mod']),
+          f(
+            'approve',
+            'id',
+            false,
+            'a tool_use id from the asks of the last manager turn: the person approves that command for one run in the next turn',
+          ),
         ],
       },
       'json',
-      (c, i) => chat.send(c, { id: i.id as string, text: i.text as string, front: i.front as chat.Front }),
+      (c, i) =>
+        chat.send(c, {
+          id: i.id as string,
+          text: i.text as string,
+          front: i.front as chat.Front,
+          approve: i.approve as string | undefined,
+        }),
     ),
     long: true,
   },
