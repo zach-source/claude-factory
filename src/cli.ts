@@ -737,6 +737,9 @@ type TaskSide = {
   /** where the VM shares the rig's beads, as at its launch: absent, the repo's GitHub origin */
   beadsRemote?: Rig['beadsRemote']
 }
+/** the wire name of the launch memory snapshot in the worker dir */
+const MEMORY_TGZ = 'memory.tgz'
+
 /**
  * Write the memory snapshot file for a launch. `put` is true when the file must go to the VM.
  * `skipped` says why not: the snapshot is over `max` bytes, or `memory.snapshot` threw.
@@ -1319,12 +1322,14 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     side!.putPart = undefined
     side!.putFailedAt = undefined
     side!.putError = undefined
-    if (name === 'memory.tgz') {
+    if (name === MEMORY_TGZ) {
       side!.memory = { bytes: statSync(file).size, parts, sentAt: Date.now() }
     }
     writeJson(sideFile(run, task), side)
+    if (name === MEMORY_TGZ)
+      launchLog(run, side!.node, `memory snapshot sent: ${side!.memory!.bytes} bytes in ${parts} parts`)
     // remove the file after the save: a stop between the two would leave side.put naming a missing file
-    if (name === 'memory.tgz') rmSync(file, { force: true }) // the VM has it; brief.md stays, as it always did
+    if (name === MEMORY_TGZ) rmSync(file, { force: true }) // the VM has it; brief.md stays, as it always did
   }
   // always ask for everything: which lines are already replayed lives here, keyed by content (see `loadSeen`
   // below), not as a line count the VM slices by -- a worker that edits outbox.jsonl (claude-factory-4x1)
@@ -2198,24 +2203,25 @@ export function launchNotes(run: Run, node: string) {
       { env: { ...process.env, FACTORY_HOME: HOME, FACTORY_OUTBOX: '' }, timeout: 60_000 },
     )
     if (p.exitCode !== 0) {
-      launchNotesFailed(run, node, p.exitCode === null ? 'timeout' : `exit ${p.exitCode}`)
+      launchLog(
+        run,
+        node,
+        `launch memory search failed: ${p.exitCode === null ? 'timeout' : `exit ${p.exitCode}`}`,
+      )
       return ''
     }
     const out = p.stdout.toString().trim()
     return out.startsWith('nothing in ') ? '' : clip(out, 6000)
   } catch (e) {
-    launchNotesFailed(run, node, String(e))
+    launchLog(run, node, `launch memory search failed: ${String(e)}`)
     return ''
   }
 }
 
 /** one line in HOME/launches.log; a write error never blocks the launch */
-function launchNotesFailed(run: Run, node: string, why: string) {
+function launchLog(run: Run, node: string, text: string) {
   try {
-    appendFileSync(
-      join(HOME, 'launches.log'),
-      `${new Date().toISOString()} ${run.id}/${node} launch memory search failed: ${why}\n`,
-    )
+    appendFileSync(join(HOME, 'launches.log'), `${new Date().toISOString()} ${run.id}/${node} ${text}\n`)
   } catch {
     // best effort
   }
@@ -2493,7 +2499,8 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   // beadsRemote or else the repo's GitHub origin
   writeFileSync(join(runDir(run.id), `${name}.brief.md`), brief)
   // the VM cannot reach the laptop's memory: it gets a snapshot of the notes its rig can see (vffe.4)
-  const snap = memorySnapshotPut(MEMORY, rig?.name, join(runDir(run.id), `${name}.memory.tgz`))
+  const snap = memorySnapshotPut(MEMORY, rig?.name, join(runDir(run.id), `${name}.${MEMORY_TGZ}`))
+  if (snap.skipped) launchLog(run, node, `memory snapshot skipped: ${snap.skipped}`)
   // what the laptop wrote since its last push (this run's plan, say) must be shared before the VM clones
   // the fleet may hold other VMs' writes since: take them first, or the push is refused
   if (hasRunBeads) (syncRigBeads(run, 'pull'), syncRigBeads(run, 'push'))
@@ -2572,7 +2579,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
     ...(reviewer && { reviewer }),
     ...(reviewer && { githubRepo }),
     policy: ax.createPolicy(name, egress, gitlabHost, githubOwner, undefined, reviewer, false, githubRepo),
-    put: ['brief.md', ...(snap.put ? ['memory.tgz'] : [])],
+    put: ['brief.md', ...(snap.put ? [MEMORY_TGZ] : [])],
     ...(snap.skipped && { memorySkipped: snap.skipped }),
     ...(hasRunBeads && rig?.beadsRemote && { beadsRemote: rig.beadsRemote }),
   }
@@ -13993,18 +14000,21 @@ if (import.meta.main && !outboxCmd)
         const [sub, ...words] = args
         if (sub === 'search' && words.length) {
           // a VM has no store: the laptop put a snapshot (memory.tgz) in the worker dir at launch (vffe.4)
-          const snap = join(worker.own(), 'memory.tgz')
+          const snap = join(worker.own(), MEMORY_TGZ)
+          let unpack: string | undefined
           if (!existsSync(MEMORY) && existsSync(snap)) {
             const tmp = `${MEMORY}.tmp-${process.pid}`
-            mkdirSync(tmp, { recursive: true })
-            const r = Bun.spawnSync(['tar', '-xzf', snap, '--no-same-owner', '-C', tmp], { stderr: 'pipe' })
             try {
-              if (r.exitCode !== 0) throw new Error('tar failed')
+              mkdirSync(tmp, { recursive: true })
+              const r = Bun.spawnSync(['tar', '-xzf', snap, '--no-same-owner', '-C', tmp], { stderr: 'pipe' })
+              if (r.exitCode !== 0) throw new Error(`tar exit ${r.exitCode}`)
               renameSync(tmp, MEMORY)
-            } catch {
-              rmSafe(tmp, { recursive: true, force: true }) // a cut file, or another search won the rename
+            } catch (e) {
+              rmSafe(tmp, { recursive: true, force: true }) // a cut file, a missing tar, or another search won the rename
+              if (!existsSync(MEMORY)) unpack = cleanText((e as Error).message, 200)
             }
           }
+          const vm = !!process.env.FACTORY_OUTBOX
           const found = await memory.search(MEMORY, words.join(' '), { rig, core: !noCore })
           memory.use(
             MEMORY,
@@ -14024,7 +14034,12 @@ if (import.meta.main && !outboxCmd)
                     .map(l => `    ${l}`),
                 ].join('\n'),
               )
-              .join('\n\n') || `nothing in ${MEMORY} yet`,
+              .join('\n\n') ||
+              (vm && !existsSync(MEMORY) && unpack
+                ? `the memory snapshot did not unpack (${unpack}): search again in a few minutes`
+                : vm && !existsSync(MEMORY) && !existsSync(snap)
+                  ? 'the memory snapshot has not arrived yet: search again in a few minutes'
+                  : `nothing in ${MEMORY} yet`),
           )
         } else if (sub === 'add' && words[0]) {
           // a --word left after the opt() splices (typo, repeat, flag an older bin lacks) would become the
