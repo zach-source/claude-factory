@@ -21,7 +21,7 @@ A run with no prompts, briefs, or backups must still qualify.
 Keep the current launch-script rules and file totals.
 
 Extract the `rm` body in `src/cli.ts:14591` into one shared helper.
-Both `rm` and `gcPass` must use that helper. Keep the worker command restrictions at their current call sites.
+Both `rm` and `gcPass` must use that helper. The gc core operation must refuse workers before any host effect.
 Re-read current state before removal. A run that became live must stay.
 Preserve `makeWritable`, gate-lock removal, herdr removal, registered worktree removal, and guarded orphan cleanup.
 Preserve the clean-submodule exception to the no-force rule.

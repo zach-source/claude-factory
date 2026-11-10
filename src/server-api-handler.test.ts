@@ -21,6 +21,11 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
   // each port function logs into the same array as the runner, so a "zero calls" check counts both
   const log = (port: string, args: unknown[]) => calls.push({ port, args })
   const port: Port = {
+    gcPass: () => {},
+    gcWorktreesPass: () => {},
+    gcRigs: () => [],
+    gcHold: () => () => {},
+    gcStamp: () => {},
     show: async id => (log('show', [id]), { ok: 1 }),
     status: async (id, print) => (log('status', [id]), print('{"ok":1}')),
     backlog: async () => (log('backlog', []), { ok: 1 }),
