@@ -69,6 +69,67 @@ Make that bug depend on this bead. Do not claim this run fixed production behavi
 If evidence remains inconclusive, record that result and the next specific experiment.
 Do not create speculative performance work from a timeout alone.
 
+### VM evidence from implement
+
+The paired exports used these source SHAs:
+
+- Main: `51f342a313235d72c1795568ecbfbbcd231f594a`.
+- Docs: `d6067de983993ea6070c21a502a12362e98096e3`.
+
+Neither backup source file differs between these revisions.
+Each export used `bun install --frozen-lockfile`, Bun 1.4.4, and gitleaks 8.30.1.
+Each run used a separate scratch home and temporary directory under `.scratch/paired/`.
+Each run set `FACTORY_SELF_UPDATE=0` and removed `FACTORY_OUTBOX` and `FACTORY_FROM`.
+All backup remotes were local test fixtures.
+The command was `bun test --timeout 30000 src/homebackup.test.ts`.
+The large test retained its explicit 120000 ms limit.
+
+| Run | Source | Wall seconds | User CPU seconds | System CPU seconds | Large test seconds | Tests pass/fail | Assertions | Exit |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | Main | 187.26 | 246.47 | 42.22 | 104.65 | 33/0 | 264 | 0 |
+| 2 | Docs | 189.72 | 247.25 | 45.01 | 105.75 | 33/0 | 264 | 0 |
+| 3 | Main | 190.66 | 242.64 | 47.83 | 105.03 | 33/0 | 264 | 0 |
+| 4 | Docs | 194.62 | 247.92 | 50.24 | 107.36 | 33/0 | 264 | 0 |
+
+The VM reported six CPUs and 8 GiB memory, with no swap.
+Load averages were zero before and after every run.
+The VM counter implementation can limit these observations; zero does not prove spare host CPU capacity.
+The open-file limit was 65536. CPU time, process count, and virtual memory limits were unlimited.
+The filesystem reported 1067.04 GiB total and 884.67 GiB available before the runs.
+Child peak RSS reached 2185436 KiB after run 1 and 2187120 KiB after run 3.
+This RSS counter is a cumulative child maximum, not an independent peak for each run.
+The paths `cpu.max`, `pids.max`, and `memory.max` under `/sys/fs/cgroup/` were unavailable.
+Thus, these measurements cannot rule out a host CPU quota or a process limit outside the VM view.
+
+A separate scratch export measured the large test with phase wrappers.
+The wrappers passed subprocess arguments and options unchanged and returned the original results.
+They retained input, output, error, signal, and timeout behavior.
+The log held only phase labels, durations, exit codes, signals, and error codes.
+It held no scanner input or scanner report.
+The test passed in 103.62 seconds, versus 104.65 and 105.03 seconds without wrappers on main.
+This comparison detected no positive profiler overhead; it cannot separate small overhead from run variance.
+
+| Phase | Count | Total seconds | Detail |
+| --- | --- | --- | --- |
+| Fixture creation and file writes | 1 | 1.13 | Two files used the same large buffer. |
+| Secret scan | 4 | 82.45 | Individual times: 41.31, 0.13, 40.87, 0.14 seconds. |
+| Git subprocess | 74 | 12.97 | Maximum call: 2.79 seconds. |
+| Compression | 4 | 2.90 | Two files for each backup. |
+| Decompression | 2 | 0.76 | Part of restore. |
+| Complete restore | 1 | 1.91 | Includes its Git calls and decompression. |
+
+All four scan subprocesses exited 0. No measured subprocess reported a signal or timeout error.
+Some Git probes returned nonzero status as part of normal branch and difference checks; the test passed.
+The second backup returned no error.
+The first profiler command selected the package test script because its Bun option order was wrong.
+Implement stopped that run and excluded it from the measurements above.
+
+The scans consumed about 79.6% of the measured large test time.
+This observation identifies the largest measured cost, not the cause of the earlier failure.
+The failure did not recur in these focused runs. No production change follows from this evidence.
+The next experiment must capture phase status during a full-suite recurrence on the same VM.
+It must also compare the focused test immediately afterward, with host CPU quota data if available.
+
 ### Rejected alternatives
 
 - A larger timeout can hide an operation failure and lacks a measured basis.
