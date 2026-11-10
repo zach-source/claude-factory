@@ -151,7 +151,7 @@ No AC is must-see-live. All policy outcomes have an isolated test oracle.
 ## Tasks
 
 1. `claude-factory-oxib.1`: test contract, one commit, 35 minutes. Add AC1 through AC4 and record baseline failures.
-2. `claude-factory-oxib.2`: hook and proof, one commit, 55 minutes. Add the hook, limit comment, and release bullet; prove AC1 through AC5.
+2. `claude-factory-oxib.2`: hook and proof, 55 minutes. Add the hook and limit comment; prove AC1 through AC5.
 
 Task 2 depends on task 1. Reserve 30 minutes for final checks and handoff.
 Both tasks fit one implementation pass. No production or factory-definition change is in scope.
