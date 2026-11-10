@@ -193,3 +193,32 @@ Its one commit updates this ADR with local results and any precise gaps.
 After that commit, the child comment records final-head CI evidence; no further source commit is necessary.
 Check AC1 through AC13 with the commands above. Close the child only after all required results pass.
 Do not close the run bead. Comment on `claude-factory-akiq.9.12` with this explicit AC13 disposition.
+
+## Implement evidence
+
+The implement pass merged `origin/main` at `871bf05a65377d51e3dfed09d8b509e89ea72bc1`.
+Local checks used Bun 1.4.4. The checks below passed before this evidence commit.
+
+| Command                                                                  | Result                         |
+| ------------------------------------------------------------------------ | ------------------------------ |
+| `bun install --frozen-lockfile`                                          | Exit 0                         |
+| The seven-file focused command in AC13                                   | 126 pass, 0 fail               |
+| `bun test --timeout 30000 src/axmanager.test.ts factories/ship.test.ts`  | 76 pass, 0 fail                |
+| `bun x tsc --noEmit -p .`                                                | Exit 0                         |
+| `bun x prettier@3.9.9 --check .`                                         | Exit 0                         |
+| `bun build src/cli.ts --target bun --outfile .scratch/worker-api-cli.js` | Exit 0                         |
+| `bun audit`                                                              | No vulnerabilities             |
+| `gitleaks detect --log-opts=origin/main..HEAD --redact`                  | One historical example; exit 1 |
+
+The scan identifies commit `1647a6d11272e9478a5efd630c6a43244c963827`, `specs/004-factory-server/quickstart.md:37`.
+The item is the journal's example UUID, not a credential. The current command generates a UUID.
+No scan exclusion changed. An initial JSON report failed because `.scratch/` did not exist.
+The later scan produced a report for inspection.
+
+The source delta retains the shared token check before replay and application on all three routes.
+The six queue tests and the row-size test pass. Client routes retain person authentication.
+This pass adds no runtime logic. No new mutation is necessary; the journal retains the earlier killed mutations.
+
+The full VM suite and live Quickstarts remain unverified locally for the stated host and owner gaps.
+The generated mod types are absent. Neither the root typecheck nor CI proves `tsc -p mod`.
+Final-head CI results must follow in the task comment and report after this commit.
