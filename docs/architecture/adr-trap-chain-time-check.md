@@ -275,7 +275,7 @@ All nine new count cases passed on the production guard before mutation.
 The probe also verified undefined results for all original shapes.
 Thus, the old ceiling can fail without increased scan work or a changed verdict.
 
-The evidence supports 300 ms for the two wrapped checks as an ordinary-load check, with an independent work bound.
+The evidence supports 300 ms for the two wrapped checks under ordinary host load, with an independent work bound.
 Both wrapped shapes stayed below 300 ms in the 40-process comparison.
 The existing direct ceiling remains 300 ms. The count cases precede the wall cases and exercise the same scan paths.
 The 12-burner control exceeds 300 ms; no claim covers arbitrary host contention.
@@ -319,3 +319,29 @@ All three used the same unchanged production source. The failed mutant overlap i
 Each run failed the old two 100 ms checks and the host Git builtin list test.
 Run 1 also failed three unrelated time checks. Runs 2 and 3 each failed the dynamic-shell-word time check.
 The nine count tests passed in runs 2 and 3. No production change explains the elapsed-time differences.
+
+### Historical CI log
+
+Implement downloaded the job log with this command:
+
+```sh
+gh api repos/zach-source/claude-factory/actions/jobs/129829247784/logs --allow-escape-sequences > .scratch/historical-failure.log
+```
+
+The log confirms 70.49 ms direct, 72.10 ms wrapped, and 132.53 ms eval-trap test durations.
+The eval-trap assertion measured 131 ms. The job had 17,937 passes, three skips, and two failures in 699.57 seconds.
+The other failure concerned the backup test `d289.20`.
+The log has no CPU or GC trace for the failed scan. It does not prove the historical variation mechanism.
+
+### Full project baseline with CI prerequisites
+
+The [evidence CI run](https://github.com/zach-source/claude-factory/actions/runs/42832949200) tested `26e59cd4bd04e26b93c3db06d4d72e499607fda2`.
+Its test job ran `PKGGATE_E2E_REQUIRE=1 PG_SCRATCH_REQUIRE=1 bun test --timeout 30000 src factories` with the pinned CI tools.
+It completed 17,951 tests across 234 files in 678.25 seconds: 17,948 passed, three skipped, and zero failed.
+All nine count cases passed. The original wall checks also passed at 56.04, 54.34, and 79.24 ms.
+The wrapped ceilings were still 100 ms. This is the complete project baseline before the ceiling repair.
+The plugin, typecheck, format, and nix checks also passed on that SHA.
+These checks do not replace the required CI checks on the final repair SHA.
+
+A local project diagnostic also started before the repair. It used Go 1.26.10 instead of CI's Go 1.23.
+The current Nix package set no longer supplies Go 1.23. The CI run above supplies the pinned-tool baseline.
