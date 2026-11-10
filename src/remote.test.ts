@@ -780,7 +780,9 @@ describe('a VM memory search says why it found nothing', () => {
       row.setup?.(base)
       const r = factory(['memory', 'search', 'dolt lock'], env)
       expect(r.code).toBe(0)
-      expect(r.out).toContain(row.want)
+      if (row.id === 'a') expect(r.out.trim()).toBe(row.want)
+      else if (row.id === 'e') expect(r.out.startsWith(row.want)).toBe(true)
+      else expect(r.out).toContain(row.want)
       if (row.id !== 'a' && row.id !== 'e') expect(r.out).not.toContain('memory snapshot')
       rmSync(base, { recursive: true, force: true })
     })
@@ -2418,7 +2420,7 @@ test("a launch stores the origin's GitHub owner in the side file and sends the m
     expect(sentKeys).toEqual(keys as unknown as string[])
     rmSync(runDir, { recursive: true })
   }
-}, 120_000) // git clones, a 12 MB store and whole ticks
+}, 60_000) // git clones and whole ticks
 
 test('an ax brief says AWS is read-only once, only when the rig env holds the broker URI (claude-factory-5n22)', () => {
   const sh = (cwd: string, ...a: string[]) => {
@@ -2744,7 +2746,7 @@ test('an ax launch searches the laptop memory once and puts the top notes in the
     rmSync(runDir, { recursive: true })
   }
   rmSync(memDir, { recursive: true, force: true })
-}, 60_000) // git clones and whole ticks
+}, 120_000) // git clones, a 12 MB store and whole ticks
 
 test("a pull that kept the VM's version of an issue says on it what the laptop had", () => {
   // what dolt sql -r json printed for the pull's statements, one line each
