@@ -291,6 +291,62 @@ describe('input checks', () => {
     expect(await (await get(setup(() => ({ runs: [] })).h, '/v1/board')).json()).toEqual({ runs: [] })
     expect(await (await get(setup(() => ({ rigs: [] })).h, '/v1/board')).json()).toEqual({ rigs: [] })
   })
+  test('board.show keeps halt, mail, lease and review fields and both runners', async () => {
+    const rest = {
+      runs: [{ id: 'r1', review: { round: 2 } }],
+      halt: { mode: 'stop' },
+      mail: [{ to: 'manager', text: 'hi' }],
+      lease: { holder: 'm1' },
+    }
+    const rigs = [
+      { name: 'a', repo: 'r1', factory: 'f', runner: 'ax', env: { K: 'zqsecret' } },
+      { name: 'b', repo: 'r2', factory: 'f', runner: 'herdr', params: { K: 'zqsecret' } },
+    ]
+    const r = await get(setup(() => ({ ...rest, rigs })).h, '/v1/board')
+    const body = (await r.json()) as { rigs: unknown }
+    expect(body).toEqual({
+      ...rest,
+      rigs: [
+        { name: 'a', repo: 'r1', factory: 'f', runner: 'ax' },
+        { name: 'b', repo: 'r2', factory: 'f', runner: 'herdr' },
+      ],
+    })
+  })
+  test('POST /v1/board and /v1/rigs give no rig data', async () => {
+    const { h, calls } = setup(() => ({ rigs: [{ name: 'a', repo: 'r', factory: 'f' }] }))
+    for (const p of ['/v1/board', '/v1/rigs']) {
+      const r = await post(h, p, {})
+      expect(r.status).toBeGreaterThanOrEqual(400)
+      expect(await r.text()).not.toContain('"rigs"')
+    }
+    expect(calls).toEqual([])
+  })
+  const okRig = { name: 'a', repo: 'r', factory: 'f' }
+  const badLeaves: Record<string, unknown>[] = [
+    ...['name', 'repo', 'factory', 'goal', 'runner', 'sandboxClass'].map(k => ({ [k]: { env: 'zqsecret' } })),
+    { maxRuns: 'zqsecret' },
+    { maxRuns: { env: 'zqsecret' } },
+    { sweeps: [{ env: 'zqsecret' }] },
+    { sweeps: 'zqsecret' },
+    { linear: { team: [{ env: 'zqsecret' }] } },
+    { linear: { team: 'zqsecret' } },
+    { linear: { projects: [{ a: 'zqsecret' }] } },
+    { linear: { labels: [['zqsecret']] } },
+    { linear: ['zqsecret'] },
+    ...['at', 'pulled', 'created', 'updated', 'stripped', 'unrouted'].map(k => ({
+      linearSync: { [k]: { beadsRemote: 'zqsecret' } },
+    })),
+    { linearSync: { error: { beadsRemote: 'zqsecret' } } },
+    { linearSync: 'zqsecret' },
+  ]
+  for (const bad of badLeaves)
+    test(`board.show refuses ${JSON.stringify(Object.keys(bad))} ${JSON.stringify(bad).length} without echo`, async () => {
+      const { h, calls } = setup(() => ({ rigs: [{ ...okRig, ...bad }] }))
+      const r = await get(h, '/v1/board')
+      expect(r.status).toBe(500)
+      expect(await r.text()).not.toContain('zqsecret')
+      expect(calls).toEqual([])
+    })
   test('board.show fails on a malformed rig without echoing it', async () => {
     for (const rigs of ['zqsecret', { x: 'zqsecret' }, ['zqsecret'], [null]]) {
       const r = await get(setup(() => ({ rigs })).h, '/v1/board')

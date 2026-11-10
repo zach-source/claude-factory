@@ -237,11 +237,25 @@ const bridge = (
 })
 const local = (s: Spec, output: Op['output'], run: Op['run']): Op => ({ ...bridge(s, () => []), output, run })
 
-/** The 27 operations cover the client port, board, catalog and parity fixture. */
-const pick = (o: unknown, keys: string[]): Record<string, unknown> => {
+type Leaf = 'string' | 'number' | 'strings'
+const leafOk = (v: unknown, t: Leaf): boolean =>
+  t === 'string'
+    ? typeof v === 'string'
+    : t === 'number'
+      ? typeof v === 'number' && Number.isFinite(v)
+      : Array.isArray(v) && v.every(x => typeof x === 'string')
+
+/** Keep the listed keys of an object. A value of the wrong type throws; the message names no value. */
+const pick = (o: unknown, keys: Record<string, Leaf>): Record<string, unknown> => {
   if (!o || typeof o !== 'object' || Array.isArray(o)) throw new Error('board rig is malformed')
   const r = o as Record<string, unknown>
-  return Object.fromEntries(keys.filter(k => r[k] !== undefined).map(k => [k, r[k]]))
+  const out: Record<string, unknown> = {}
+  for (const [k, t] of Object.entries(keys)) {
+    if (r[k] === undefined) continue
+    if (!leafOk(r[k], t)) throw new Error(`board rig field ${k} is malformed`)
+    out[k] = r[k]
+  }
+  return out
 }
 
 /**
@@ -253,34 +267,35 @@ function boardView(b: unknown): unknown {
   const rigs = (b as { rigs: unknown }).rigs
   if (!Array.isArray(rigs)) throw new Error('board rigs are malformed')
   const view = rigs.map(r => {
-    const o = pick(r, [
-      'name',
-      'repo',
-      'factory',
-      'maxRuns',
-      'sweeps',
-      'goal',
-      'runner',
-      'sandboxClass',
-      'linear',
-      'linearSync',
-    ])
-    if (o.linear !== undefined) o.linear = pick(o.linear, ['team', 'projects', 'labels'])
-    if (o.linearSync !== undefined)
-      o.linearSync = pick(o.linearSync, [
-        'at',
-        'pulled',
-        'created',
-        'updated',
-        'stripped',
-        'unrouted',
-        'error',
-      ])
+    const o = pick(r, {
+      name: 'string',
+      repo: 'string',
+      factory: 'string',
+      maxRuns: 'number',
+      sweeps: 'strings',
+      goal: 'string',
+      runner: 'string',
+      sandboxClass: 'string',
+    })
+    const src = r as Record<string, unknown>
+    if (src.linear !== undefined)
+      o.linear = pick(src.linear, { team: 'strings', projects: 'strings', labels: 'strings' })
+    if (src.linearSync !== undefined)
+      o.linearSync = pick(src.linearSync, {
+        at: 'number',
+        pulled: 'number',
+        created: 'number',
+        updated: 'number',
+        stripped: 'number',
+        unrouted: 'number',
+        error: 'string',
+      })
     return redactRig(o)
   })
   return { ...b, rigs: view }
 }
 
+/** The 27 operations cover the client port, board, catalog and parity fixture. */
 export const CATALOG: Op[] = makeCatalog([
   {
     ...local(
