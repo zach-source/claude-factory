@@ -346,6 +346,7 @@ import {
   workerMarker,
 } from './core/caller'
 import type { Ctx as OpCtx, Env, Input as OpInput, Port, Print, RunResult as OpResult } from './core/catalog'
+import { slimBoard, snapshot as snapshotRun } from './core/catalog'
 import * as backlogOp from './core/ops/backlog'
 import * as decisionsOp from './core/ops/decisions'
 import * as gatesOp from './core/ops/gates'
@@ -13588,11 +13589,10 @@ if (import.meta.main && !outboxCmd)
         refuseWorker('tick', true)
         // --board (claude-factory-hpmc.14): the board with no tick and no lease, for a remote view
         if (args[0] === '--board') {
-          console.log(
-            JSON.stringify(
-              await readOnlyBoard(leases.readLease(HOME) ?? { holder: 'none', kind: 'none', at: Date.now() }),
-            ),
+          const full = await readOnlyBoard(
+            leases.readLease(HOME) ?? { holder: 'none', kind: 'none', at: Date.now() },
           )
+          console.log(JSON.stringify(args.includes('--slim') ? slimBoard(full) : full))
           break
         }
         lease()
@@ -14335,6 +14335,16 @@ if (import.meta.main && !outboxCmd)
             }),
           ),
         )
+        break
+      }
+      case 'snapshot': {
+        // claude-factory-hpmc.23: several read views in one call; the board view is the slim board
+        if (args[0] !== '--views' || !args[1] || args.length !== 2)
+          fail('usage: factory snapshot --views a,b')
+        const board = args[1]!.split(',').includes('board')
+          ? await readOnlyBoard(leases.readLease(HOME) ?? { holder: 'none', kind: 'none', at: Date.now() })
+          : null
+        emit(await snapshotRun({ ...cliCtx(), board: () => board }, { views: args[1]! }))
         break
       }
       case 'backlog':

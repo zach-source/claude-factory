@@ -60,7 +60,12 @@ export function route(cmd: string | undefined, args: string[]): Req | { local: t
   const n = args.length
   switch (cmd) {
     case 'tick':
+      if (n === 2 && a === '--board' && b === '--slim') return { method: 'GET', path: '/v1/board?slim=1' }
       return n === 0 ? { method: 'GET', path: '/v1/board' } : bad
+    case 'snapshot':
+      return n === 2 && a === '--views' && /^[a-z]+(,[a-z]+)*$/.test(b!)
+        ? { method: 'GET', path: `/v1/snapshot?views=${b}` }
+        : bad
     case 'show':
       return n === 1 && seg(a) ? { method: 'GET', path: `/v1/runs/${a}` } : bad
     case 'status':
