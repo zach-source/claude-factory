@@ -637,8 +637,10 @@ Limits:
 Set `FACTORY_AX_VAULT` in the trusted broker Deployment to the same worker vault that the manager uses.
 The broker compares the complete vault segment as exact text. It does not decode, normalize, or trim that segment.
 An unset or empty value keeps the alphabet-only check: the vault must contain only `a-z`, `0-9`, and `-`.
+
 A nonempty config value with any other character stops the broker before startup. The value `-` remains valid.
 The manager request cannot choose the broker pin. Local `createPolicy` calls omit this optional constraint.
+
 This setting does not change `CLAUDE_TOKEN_VAULT`, which selects the vault for the token swap.
 The owner must deploy a broker image with this check and the vault config. Existing policies change only after a new PUT.
 
