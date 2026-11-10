@@ -375,7 +375,7 @@ function resetForFacts() {
 const candidateIdsOf = () =>
   (JSON.parse(readFileSync(factsFile(), 'utf8')).a.candidates as { id: string }[]).map(c => c.id)
 
-test('plan facts omit target and parent holds before the cap without extra calls (AC4)', () => {
+test('jmvx AC4 plan facts omit target and parent holds before the cap without extra calls', () => {
   resetForFacts()
   const holds = ['owner', 'human', 'rejected', 'held:', 'held:station', 'held:cluster:acme']
   const held = Array.from({ length: 40 }, (_, i) => ({

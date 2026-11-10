@@ -751,7 +751,7 @@ test('a label that only resembles a hold still starts (claude-factory-9kou)', ()
 })
 
 for (const precheck of ['0', '1']) {
-  test(`dispatch refuses children of held parents with precheck ${precheck} (AC3)`, () => {
+  test(`jmvx AC3 dispatch refuses children of held parents with precheck ${precheck}`, () => {
     precheckReset()
     const parents: Record<string, unknown>[] = []
     const children: { id: string; title: string; parent: string; labels: string[] }[] = []
@@ -804,7 +804,7 @@ for (const precheck of ['0', '1']) {
   })
 }
 
-test('dispatch preserves owner decisions after a person queue (AC2)', () => {
+test('jmvx AC2 dispatch preserves owner decisions after a person queue', () => {
   precheckReset({ metadata: { owner_decisions: ['wait'] } })
   expect(pfactory(['beads'], { GH_JSON: '[]' }).code).toBe(0)
   expect(runDirs()).toEqual([])

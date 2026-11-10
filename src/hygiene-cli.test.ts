@@ -262,7 +262,7 @@ test('factory queue under FACTORY_PATROL refuses discovered_from without the fac
   expect(factory(['queue', 'a', 'acme-1'], patrol).code).toBe(0)
 })
 
-test('patrol queue and named start refuse target holds; a person releases them (AC1, AC2)', () => {
+test('jmvx AC1 AC2 patrol queue and named start refuse target holds; a person releases them', () => {
   for (const hold of ['owner', 'human', 'rejected', 'held:', 'held:station', 'held:cluster:acme']) {
     for (const queued of [false, true]) {
       setup([])
@@ -296,7 +296,7 @@ test('patrol queue and named start refuse target holds; a person releases them (
   }
 })
 
-test('patrol queue permits literal hold lookalikes (AC1)', () => {
+test('jmvx AC1 patrol queue permits literal hold lookalikes', () => {
   for (const label of ['', 'ownerish', 'Owner', 'humane', 'held', 'rejected-by']) {
     setup([])
     writeFileSync(

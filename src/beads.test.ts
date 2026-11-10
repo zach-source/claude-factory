@@ -62,14 +62,14 @@ test('a factory child of a parent that is not a factory bead starts on its own (
   expect(ids([{ ...kid, assignee: 'zach' }], [], parents(epic, kid))).toEqual([])
 })
 
-test('literal hold labels protect owner authority (AC1)', () => {
+test('jmvx AC1 literal hold labels protect owner authority', () => {
   for (const label of ['owner', 'human', 'rejected', 'held:', 'held:station', 'held:cluster:acme'])
     expect(isHoldLabel(label)).toBe(true)
   for (const label of ['ownerish', 'Owner', 'humane', 'held', 'rejected-by'])
     expect(isHoldLabel(label)).toBe(false)
 })
 
-test('a direct parent hold denies each factory label placement (AC3)', () => {
+test('jmvx AC3 a direct parent hold denies each factory label placement', () => {
   for (const hold of [
     'owner',
     'human',
