@@ -10555,12 +10555,18 @@ async function planFactsCmd() {
   console.log(await planFactsText())
 }
 
+/** the Codex model of the manager's fallback steps: FACTORY_MANAGER_CODEX, else gpt-5-codex */
+export const fallbackCodexModel = (env = process.env) => env.FACTORY_MANAGER_CODEX || 'gpt-5-codex'
+
 /** `factory patrol|pm|brief|review --once`: one step of the manager, headless (src/once.ts) */
 async function onceCmd(verb: 'patrol' | 'pm' | 'brief' | 'review', args: string[]) {
   const codexAt = args.indexOf('--codex')
-  const codex = codexAt >= 0 ? args[codexAt + 1] : undefined
+  // --fallback: the manager's Claude is limited, so the step runs on Codex with the factory's own model name
+  const isFallback = args.includes('--fallback')
+  const codex = codexAt >= 0 ? args[codexAt + 1] : isFallback ? fallbackCodexModel() : undefined
   if (codexAt >= 0 && !(codex && CODEX_MODEL.test(codex))) fail('--codex needs a model name')
-  if (verb === 'patrol' && codexAt >= 0)
+  if (isFallback && !(codex && CODEX_MODEL.test(codex))) fail('FACTORY_MANAGER_CODEX is not a model name')
+  if (verb === 'patrol' && (codexAt >= 0 || isFallback))
     fail('the patrol cannot run on codex: codex has no PreToolUse hook, so the Bash guard cannot apply')
   const release = hold(`${verb}.lock`)
   if (!release) return `a ${verb} is already running`
@@ -13444,7 +13450,7 @@ const usage = `factory — herdr software factories on xstate
   herdr install [--app-home <dir>]   copy the Herdr app manager mod and its layout into the app folder
   lease [status|release]             who holds the local manager lease (only its holder ticks); release it
   patrol --once                      one headless manager patrol: answers the kept mail and works the board
-  pm --once | brief --once | review --once [--codex <model>]   one headless pm, gate-brief or skill/proposal review
+  pm --once | brief --once | review --once [--codex <model> | --fallback]   one headless pm, gate-brief or skill/proposal review
   report <run> <seq> <outcome> '<summary...>'|--summary-file path   worker: finish its station
   worker serve [--model m] | poll <cursor> | prompt <base64>   inside an AX task: the worker's Claude, its
                                      state and outbox, a prompt queued for it (docs/remote-runner.md)
@@ -13722,7 +13728,7 @@ if (import.meta.main && !outboxCmd)
       case 'brief': {
         refuseWorker(cmd, true)
         if (!args.includes('--once'))
-          fail(`usage: factory ${cmd} --once${cmd === 'patrol' ? '' : ' [--codex <model>]'}`)
+          fail(`usage: factory ${cmd} --once${cmd === 'patrol' ? '' : ' [--codex <model> | --fallback]'}`)
         lease()
         // only the lease holder patrols (claude-factory-s01d.2)
         const other = localLease()
