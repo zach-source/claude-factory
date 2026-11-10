@@ -10876,6 +10876,30 @@ test('denyReason allows a harmless trap under env -i (claude-factory-81tz.2)', (
   expect(denyReason('env -i sh -c "trap \'echo hi\' EXIT"')).toBeUndefined()
 })
 
+test.each(
+  [250, 500, 1000].flatMap(n =>
+    [
+      'trap ' + '-/trap '.repeat(n) + 'x',
+      'env -i sh -c "trap ' + '-/trap '.repeat(n) + 'x"',
+      'env -i sh -c "eval trap ' + '-/trap '.repeat(n) + 'x"',
+    ].map(cmd => [n, cmd] as const),
+  ),
+)(
+  'denyReason bounds trap scan work at %i words (claude-factory-xfbp6)',
+  (n, cmd) => {
+    let calls = 0
+    const reason = denyReason(cmd, undefined, undefined, {
+      now: () => {
+        calls++
+        return 0
+      },
+    })
+    expect(reason).toBeUndefined()
+    expect(calls).toBeLessThanOrEqual(30 * n + 64)
+  },
+  30_000,
+)
+
 test('denyReason bounds a long dash-led trap chain (claude-factory-81tz.3)', () => {
   const t0 = Date.now()
   denyReason('trap ' + '-/trap '.repeat(1150) + 'x')
