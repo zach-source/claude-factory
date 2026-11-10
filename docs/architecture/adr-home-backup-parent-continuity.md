@@ -30,8 +30,16 @@ They do not prove that the original CI failure had the same cause.
 
 Git describes same-size edits and timestamp granularity as a stat-cache hazard.
 It also describes index safeguards for that hazard. See [Git 2.56.0 technical documentation](https://github.com/git/git/blob/v2.56.0/Documentation/technical/racy-git.adoc).
-The exact operation that defeats change detection here remains unproved.
-Inspect `init`, `snapshotMemory`, the alternate memory index, and subsequent index writes before selecting a fix.
+Implementation proved the operation with a controlled coarse stat cache and a racy index timestamp.
+Direct `git add` read the changed bytes from a copy of that index.
+`git rm --cached home/memory` before the add rewrote the index and hid the changed bytes.
+The later `read-tree` did not restore that check.
+The new `ohn03` regression failed with `changed=false` before the fix.
+The snapshot now stages home files before that index rewrite, after the dream marker update.
+It then replaces memory entries through the existing alternate index.
+This keeps the dream marker, memory exclusions, and staged scan under the same snapshot contract.
+No index rebuild or extra content scan is necessary.
+The controlled case proves this operation can cause the failure; the original CI cause remains unknown.
 Do not infer a Git version defect or a load timeout from these observations.
 
 Plan also tried an uncommitted scratch change that placed the main add before the memory snapshot.
