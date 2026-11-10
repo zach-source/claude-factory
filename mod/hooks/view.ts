@@ -1169,11 +1169,42 @@ const BD_READ = new Set([
   'comment',
   'undefer',
 ])
+/** Rule B (claude-factory-tm9of): the command with each quoted char, quote and backslash pair masked as \0, or null
+ * when bash can expand a char (plain text outside a closed character set, $ or backtick in double quotes, an
+ * unclosed quote, a last backslash). */
+function plainText(command: string): string | null {
+  let state: 'plain' | 'single' | 'double' = 'plain'
+  let out = ''
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!
+    if (state === 'single') {
+      if (c === "'") state = 'plain'
+      out += '\0'
+    } else if (c === '\\') {
+      if (++i >= command.length) return null
+      out += '\0\0'
+    } else if (state === 'double') {
+      if (c === '"') state = 'plain'
+      else if (c === '$' || c === '`') return null
+      out += '\0'
+    } else if (c === "'" || c === '"') {
+      state = c === "'" ? 'single' : 'double'
+      out += '\0'
+    } else if (/[A-Za-z0-9 \t\n_./:=,@%+|&;>-]/.test(c)) out += c
+    else return null
+  }
+  return state === 'plain' ? out : null
+}
+
 /**
  * [SECURITY] true when the command runs bd with a verb that is not a read (claude-factory-0wv6).
  * This is an allowlist. A list of label spellings never closes, because bd (cobra) has flag aliases,
  * flags before the verb and verb aliases. The shell drops `\`, `'` and `"`, so this code drops them first.
- * It is best-effort: a verb that a variable or a command output hides gets through. It is linear.
+ * claude-factory-tm9of: when the text holds a bd word, it also denies a character that bash can expand outside
+ * single quotes (a closed character set; a backslash pair is literal), and a bd word that is not the first word
+ * of a command in the outer shell (xargs bd, env bd, sh -c '...bd', a quoted bd).
+ * It is best-effort only against a bd word that the hook cannot see: a variable, a command output, an interpreter
+ * or a script makes the bd name (follow-up claude-factory-z62pl). It is linear.
  * claude-factory-8njd: it also denies a bd command that sets the comment author: BEADS_ACTOR, a long flag
  * that abbreviates --actor or --author (3 or more letters), or, with the word comments, a short flag word
  * with the letter a. Quotes do not protect the text (fail closed).
@@ -1182,6 +1213,15 @@ export function bdWrite(command: string): boolean {
   const s = command.replace(/[\\'"]/g, '')
   if (/--add-label|--set-labels/.test(s)) return true
   const bd = /\bbd\b/i.test(s)
+  if (bd) {
+    const p = plainText(command)
+    if (p === null) return true
+    // Rule C: each bd word must be the plain command word of a part of the outer shell
+    const words = p
+      .split(/[;&|\n]/)
+      .filter(part => /^(?:[\w./-]*\/)?bd$/i.test(/^[ \t]*([^ \t>]*)/.exec(part)![1]!)).length
+    if (words !== (s.match(/\bbd\b/gi) ?? []).length) return true
+  }
   if (bd && s.includes('BEADS_ACTOR')) return true
   if (bd && /(?<![\w-])--(?:act(?:or?)?|aut(?:h(?:or?)?)?)(?![\w-])/.test(s)) return true
   if (bd && /\bcomments\b/.test(s) && /(?<![\w-])-[A-Za-z]*a/.test(s)) return true
@@ -1264,7 +1304,9 @@ function shownCommand(command: string): string {
  * mid-word) and matches across the quoted newline ([\s\S] instead of [^\n]) rather
  * than testing the raw text verbatim. A factory command with a shell substitution outside single quotes, or
  * a form this cannot read, is gated too: untrusted text in a template argument must not run on the laptop. */
-export function gatedCommand(rawCommand: string): { question: string; deny: string; ask: boolean } | null {
+export function gatedCommand(
+  rawCommand: string,
+): { question: string; deny: string; ask: boolean; kinds: string[] } | null {
   // claude-factory-0jr2.6: a comment line that ends in a backslash. Ask with the raw text, and match the kinds on the full join.
   const unreadable = commentContinues(rawCommand)
   const command = unreadable ? rawCommand.replace(/\\\n/g, '') : joinLines(rawCommand)
@@ -1345,6 +1387,7 @@ export function gatedCommand(rawCommand: string): { question: string; deny: stri
     // only a person-decision kind is worth a dialog; a substitution or unreadable form alone is denied at once
     // a kind found on a base read asks. One found only on the canonical read asks only if nothing else is wrong.
     ask: kinds.some(k => k.base) || (kinds.length > 0 && !substitution && !verbHidden && !unreadable),
+    kinds: kinds.map(k => k.id),
     question: `The manager model wants to ${names.join(' and ')}: ${shownCommand(unreadable ? rawCommand : command)}.${substitution ? ` ${substitution.detail}` : ''}${hidden.length ? ` The text not shown holds: ${hidden.map(k => `${k.phrase}${times(k.hidden)}`).join(' and ')}.` : ''} Allow it?`,
     deny: [
       ...(unreadable
@@ -1420,40 +1463,47 @@ export function kindEnds(text: string, re: RegExp, tail?: RegExp): number[] {
 }
 
 /** The gated kinds in the order the question names them. Each regex has the g flag, so use matchAll, not test. */
-export const GATED_KINDS: { re: RegExp; tail?: RegExp; phrase: string; deny: string }[] = [
+export const GATED_KINDS: { id: string; re: RegExp; tail?: RegExp; phrase: string; deny: string }[] = [
   {
+    id: 'decide',
     re: /\bfactory\s+decide\b/g,
     phrase: 'decide a factory gate',
     deny: 'The person did not confirm this gate decision. Ask them which outcome they want.',
   },
   {
+    id: 'answer',
     re: /\bfactory\s+decisions\s+answer\b/g,
     phrase: "answer a person's bd decision",
     deny: 'The person did not confirm this answer. Ask them what they want to say instead.',
   },
   {
+    id: 'owned',
     re: /\bfactory\s+start\b[\s\S]*?--owned\b/g,
     tail: /--owned\b/g,
     phrase: "start a bead carrying its owner's decisions",
     deny: 'The person did not confirm starting this owner-only bead.',
   },
   {
+    id: 'wiki-init',
     re: /\bfactory\s+wiki\b[\s\S]*?\binit\b/g,
     tail: /\binit\b/g,
     phrase: 'create the factory wiki and set its remote',
     deny: 'The person did not confirm this wiki init. Ask them to run it.',
   },
   {
+    id: 'image',
     re: /\bfactory\s+image\b/g,
     phrase: 'build and push a factory image to a registry',
     deny: 'The person did not confirm this image push. Ask them to run it.',
   },
   {
+    id: 'token',
     re: /\bfactory\s+token\s+(use|best)\b/g,
     phrase: 'change the live Claude token slot',
     deny: 'The person did not confirm this token swap. Ask them to run it.',
   },
   {
+    id: 'settings',
     re: /\bfactory\s+settings\s+(?:set|unset)\b/g,
     phrase: 'change a factory setting that sets what a worker runs, reaches or spends',
     deny: 'The person did not confirm this settings change. Ask them to run it.',

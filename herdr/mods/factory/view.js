@@ -137,6 +137,23 @@ export function parseTick(code, out, err) {
   }
 }
 
+/** the result of `factory snapshot --views board,decisions`: { tick, decisions } for the tabs to share */
+export function parseSnapshot(code, out, err) {
+  if (code !== 0) return { tick: { error: line(err || out || `factory snapshot exited ${code}`, 300) } }
+  let views
+  try {
+    views = JSON.parse(out).views
+  } catch {
+    return { tick: { error: line(`factory snapshot printed no JSON: ${out || err}`, 300) } }
+  }
+  const board = views?.board
+  const tick = board?.error
+    ? { error: line(board.error, 300) }
+    : parseTick(0, JSON.stringify(board ?? {}), '')
+  const d = views?.decisions
+  return { tick, decisions: d && !d.error ? d : undefined }
+}
+
 // Remote mode (claude-factory-hpmc.14): the manager runs on another machine, such as the AX task f-manager.
 
 /** the config.json text as { cli, home, machine? }, or null when it is not one */
@@ -159,15 +176,11 @@ export const STEPS = { patrol: 60_000, brief: 120_000, review: 300_000, pm: 3_60
 
 /**
  * The factory commands one beat starts, as { name, words }.
- * A remote mod only reads: `tick --board` shows the board and changes nothing, and `decisions` lists.
+ * A remote mod only reads: one `snapshot` call returns the slim board and the decisions (hpmc.23).
  * It never runs tick, patrol, brief, review or pm, so it never takes the manager lease.
  */
 export function beatJobs(cfg, state, ran, now) {
-  if (cfg.machine)
-    return [
-      { name: 'board', words: ['tick', '--board'] },
-      { name: 'decisions', words: ['decisions'] },
-    ]
+  if (cfg.machine) return [{ name: 'snapshot', words: ['snapshot', '--views', 'board,decisions'] }]
   const jobs = [{ name: 'tick', words: ['tick', '--keep-mail'] }]
   // a manager without the lease only shows the board (claude-factory-s01d.2)
   if (state.readOnly || state.halt) return jobs

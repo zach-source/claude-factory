@@ -153,6 +153,22 @@ The patrol, the pm, the briefer, the reviewer and the manager chat run in the co
 1. **Given** only the web UI is open, **When** new manager mail comes in, **Then** the core runs the patrol. The web UI shows the patrol report.
 2. **Given** a chat in any front end, **When** the manager wants to run a command that needs the person's approval (for example, the Bash gate in `mod/hooks/view.ts`), **Then** the core asks the person in that front end. The core makes the decision with one rule for all front ends.
 
+### User Story 7 - The person sees the workflow as a graph (Priority: P2)
+
+The person opens the Flow view of a factory. The view shows the stations as a graph. It shows the runs at each station, the count of moves on each edge, and how long runs stay at each station. The core makes the data with one operation, `flows.show`. Each front end draws it in its own way.
+
+**Why this priority**: The board lists runs. It does not show where work goes, where it waits, or which edge loops back.
+
+**Independent Test**: Run `factory flows --json` on a test home with 3 runs in the lifecycle factory. The result lists each station with its counts, each edge with its traversals, and the moves since a cursor. The web UI, the Claude mod and the Herdr mod show the same counts.
+
+**Acceptance Scenarios**:
+
+1. **Given** a factory with stations and edges, **When** a front end calls `flows.show`, **Then** each station has a rank, a definition order and counts by run state. Each edge has a traversal count for the window.
+2. **Given** a run that is pinned to an older version of the factory, **When** `flows.show` runs, **Then** the legacy stations of that run show as stations marked `legacy`.
+3. **Given** a `since` cursor, **When** a front end calls `flows.show`, **Then** `moves` lists only the moves after the cursor, so that a front end can animate them.
+
+---
+
 ### Edge Cases
 
 - Two front ends send different answers to the same gate at the same time. The core keeps one answer and tells the other front end of the conflict (spec 006 revision rules).
@@ -194,6 +210,7 @@ The patrol, the pm, the briefer, the reviewer and the manager chat run in the co
 - **FR-022**: A front end MAY add presentation only: layout, keys, colors and the order of items. When it cannot show a feature in its space, it MUST give a link or a command to a front end that can.
 - **FR-023**: The current CLI commands and their outputs MUST stay compatible. The CLI MUST run them through the catalog.
 - **FR-024**: The move MUST NOT stop a live factory. The old Claude mod manager and the new core MUST be able to change places through the lease, with no lost mail, report or decision.
+- **FR-025**: The core MUST give the workflow graph with one operation, `flows.show`. The CLI (`factory flows`), the web UI, the Claude mod and the Herdr mod MUST show it. A front end MUST NOT compute rank, traversals or dwell by itself.
 
 ### Key Entities
 

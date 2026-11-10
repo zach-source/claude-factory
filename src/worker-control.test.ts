@@ -377,6 +377,7 @@ const DENIED = [
   'loop',
   'metrics',
   'backlog',
+  'snapshot',
   'prs',
   'decisions',
   'plan',
