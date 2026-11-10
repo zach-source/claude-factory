@@ -9,6 +9,7 @@ import { check, type Role } from './guards'
 import * as backlogOps from './ops/backlog'
 import * as decisionsOps from './ops/decisions'
 import * as gatesOps from './ops/gates'
+import * as gcOps from './ops/gc'
 import * as leaseOps from './ops/lease'
 import * as mailOps from './ops/mail'
 import * as flowsOps from './ops/flows'
@@ -29,6 +30,16 @@ export type Env = Record<string, string | undefined>
 export type Print = (line: string) => void
 /** the cli.ts helpers that the moved operations call; cli.ts builds it, tests fake it */
 export type Port = {
+  gcPass: (days: number, dryRun: boolean, print: Print, error: Print) => void | Promise<void>
+  gcWorktreesPass: (
+    dryRun: boolean,
+    rig: string | undefined,
+    print: Print,
+    error: Print,
+  ) => void | Promise<void>
+  gcRigs: () => string[] | Promise<string[]>
+  gcHold: (name: string) => (() => void) | null | undefined
+  gcStamp: (name: string) => void
   show: (id: string | undefined) => Promise<unknown>
   status: (id: string | undefined, print: Print) => Promise<void>
   backlog: () => Promise<unknown>
@@ -362,8 +373,24 @@ const parseOr = (t: string): unknown => {
   }
 }
 
-/** The 29 operations cover the client port, board, catalog and parity fixture. */
+/** The operations cover the client port, board, catalog and parity fixture. */
 export const CATALOG: Op[] = makeCatalog([
+  local(
+    {
+      name: 'gc.run',
+      summary: 'Remove eligible run data or worktrees.',
+      method: 'POST',
+      path: '/v1/gc',
+      inputs: [
+        f('worktrees', 'flag', false, 'use the worktree pass'),
+        f('dryRun', 'flag', false, 'preview without removal'),
+        f('days', 'text', false, 'positive retention days'),
+        f('rig', 'id', false, 'one configured rig for the worktree pass'),
+      ],
+    },
+    'text',
+    (c, i) => gcOps.run(c, i),
+  ),
   {
     ...local(
       {

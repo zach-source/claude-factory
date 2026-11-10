@@ -50,6 +50,32 @@ const lines = (id: string) =>
 
 const shown = (id: string) => show(home, id)
 
+test('wua3v chat excludes project sources on every turn', async () => {
+  const m = fakeModel()
+  const env = { PATH: '/bin', X: '1' }
+  const ctx = ctxOf(m.chatModel, env)
+  for (const text of ['first', 'resume']) {
+    expect((await send(ctx, { id: 'sources', text, front: 'cli' })).code).toBe(0)
+    const c = m.calls.at(-1)!
+    expect(c).toMatchObject({
+      settingSources: 'user',
+      tools: 'Bash,Read,Grep,Glob,Write',
+      cwd: home,
+      persist: true,
+      input: text,
+      env: { FACTORY_HOME: home, FACTORY_MAIN_CHAT: '1' },
+      settings: {
+        hooks: {
+          PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `'${CLI}' chat-guard` }] }],
+        },
+      },
+    })
+    expect(c.baseEnv).toBe(env)
+  }
+  expect(m.calls[0]!.resume).toBeUndefined()
+  expect(m.calls[1]!.resume).toBe('s-1')
+})
+
 test('keeps the session across two turns', async () => {
   const m = fakeModel()
   const ctx = ctxOf(m.chatModel)

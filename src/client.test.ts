@@ -11,6 +11,135 @@ const tmp = (name: string) => {
   return d
 }
 
+test('n69b2 AC3 gc server routes preserve both modes and flag orders', () => {
+  const rows: [string[], Record<string, unknown>][] = [
+    [[], {}],
+    [['--days', '7'], { days: '7' }],
+    [['--dry-run'], { dryRun: true }],
+    [['--days', '.5', '--dry-run'], { days: '.5', dryRun: true }],
+    [['--dry-run', '--days', '+1e2'], { days: '+1e2', dryRun: true }],
+    [['--worktrees'], { worktrees: true }],
+    [['--worktrees', '--dry-run'], { worktrees: true, dryRun: true }],
+  ]
+  const flags = ['--worktrees', '--dry-run', '--rig']
+  for (const a of flags)
+    for (const b of flags.filter(f => f !== a)) {
+      const c = flags.find(f => f !== a && f !== b)!
+      rows.push([
+        [a, b, c].flatMap(f => (f === '--rig' ? [f, 'acme'] : [f])),
+        { worktrees: true, dryRun: true, rig: 'acme' },
+      ])
+    }
+  for (const [args, body] of rows) expect(route('gc', args)).toEqual({ method: 'POST', path: '/v1/gc', body })
+})
+
+test('n69b2 AC2 invalid gc forms cause no HTTP request', async () => {
+  const rows = [
+    ['--days'],
+    ['--rig'],
+    ['word'],
+    ['--'],
+    ['--days=7'],
+    ['--unknown'],
+    ['--days', '7', '--days', '8'],
+    ['--dry-run', '--dry-run'],
+    ['--worktrees', '--worktrees'],
+    ['--rig', 'acme'],
+    ['--worktrees', '--days', '7'],
+    ['--worktrees', '--rig', '../acme'],
+    ['--worktrees', '--rig', 'acme', '--rig', 'acme'],
+    ...['0', '-1', 'NaN', 'Infinity', '1e999', ' 7', '7 ', '0x7', '7days', ''].map(v => ['--days', v]),
+  ]
+  let requests = 0
+  const fetchFn = (async () => {
+    requests++
+    throw new Error('unexpected HTTP request')
+  }) as unknown as typeof fetch
+  for (const args of rows) {
+    expect(typeof route('gc', args)).toBe('string')
+    expect(
+      await main('gc', args, { FACTORY_SERVER: 'http://127.0.0.1:9' }, fetchFn, {
+        out: () => {},
+        err: () => {},
+      }),
+    ).toBe(1)
+  }
+  expect(requests).toBe(0)
+})
+
+test('n69b2 AC2 each gc caller marker refuses before HTTP, including previews', async () => {
+  let requests = 0
+  const fetchFn = (async () => {
+    requests++
+    return Response.json({ code: 0, out: 'ok\n', err: '' })
+  }) as unknown as typeof fetch
+  const io = { out: () => {}, err: () => {} }
+  for (const marker of [
+    { FACTORY_FROM: 'implement' },
+    { FACTORY_RUN: 'r1' },
+    { FACTORY_DEF_NAME: 'lifecycle' },
+    { BEADS_ACTOR: 'factory/r1/implement' },
+    { FACTORY_PATROL: '1' },
+  ]) {
+    for (const args of [[], ['--dry-run'], ['--worktrees', '--dry-run']])
+      expect(await main('gc', args, { FACTORY_SERVER: 'http://127.0.0.1:9', ...marker }, fetchFn, io)).toBe(1)
+  }
+  expect(requests).toBe(0)
+  expect(await main('gc', [], { FACTORY_SERVER: 'http://127.0.0.1:9' }, fetchFn, io)).toBe(0)
+  expect(requests).toBe(1)
+})
+
+test('n69b2 AC3 gc success preserves stdout and stderr without extra newlines', async () => {
+  for (const result of [
+    { code: 0, out: 'totals\n', err: 'skip first\nskip second\n\n' },
+    { code: 0, out: '', err: '' },
+  ]) {
+    let out = ''
+    let err = ''
+    const fetchFn = (async () => Response.json(result)) as unknown as typeof fetch
+    expect(
+      await main('gc', [], { FACTORY_SERVER: 'http://127.0.0.1:9' }, fetchFn, {
+        out: text => {
+          out += text
+        },
+        err: text => {
+          err += text + '\n'
+        },
+      }),
+    ).toBe(0)
+    expect({ out, err }).toEqual({ out: result.out, err: result.err })
+  }
+})
+
+test('n69b2 AC3 malformed gc success results cause no output or local fallback', async () => {
+  for (const text of [
+    'not JSON',
+    'null',
+    '[]',
+    '"text"',
+    '{}',
+    '{"code":1,"out":"x","err":"x"}',
+    '{"code":0,"out":1,"err":"x"}',
+    '{"code":0,"out":"x","err":1}',
+  ]) {
+    let out = ''
+    const errors: string[] = []
+    const fetchFn = (async () => new Response(text)) as unknown as typeof fetch
+    expect(
+      await main('gc', [], { FACTORY_SERVER: 'http://127.0.0.1:9' }, fetchFn, {
+        out: text => {
+          out += text
+        },
+        err: text => {
+          errors.push(text)
+        },
+      }),
+    ).toBe(1)
+    expect(out).toBe('')
+    expect(errors).toEqual(['factory server: invalid gc result'])
+  }
+})
+
 test('serverUrl: https, or http on loopback, an origin only', () => {
   const ok = (u: string) => expect(serverUrl({ FACTORY_SERVER: u })).toHaveProperty('url')
   const no = (u: string) => expect(serverUrl({ FACTORY_SERVER: u })).toHaveProperty('error')

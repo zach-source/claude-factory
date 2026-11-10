@@ -5,6 +5,8 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { argsInput as gcInput } from './core/ops/gc'
+import { refuseWorker } from './core/caller'
 
 type Env = Record<string, string | undefined>
 export type Req = { method: 'GET' | 'POST'; path: string; body?: Record<string, unknown> }
@@ -59,6 +61,12 @@ export function route(cmd: string | undefined, args: string[]): Req | { local: t
   const [a, b, c] = args
   const n = args.length
   switch (cmd) {
+    case 'gc':
+      try {
+        return { method: 'POST', path: '/v1/gc', body: gcInput(args) }
+      } catch (e) {
+        return (e as Error).message
+      }
     case 'tick':
       if (n === 2 && a === '--board' && b === '--slim') return { method: 'GET', path: '/v1/board?slim=1' }
       return n === 0 ? { method: 'GET', path: '/v1/board' } : bad
@@ -170,6 +178,13 @@ export async function main(
 ): Promise<number | null> {
   if (!env.FACTORY_SERVER) return null
   const refuse = (s: string) => (io.err(s), 1)
+  if (cmd === 'gc') {
+    try {
+      refuseWorker(env, 'gc', true)
+    } catch (e) {
+      return refuse((e as Error).message)
+    }
+  }
   const req = route(cmd, args)
   if (typeof req !== 'string' && 'local' in req) return null
   const found = serverUrl(env)
@@ -207,6 +222,19 @@ export async function main(
     )
   }
   if (!res.ok) return refuse(`factory server: ${res.status} ${text.slice(0, 500)}`)
+  if (cmd === 'gc') {
+    let result: { code?: unknown; out?: unknown; err?: unknown } | null
+    try {
+      result = JSON.parse(text)
+    } catch {
+      return refuse('factory server: invalid gc result')
+    }
+    if (!result || result.code !== 0 || typeof result.out !== 'string' || typeof result.err !== 'string')
+      return refuse('factory server: invalid gc result')
+    io.out(result.out)
+    if (result.err) io.err(result.err.replace(/\n$/, ''))
+    return 0
+  }
   io.out(text.endsWith('\n') ? text : `${text}\n`)
   return 0
 }

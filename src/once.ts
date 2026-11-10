@@ -98,6 +98,7 @@ export type ModelCall = {
   tools: string
   maxTurns: number
   settings?: object
+  settingSources?: 'user'
   env?: Record<string, string>
   /** a codex model name: run codex in its read-only sandbox, not Claude */
   codex?: string
@@ -266,6 +267,7 @@ function modelSpawn(c: ModelCall): Spawn {
         ...(c.tools ? ['--allowedTools', c.tools] : []),
         ...['--system-prompt', c.system, '--disable-slash-commands'],
         ...(c.settings ? ['--settings', JSON.stringify(c.settings)] : []),
+        ...(c.settingSources ? ['--setting-sources', c.settingSources] : []),
         ...(c.strictMcp ? ['--strict-mcp-config'] : []),
       ]
   // codex has no system prompt flag: the step text leads its stdin
