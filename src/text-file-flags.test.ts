@@ -542,3 +542,63 @@ test('0s5e file fields preserve text through a real shell without a second comma
   expect(events()[0].text).toBe(text)
   expect(existsSync(marker)).toBe(false)
 })
+
+test('0s5e decision text remains visible and reaches one target after consent', () => {
+  mkdirSync(join(home, 'allow'), { recursive: true })
+  const marker = join(dir, 'decision-marker')
+  const note = `owner'; touch ${marker}; printf 'x | \`touch ${marker}\` $(touch ${marker}) $VAR\nnext`
+  const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'"
+  const calls = join(home, 'decision-calls.jsonl')
+  const preload = join(home, 'decision-spy.ts')
+  const gates = join(import.meta.dir, 'core', 'ops', 'gates.ts')
+  const decisions = join(import.meta.dir, 'core', 'ops', 'decisions.ts')
+  writeFileSync(
+    preload,
+    `import { mock } from 'bun:test'
+import { appendFileSync } from 'node:fs'
+const gates = await import(${JSON.stringify(gates)})
+const decisions = await import(${JSON.stringify(decisions)})
+const target = async (_ctx, input) => {
+  appendFileSync(${JSON.stringify(calls)}, JSON.stringify(input) + '\\n')
+  return { code: 0, out: '', err: '' }
+}
+mock.module(${JSON.stringify(gates)}, () => ({ ...gates, decide: target }))
+mock.module(${JSON.stringify(decisions)}, () => ({ ...decisions, answer: target }))
+`,
+  )
+  const token = '123e4567-e89b-12d3-a456-426614174000'
+  for (const [verb, args, kind, key] of [
+    ['decide', 'r1 ready', 'decide', 'note'],
+    ['decisions', 'answer acme acme-1', 'answer', 'text'],
+  ]) {
+    const script = join(dir, `${verb}.sh`)
+    writeFileSync(
+      script,
+      `${quote(process.execPath)} --preload ${quote(preload)} ${quote(join(import.meta.dir, 'cli.ts'))} ${verb} ${args} ${quote(note)}\n`,
+    )
+    const env = {
+      PATH: process.env.PATH,
+      FACTORY_HOME: home,
+      FACTORY_SELF_UPDATE: '0',
+      FACTORY_MAIN_CHAT: '1',
+    }
+    const before = existsSync(calls) ? readFileSync(calls, 'utf8') : ''
+    const denied = Bun.spawnSync(['bash', script], { env })
+    expect(denied.exitCode).not.toBe(0)
+    expect(existsSync(calls) ? readFileSync(calls, 'utf8') : '').toBe(before)
+    writeFileSync(
+      join(home, 'allow', `${token}.json`),
+      JSON.stringify({ kinds: [kind], exp: Date.now() + 60_000 }),
+    )
+    const allowed = Bun.spawnSync(['bash', script], { env: { ...env, FACTORY_ALLOW: token } })
+    expect(allowed.exitCode, allowed.stderr.toString()).toBe(0)
+    const rows = readFileSync(calls, 'utf8')
+      .slice(before.length)
+      .trim()
+      .split('\n')
+      .map(l => JSON.parse(l))
+    expect(rows).toHaveLength(1)
+    expect(rows[0][key!]).toBe(note)
+    expect(existsSync(marker)).toBe(false)
+  }
+})
