@@ -177,6 +177,16 @@ describe('1ocuv AC1 identity before application access', () => {
     expect(JSON.stringify(t.audit)).not.toContain('zqsecret')
     t.zero()
   })
+  test('a noncanonical token fails even when its digest is registered', async () => {
+    const t = setup()
+    const malformed = token.slice(0, -1) + 'B'
+    expect(Buffer.from(malformed.slice('patrol_v1_'.length), 'base64url').toString('base64url')).not.toBe(
+      malformed.slice('patrol_v1_'.length),
+    )
+    t.records([{ ...identity(), digest: digest(malformed) }])
+    expect((await t.request(undefined, undefined, `Patrol ${malformed}`)).status).toBe(401)
+    t.zero()
+  })
 })
 
 describe('1ocuv AC2 closed grammar', () => {
