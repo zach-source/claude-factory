@@ -15,6 +15,7 @@ const showErr = join(dir, 'show.err')
 const failShow = join(dir, 'fail-show')
 const failCreate = join(dir, 'fail-create')
 const failComment = join(dir, 'fail-comment')
+const descriptionFile = join(dir, 'description.txt')
 const repoA = join(dir, 'acme-a')
 const repoB = join(dir, 'acme-b')
 
@@ -45,7 +46,7 @@ function setup(source: unknown = [{ id: 'acme-1' }], fail?: string) {
       `printf '%s|%s|%s\\n' "$PWD" "$BEADS_ACTOR" "$(printf '%s' "$*" | tr '\\n' ' ')" >> '${calls}'`,
       'case "$1" in',
       `  show) if [ -e '${failShow}' ]; then printf '%s' '{"error":"not found"}'; cat '${showErr}' >&2; exit 1; fi; cat '${showFile}';;`,
-      `  create) if [ -e '${failCreate}' ]; then echo 'create boom' >&2; exit 1; fi; printf '%s' 'acme-b-9';;`,
+      `  create) if [ -e '${failCreate}' ]; then echo 'create boom' >&2; exit 1; fi; printf '%s' "$5" > '${descriptionFile}'; printf '%s' 'acme-b-9';;`,
       `  comment) if [ -e '${failComment}' ]; then echo 'comment boom' >&2; exit 1; fi;;`,
       "  list) printf '%s' '[]';;",
       '  *) exit 0;;',
@@ -438,5 +439,6 @@ test('k173 AC3: file-elsewhere preserves safe Unicode and description whitespace
       ]).code,
     ).toBe(0)
     expect(creates().at(-1)).toContain(`--title ${safe} -d ${safe} line\tend`)
+    expect(readFileSync(descriptionFile, 'utf8')).toBe(`${description}\n\nFiled from acme-a:acme-1.`)
   }
 })
