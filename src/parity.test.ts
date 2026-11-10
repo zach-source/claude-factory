@@ -40,17 +40,31 @@ test('AC1: the real data has no problem, and the gaps print', async () => {
   expect(await checkParity(CATALOG, FRONT_ENDS, gaps)).toEqual([])
 })
 
-test('AC2: the gap file holds the four seed gaps', () => {
+test('AC2: the gap file holds the four seed gaps and the Herdr mod tab gaps (hpmc.14)', () => {
   const row = (frontEnd: Gap['frontEnd'], bead: string) => ({
     op: 'catalog.echo',
     frontEnd,
     bead,
     reason: 'no generic view yet',
   })
+  const tabs = [
+    ['backlog.show', 15, 'Backlog'],
+    ['mail.list', 16, 'Mail'],
+    ['rigs.list', 17, 'Rigs'],
+    ['prs.show', 18, 'PRs'],
+    ['runners.show', 19, 'Runners'],
+    ['runs.screen', 20, 'AX worker screens'],
+  ] as const
   expect(parseGaps(readFileSync(GAPS_FILE, 'utf8'))).toEqual([
     row('cli', 'claude-factory-hpmc.8'),
     row('claude-mod', 'claude-factory-hpmc.9'),
     row('herdr-mod', 'claude-factory-hpmc.10'),
+    ...tabs.map(([op, n, tab]) => ({
+      op,
+      frontEnd: 'herdr-mod',
+      bead: `claude-factory-hpmc.${n}`,
+      reason: `the Herdr app mod has no ${tab} tab`,
+    })),
     row('web', 'claude-factory-hpmc.11'),
   ])
 })

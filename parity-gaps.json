@@ -18,6 +18,42 @@
     "reason": "no generic view yet"
   },
   {
+    "op": "backlog.show",
+    "frontEnd": "herdr-mod",
+    "bead": "claude-factory-hpmc.15",
+    "reason": "the Herdr app mod has no Backlog tab"
+  },
+  {
+    "op": "mail.list",
+    "frontEnd": "herdr-mod",
+    "bead": "claude-factory-hpmc.16",
+    "reason": "the Herdr app mod has no Mail tab"
+  },
+  {
+    "op": "rigs.list",
+    "frontEnd": "herdr-mod",
+    "bead": "claude-factory-hpmc.17",
+    "reason": "the Herdr app mod has no Rigs tab"
+  },
+  {
+    "op": "prs.show",
+    "frontEnd": "herdr-mod",
+    "bead": "claude-factory-hpmc.18",
+    "reason": "the Herdr app mod has no PRs tab"
+  },
+  {
+    "op": "runners.show",
+    "frontEnd": "herdr-mod",
+    "bead": "claude-factory-hpmc.19",
+    "reason": "the Herdr app mod has no Runners tab"
+  },
+  {
+    "op": "runs.screen",
+    "frontEnd": "herdr-mod",
+    "bead": "claude-factory-hpmc.20",
+    "reason": "the Herdr app mod has no AX worker screens tab"
+  },
+  {
     "op": "catalog.echo",
     "frontEnd": "web",
     "bead": "claude-factory-hpmc.11",
