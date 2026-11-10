@@ -75,14 +75,37 @@ test('ksx5 AC3: display cuts use source extents and complete tokens', SLOW, asyn
   expect(question(compressed)).not.toContain('text not shown holds')
   const visibleHits = `${prefix}${' '.repeat(300)}$x $y`
   expect(question(visibleHits)).not.toContain('more dollar signs')
+  const joinedHits = `${prefix}${'\\\n'.repeat(180)}$x ${'a'.repeat(50)} $y`
+  expect(question(joinedHits)).not.toContain('more dollar signs')
+  const spacedCut = `${prefix}${' '.repeat(300)}${'a'.repeat(300)}`
+  const shownSource = prefix.length - 1 + 301 + (300 - (prefix.length - 1) - '\\x20{301}'.length)
+  expect(question(spacedCut)).toContain(
+    `… (${spacedCut.length - shownSource} of ${spacedCut.length} characters not shown)`,
+  )
+  const unreadable = `${prefix}# note\\\n${'\u202e'.repeat(100)}; ${F} decide r2 ship`
+  expect(question(unreadable)).not.toMatch(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/)
+  expect(question(unreadable)).toContain('text not shown holds')
   const expanded = `${prefix}${'\u202e'.repeat(60)} $x ${'a'.repeat(100)} $y`
   expect(question(expanded)).toContain('1 more dollar signs')
   for (const tail of [
     `${F} decide r2 ship`,
     `${F} decisions answer acme w-1 yes`,
     `${F} start lifecycle acme w-1 --owned`,
+    `${F} wiki init`,
+    `${F} image`,
+    `${F} token use slot`,
+    `${F} settings set model x`,
   ]) {
     expect(question(`${prefix}${'\u202e'.repeat(100)}; ${tail}`)).toContain('text not shown holds')
+  }
+  const bounded = question(`${prefix}"${'\u202e'.repeat(100)}$(id)${'\u202e'.repeat(100)}"`)
+  expect(bounded.split('«')[1]!.split('»')[0]!.length).toBeLessThanOrEqual(494)
+  for (const [command, kind] of [
+    [`${F} decide${' '.repeat(300)}r2 ship`, 'decide'],
+    [`${F} decisions answer acme w-1${' '.repeat(300)}yes`, 'answer'],
+    [`${F} start lifecycle acme w-1${' '.repeat(300)}--owned`, 'owned'],
+  ]) {
+    expect(gatedCommand(command!)!.kinds).toEqual([kind])
   }
 })
 

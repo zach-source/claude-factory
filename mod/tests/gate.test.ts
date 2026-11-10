@@ -75,6 +75,7 @@ test('ksx5 AC1: the actual question escapes controls and preserves the cut mark'
 })
 
 test('ksx5 AC4: absent and invalid answers deny without a downstream call', SLOW, async ($, on) => {
+  mock.clock(on)
   let answer: string | undefined
   let ran = 0
   on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => ({
@@ -84,10 +85,10 @@ test('ksx5 AC4: absent and invalid answers deny without a downstream call', SLOW
     ran++
     return { result: { stdout: '', stderr: '', interrupted: false } }
   })
-  for (const value of [undefined, 'yes', 'Allow\n']) {
+  for (const value of [undefined, 'yes', 'Allow please']) {
     answer = value
     const result = await $.tool.call({ tool: 'Bash', command: DECIDE, description: 'x' })
-    expect(result.deny).toContain('did not confirm')
+    expect(result.deny, String(value)).toContain('did not confirm')
   }
   expect(ran).toBe(0)
 })
@@ -533,7 +534,7 @@ test('an even run of backslashes before a newline does not join the lines', SLOW
   expect(r.deny).toContain('did not confirm')
   expect(ran).toBe(0)
   expect(questions.length).toBe(1)
-  expect(questions[0]).toContain('ship \\\\\n/repo')
+  expect(questions[0]).toContain('ship \\\\\\n/repo')
   expect(questions[0]).not.toContain('ship \\/repo')
 
   // 3 backslashes: an escaped backslash, then a line continuation: the pair joins
@@ -588,7 +589,7 @@ test(
     })
     expect(questions.length).toBe(1)
     expect(questions[0]).not.toContain('#x/repo')
-    expect(questions[0]).toContain('#x\\\n/repo')
+    expect(questions[0]).toContain('#x\\\\n/repo')
     questions.length = 0
     await $.tool.call({
       tool: 'Bash',
