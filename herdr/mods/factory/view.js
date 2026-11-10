@@ -171,28 +171,8 @@ export function parseConfig(text) {
 /** the options that send an exec or a file read to the machine of a remote config */
 export const onOf = cfg => (cfg.machine ? { on: cfg.machine } : undefined)
 
-/** the step names and how often each runs (ms). A step that is due and finds no work makes no model call. */
-export const STEPS = { patrol: 60_000, brief: 120_000, review: 300_000, pm: 3_600_000, decisions: 300_000 }
-
-/**
- * The factory commands one beat starts, as { name, words }.
- * A remote mod only reads: one `snapshot` call returns the slim board and the decisions (hpmc.23).
- * It never runs tick, patrol, brief, review or pm, so it never takes the manager lease.
- */
-export function beatJobs(cfg, state, ran, now) {
-  if (cfg.machine) return [{ name: 'snapshot', words: ['snapshot', '--views', 'board,decisions'] }]
-  const jobs = [{ name: 'tick', words: ['tick', '--keep-mail'] }]
-  // a manager without the lease only shows the board (claude-factory-s01d.2)
-  if (state.readOnly || state.halt) return jobs
-  for (const [name, every] of Object.entries(STEPS))
-    if (now - (ran[name] ?? 0) >= every)
-      jobs.push({
-        name,
-        words:
-          name === 'decisions' ? ['decisions'] : name === 'review' ? ['review', '--once'] : [name, '--once'],
-      })
-  return jobs
-}
+/** the one read-only call of a beat: the slim board and the decisions (claude-factory-hpmc.23) */
+export const SNAPSHOT_WORDS = ['snapshot', '--views', 'board,decisions']
 
 /** the shell words of a control button; only these CLI commands are allowed */
 export function actionWords(action, arg) {
