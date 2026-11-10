@@ -582,6 +582,71 @@ describe('events replay and ring', () => {
           expect(t.boards()).toBe(0)
           expect(t.logs.join('\n')).not.toContain('zqsecret')
         })
+  test('events preserve the complete display and both frozen sources', async () => {
+    const t = setup()
+    const freeze = (o: unknown): void => {
+      if (o && typeof o === 'object') {
+        Object.freeze(o)
+        for (const v of Object.values(o)) freeze(v)
+      }
+    }
+    const rig = {
+      name: 'r',
+      repo: 'a',
+      factory: 'f',
+      goal: 'g',
+      runner: 'ax',
+      sandboxClass: 'c',
+      maxRuns: 3,
+      sweeps: ['s2', 's1', 's3'],
+      linear: { team: ['t2', 't1'], projects: ['p2', 'p1'], labels: ['l2', 'l1'] },
+      linearSync: { at: 5, pulled: 4, created: 3, updated: 2, stripped: 1, unrouted: 6, error: 'e' },
+      env: { FOO: 'zqsecret', API_KEY: 'zqsecret' },
+      params: { FOO: 'zqsecret' },
+      beadsRemote: 'https://u:zqsecret@h/r.git',
+    }
+    const other = {
+      runs: [{ id: 'x' }],
+      lease: 'L',
+      manager: { m: 1 },
+      reviews: [{ r: 1 }],
+      reviewed: ['x'],
+      halt: { mode: 'stop' },
+    }
+    const replaySource = { rigs: [rig], ...other }
+    const liveSource = { rigs: [{ ...rig, repo: 'b' }], ...other }
+    const replaySnap = JSON.stringify(replaySource)
+    const liveSnap = JSON.stringify(liveSource)
+    freeze(replaySource)
+    freeze(liveSource)
+    t.h.publish(replaySource)
+    const r = await get(t.h, '/v1/events')
+    setTimeout(() => t.h.publish(liveSource), 10)
+    const text = await frames(r, 2)
+    const pub = {
+      name: 'r',
+      repo: 'a',
+      factory: 'f',
+      maxRuns: 3,
+      sweeps: ['s2', 's1', 's3'],
+      goal: 'g',
+      runner: 'ax',
+      sandboxClass: 'c',
+      linear: { team: ['t2', 't1'], projects: ['p2', 'p1'], labels: ['l2', 'l1'] },
+      linearSync: { at: 5, pulled: 4, created: 3, updated: 2, stripped: 1, unrouted: 6, error: 'e' },
+    }
+    expect(text).toBe(
+      frame(1, { rigs: [pub], ...other }) + frame(2, { rigs: [{ ...pub, repo: 'b' }], ...other }),
+    )
+    const late = await get(t.h, '/v1/events?after=0')
+    expect(await frames(late, 2)).toBe(text)
+    expect(JSON.stringify(replaySource)).toBe(replaySnap)
+    expect(JSON.stringify(liveSource)).toBe(liveSnap)
+    expect(text).not.toContain('zqsecret')
+    expect(t.logs.join('\n')).not.toContain('zqsecret')
+    expect(t.calls.length).toBe(0)
+    expect(t.boards()).toBe(0)
+  })
   const badRigs: [string, unknown][] = [
     ['rigs string', 'zqsecret'],
     ['null entry', [null]],
