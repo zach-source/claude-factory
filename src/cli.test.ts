@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { compile, fill, validate } from './machine'
 import { watchDecide } from './watch'
 import {
@@ -74,6 +74,8 @@ import {
   piWorker,
   launchPane,
   launchRefusal,
+  launch,
+  laptopSandbox,
   userPluginDirs,
   workerSettings,
   workerSkills,
@@ -2795,8 +2797,15 @@ test('launchPane opens no tab when the launch is refused', () => {
   const p = Bun.spawnSync(['bun', '-e', script], { env })
   const ev = JSON.parse(p.stdout.toString())
   expect(ev).toMatchObject({ type: 'FAIL', seq: 7 })
-  expect(ev.reason).toContain('launch refused: a pi worker')
-  expect(ev.reason).toContain('claude-factory-qn8a.84')
+  expect(ev.reason).toContain('launch refused: ')
+  // claude-factory-o7h6h: off macOS the sandbox refuses first; on macOS the wrap passes and pi refuses
+  if (process.platform === 'darwin') {
+    expect(ev.reason).toContain('a pi worker')
+    expect(ev.reason).toContain('claude-factory-qn8a.84')
+  } else {
+    expect(ev.reason).toContain('claude-factory-o7h6h')
+    expect(existsSync(join(home, 'worker-system.md'))).toBe(false)
+  }
   expect(existsSync(calls)).toBe(false)
   // any other launch error is transient: it does not end the attempt
   expect(launchRefusal(new Error('ENOENT'), 7)).toBeNull()
@@ -3436,4 +3445,83 @@ test('AC9 96ks REPO_CONFIG_KEY gives the same answer in TS and in grep -E', () =
   }
   expect(re.test('core.bare')).toBe(true)
   expect(re.test('core.hookspath')).toBe(false)
+})
+
+// claude-factory-o7h6h: the OS sandbox of a laptop herdr worker
+test('laptopSandbox wraps on darwin and fails closed elsewhere', () => {
+  const home = mkdtempSync(join(tmpdir(), 'sbx-'))
+  const key = join(home, '.config', 'factory', 'person.key')
+  mkdirSync(dirname(key), { recursive: true })
+  writeFileSync(key, 'x')
+  const fh = join(home, 'fh')
+  const mac = { platform: 'darwin', exists: () => true, home, factoryHome: fh, env: {} }
+  const wt = join(home, 'wt')
+  const wrap = laptopSandbox('claude', wt, mac)
+  expect(wrap).toStartWith("/usr/bin/sandbox-exec -p '")
+  expect(wrap).toContain(join(home, '.config', 'factory'))
+  expect(wrap.endsWith(' ')).toBe(true)
+  const refused = (f: () => unknown) => {
+    try {
+      f()
+    } catch (e) {
+      return launchRefusal(e, 1)
+    }
+    return undefined
+  }
+  const no = refused(() => laptopSandbox('claude', wt, { ...mac, exists: () => false }))
+  expect(no).toMatchObject({ type: 'FAIL', seq: 1 })
+  expect(no?.reason).toContain('/usr/bin/sandbox-exec is missing')
+  expect(refused(() => laptopSandbox('claude', wt, { ...mac, platform: 'linux' }))?.reason).toContain(
+    'no worker sandbox',
+  )
+  expect(laptopSandbox('claude', wt, { ...mac, platform: 'linux', exists: () => false })).toBe('')
+  expect(refused(() => laptopSandbox('claude', join(home, '.codex', 'w'), mac))?.reason).toContain(
+    'inside the sandbox deny path',
+  )
+  expect(
+    refused(() => laptopSandbox('claude', wt, { ...mac, factoryHome: join(home, '.config', 'factory', 'f') }))
+      ?.reason,
+  ).toContain('factory home')
+  expect(() => laptopSandbox('codex', join(home, '.codex', 'w'), mac)).not.toThrow()
+  expect(refused(() => laptopSandbox('claude', wt, { ...mac, env: { CODEX_HOME: 'rel' } }))).not.toBeNull()
+  const empty = laptopSandbox('claude', wt, { ...mac, env: { CODEX_HOME: '' } })
+  expect(empty).toContain(join(home, '.codex'))
+  expect(empty).not.toContain('(subpath "")')
+  // the worktree's real path is not found: a file where a dir should be
+  writeFileSync(join(home, 'file'), 'x')
+  expect(refused(() => laptopSandbox('claude', join(home, 'file', 'x'), mac))).toBeUndefined()
+})
+
+// claude-factory-o7h6h: launch() asks the sandbox first and wraps the worker. A child process, as above.
+const launchScript = (home: string) => `
+  import { launch } from ${JSON.stringify(join(import.meta.dir, 'cli'))}
+  const mk = agent => ({ name: 'x', start: 'a', agent, nodes: { a: { prompt: '', next: { ok: 'done' } } } })
+  const run = { id: 'r', ws: 'w', worktree: ${JSON.stringify(home)}, repo: ${JSON.stringify(home)}, branch: 'b' }
+  const c = { attempt: 1, seq: 1, mail: {} }
+  const out = []
+  if (process.env.MODE === 'throw') {
+    try { launch(run, mk('claude'), 'a', c, 'p.md', undefined, () => { throw new Error('boom') }) } catch (e) { out.push('threw ' + e.message) }
+  } else {
+    const sb = () => "/usr/bin/sandbox-exec -p 'x' "
+    for (const [agent, session] of [['claude', undefined], ['claude', 's1'], ['pi', undefined]])
+      out.push(launch(run, mk(agent), 'a', c, 'p.md', session, sb))
+  }
+  console.log(JSON.stringify(out))
+`
+test('launch wraps the worker in the sandbox', () => {
+  const run = (mode: string) => {
+    const home = mkdtempSync(join(tmpdir(), 'launch-home-'))
+    const env = { ...process.env, HOME: home, FACTORY_HOME: home, MODE: mode }
+    const p = Bun.spawnSync(['bun', '-e', launchScript(home)], { env })
+    return { home, out: JSON.parse(p.stdout.toString()) as string[] }
+  }
+  const { out } = run('wrap')
+  expect(out[0]).toContain("/usr/bin/sandbox-exec -p 'x' claude")
+  expect(out[1]).toContain("/usr/bin/sandbox-exec -p 'x' claude")
+  expect(out[1]).toContain('--resume')
+  expect(out[2]).toContain("/usr/bin/sandbox-exec -p 'x' pi")
+  // a throwing sandbox stops launch before any setup file
+  const t = run('throw')
+  expect(t.out).toEqual(['threw boom'])
+  expect(readdirSync(t.home).filter(f => f !== '.bun')).toEqual([])
 })
