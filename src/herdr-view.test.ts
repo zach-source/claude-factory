@@ -130,22 +130,12 @@ test('every exec and file read of a remote config passes on: machine', () => {
   expect(herdr.onOf({ cli: 'x', home: '/h' })).toBeUndefined()
 })
 
-test('a remote mod never ticks, never patrols and takes no lease', () => {
-  const remote = { cli: 'factory', home: '/w/home', machine: 'f-manager' }
-  const local = { cli: 'x', home: '/h' }
-  const now = 10_000_000
-  const jobs = (cfg: unknown, state = {}) =>
-    herdr.beatJobs(cfg, state, {}, now).map((j: { name: string }) => j.name)
-  expect(jobs(remote)).toEqual(['snapshot'])
-  expect(jobs(remote, { halt: { state: 'stopping' } })).toEqual(['snapshot'])
-  const words = herdr.beatJobs(remote, {}, {}, now).flatMap((j: { words: string[] }) => j.words)
-  for (const w of ['tick', 'patrol', 'brief', 'review', 'pm']) expect(words.includes(w)).toBe(false)
-  expect(herdr.beatJobs(remote, {}, {}, now)[0].words).toEqual(['snapshot', '--views', 'board,decisions'])
-  expect(jobs(local)).toEqual(['tick', 'patrol', 'brief', 'review', 'pm', 'decisions'])
-  expect(jobs(local, { readOnly: 'x' })).toEqual(['tick'])
-  expect(
-    herdr.beatJobs(local, {}, { patrol: now - 1 }, now).some((j: { name: string }) => j.name === 'patrol'),
-  ).toBe(false)
+test('the mod reads one snapshot and never ticks, patrols or takes the lease', () => {
+  expect(herdr.SNAPSHOT_WORDS).toEqual(['snapshot', '--views', 'board,decisions'])
+  for (const w of ['tick', 'patrol', 'brief', 'review', 'pm'])
+    expect(herdr.SNAPSHOT_WORDS.includes(w)).toBe(false)
+  expect(herdr.beatJobs).toBeUndefined()
+  expect(herdr.STEPS).toBeUndefined()
 })
 
 test('a remote action calls the factory CLI; the chat opens the hc terminal of the manager', () => {
