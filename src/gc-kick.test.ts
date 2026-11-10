@@ -8,7 +8,16 @@
 // spawns that process. The cadence tests follow src/watch.test.ts's kickWatch tests
 // (claude-factory-960.7).
 import { afterEach, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
@@ -146,6 +155,15 @@ test('a direct "factory gc" run (not through tick) still writes gc.stamp and pru
   expect(out.code).toBe(0)
   expect(existsSync(join(home, 'gc.stamp'))).toBe(true)
   expect(existsSync(d)).toBe(false)
+})
+
+test('FACTORY_GC=0 stops the hourly kick only: a direct "factory gc" still reaps and archives (lt4u.7)', () => {
+  reset()
+  const d = doneRun('r1')
+  expect(factory(['gc', '--days', '1'], { FACTORY_GC: '0' }).code).toBe(0)
+  expect(existsSync(d)).toBe(false)
+  const rec = JSON.parse(readFileSync(join(home, 'metrics.jsonl'), 'utf8').trim().split('\n')[0]!)
+  expect(rec.id).toBe('r1')
 })
 
 // Tests for `factory tick` spawning `factory gc --worktrees` (claude-factory-l38.4).

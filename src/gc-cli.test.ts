@@ -15,6 +15,8 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
+  cpSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs'
@@ -678,4 +680,87 @@ test('lt4u.4: a run.json that names another run is refused by gc, rm and gc --wo
   check()
   factory(['gc', '--worktrees'])
   check()
+})
+
+// ---- claude-factory-lt4u.7 rework: unsafe worktree paths through plain gc
+/** rewrites fields of one run's run.json, so the run points at a path gc must not delete */
+const repoint = (d: string, patch: Record<string, string>) => {
+  const rj = join(d, 'run.json')
+  writeFileSync(rj, JSON.stringify({ ...JSON.parse(readFileSync(rj, 'utf8')), ...patch }))
+}
+const unsafeCases: [string, (id: string, victim: string) => Record<string, string>][] = [
+  ['a worktree outside the worktrees root', (_id, victim) => ({ worktree: victim })],
+  [
+    'a worktree that is a symlink to another dir',
+    (id, victim) => {
+      const link = join(home, 'worktrees', id + '-link')
+      symlinkSync(victim, link)
+      return { worktree: link }
+    },
+  ],
+  [
+    'a worktree named for another run',
+    (_id, victim) => {
+      const other = join(home, 'worktrees', 'other-name')
+      cpSync(victim, other, { recursive: true })
+      return { worktree: other }
+    },
+  ],
+]
+for (const [name, patch] of unsafeCases) {
+  test(`lt4u.7 AC4: plain gc keeps a run with ${name}; the target and the run dir stay`, () => {
+    reset()
+    const id = freshId('ship')
+    const d = writeRun(id, { outcome: 'done', finishedAt: OLD(), real: true })
+    const victim = join(dir, 'victim')
+    mkdirSync(victim, { recursive: true })
+    writeFileSync(join(victim, 'mine.txt'), 'keep me')
+    repoint(d, patch(id, victim))
+    const t = tip(id)
+    expect(factory(['gc']).code).toBe(0)
+    expect(existsSync(d)).toBe(true)
+    expect(readFileSync(join(victim, 'mine.txt'), 'utf8')).toBe('keep me')
+    expect(tip(id)).toBe(t)
+    expect(metricIds()).not.toContain(id)
+    expect(readFileSync(join(home, 'gc.log'), 'utf8')).toContain(`refused ${id}`)
+  })
+}
+
+test('lt4u.7 AC4: an unreadable repo registration keeps a worktree dir with user files', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'done', finishedAt: OLD(), real: true })
+  const wt = join(home, 'worktrees', id)
+  writeFileSync(join(wt, 'mine.txt'), 'keep me')
+  repoint(d, { repo: join(dir, 'no-such-repo') })
+  factory(['gc'])
+  expect(existsSync(d)).toBe(true)
+  expect(readFileSync(join(wt, 'mine.txt'), 'utf8')).toBe('keep me')
+  expect(metricIds()).not.toContain(id)
+})
+
+test('lt4u.7 AC5: gc.log holds the reason and scrubs URL credentials', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'done', finishedAt: OLD(), real: true })
+  repoint(d, { worktree: '' })
+  const bad = freshId('bad')
+  const dbad = writeRun(bad, { outcome: 'done', finishedAt: OLD() })
+  writeFileSync(join(dbad, 'state.json'), 'https://user:zqsecret@example.com/x not json')
+  expect(factory(['gc']).code).toBe(0)
+  const log = readFileSync(join(home, 'gc.log'), 'utf8')
+  expect(log).toContain(`refused ${id}: ${id}: run.json has no worktree`)
+  expect(log).toContain(`skipped ${bad}`)
+  expect(log).not.toContain('zqsecret')
+})
+
+test('lt4u.7 AC1: the archived record keeps the node and the journal entry', () => {
+  reset()
+  const id = freshId('ship')
+  const at = OLD()
+  writeRun(id, { outcome: 'done', finishedAt: at, real: true })
+  factory(['gc'])
+  const rec = JSON.parse(readFileSync(join(home, 'metrics.jsonl'), 'utf8').trim().split('\n')[0]!)
+  expect(rec.node).toBe('done')
+  expect(rec.log.at(-1)).toMatchObject({ outcome: 'ready', summary: 's', at })
 })
