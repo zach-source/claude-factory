@@ -384,6 +384,7 @@ const DENIED = [
   'plan',
   'patrol',
   'patrol-guard',
+  'patrol-bd',
   'chat-guard',
   'pm',
   'brief',

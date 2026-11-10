@@ -7,7 +7,7 @@ New node fields in `src/machine.ts`:
 | Field | Type | Meaning | `validate()` refuses |
 | --- | --- | --- | --- |
 | `ciCheck` | `{ name: string; pass: string; fail: string }` | The runner starts no worker. It reads the named check on the head commit of the run's pull request. Green posts `pass`. Red posts `fail` with the summary of the failed step. Pending parks the run. | `ciCheck` with `gate`, `agent`, `split`, `awaitsPr`, `mergeCheck` or `runner`; `pass` or `fail` that is not a key of `next` |
-| `freeze` | `{ on: string; dir: string; record: string }` | Only on a `gate`. When the person answers with the outcome `on`, the core hashes each file under `dir` at the run branch head. It writes the approval record and the held-out copy. Then it writes `record` (for example `proofs/approved.json`) to the run branch as a commit. | `freeze` on a node with no `gate`; `on` that is not a key of `next` |
+| `freeze` | `{ on: string; dir: string; record: string; parts?: string }` | Only on a `gate`. When the person answers with the outcome `on`, the core hashes each file under `dir` at the run branch head. It writes the approval record and the held-out copy. Then it writes `record` (for example `proofs/approved.json`) to the run branch as a commit. If `parts` names a file (for example `proofs/parts.json`), the core refuses the decision while a listed part has no approval record. | `freeze` on a node with no `gate`; `on` that is not a key of `next` |
 | `heldout` | `true` | Only on a `ciCheck` node. Before the runner reads the check, it compares the `record` file at the head with the core's last approval record. A mismatch posts `fail` with check `hash`. | `heldout` with no `ciCheck`, or in a factory with no `freeze` node |
 
 ## 2. Core operations
@@ -28,6 +28,14 @@ One new read operation:
 
 Each front end gets `proofs.show` through its generic view (spec 008, `contracts/frontends.md`). If a front end cannot show it, the change adds a gap entry to `parity-gaps.json` and files a bead.
 
+## 2a. Settings
+
+| Key | Env | Default | Check |
+| --- | --- | --- | --- |
+| `prove.max-sessions` | `FACTORY_PROVE_MAX_SESSIONS` | `2` | `^[1-9][0-9]*$` |
+| `prove.image` | `FACTORY_PROVE_IMAGE` | (unset: prove runs on AX refuse to start) | — |
+| `prove.sandbox-class` | `FACTORY_PROVE_SANDBOX_CLASS` | `microvm` | — |
+
 ## 3. The rig
 
 The first prove run on a rig adds these files from `templates/prove/` in claude-factory:
@@ -41,10 +49,11 @@ proofs/
   Generated/           # from go-elf2lean; not checked in; the gate makes it again
   mutants/             # one patch file for each mutant
   approved.json        # { decision, commit, files: { path: sha256 } }
+  parts.json           # the runtime contracts and exact-proof parts, one owner decision each
   plan.json            # the proof plan
   comparator.json      # modules, theorem_names, permitted_axioms
   gate.sh              # the gatekeeper
-  LICENSE-upstream     # the Apache 2.0 text of arm64-semantics and comparator
+  LICENSE-upstream     # the Apache 2.0 text and any NOTICE text of arm64-semantics and comparator
 .github/workflows/prove-gate.yml   # runs proofs/gate.sh on ubuntu-latest, on each pull request and on the default branch
 ```
 

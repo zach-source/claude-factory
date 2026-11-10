@@ -669,6 +669,8 @@ The manager VM holds placeholders only. The egress gateway puts the real value i
 | Kube API                  | none                                                   | The VM has none. `unavailable()` asks the broker `GET /controller`.                                                                |
 | Token swap                | `FACTORY_AX_TOKEN_SWAP` is a `curl` POST to the broker | The broker pod runs `claude-token best`. The op writer token is the Secret `claude-token-op` there, never in the VM.                |
 
+The patrol also runs on Codex while the manager is limited (`factory patrol --once --fallback`). Codex has no Bash hook. So the core refuses the patrol's gated verbs when `FACTORY_PATROL` is set (`patrolRefusal`), and a `bd` shim on `PATH` refuses a bd write (`factory patrol-bd`). The Claude hook stays as a second layer. A call to bd by its absolute path is not seen by the shim. The patrol runs in the `workspace-write` sandbox; if the VM kernel does not allow that sandbox, the patrol fails and the log shows it (claude-factory-y3f8w.5).
+
 Workers only (not the manager): `BUILDBUDDY`, `ATTIC`, `GITLAB`.
 
 Check it in the VM: `AX_CHECK_SWAP=1 RIG_REPO=<clone> BEADS_RIG_REPO=<clone> AX_PROBE_FILE=<task manifest with __NAME__> hack/ax-manager-check.sh`. `AX_CHECK_SWAP=1` is needed for the token swap check. It swaps the live Claude token for all AX workers. Without it, the check prints SKIP. The script prints PASS or FAIL for the `gh`, `git push`, `bd dolt pull`, token swap, AX apply and no-secret-on-disk checks.
