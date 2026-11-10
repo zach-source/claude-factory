@@ -13432,6 +13432,8 @@ In a repo with .beads, every run works a bead: the one its goal names, or a new 
 
 // claude-factory-6g6ud: a gated kind from the main chat needs the person's one-time Allow token
 function mainChatGateRefusal(): string | undefined {
+  if (cmd === 'server' && process.env.FACTORY_MAIN_CHAT)
+    return 'refused: FACTORY_MAIN_CHAT is set; start the server from your own shell'
   const kind = mainChatKind(cmd, args)
   return kind && mainChatRefusal({ ...process.env, FACTORY_ALLOW: ALLOW_TOKEN }, HOME, kind)
 }
