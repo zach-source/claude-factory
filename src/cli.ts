@@ -88,7 +88,6 @@ import {
   factoryOf,
   goalOf,
   shipBranchOf,
-  hasBeads,
   isHandedOff,
   isOwned,
   OWNER,
@@ -232,6 +231,7 @@ import * as herdrApp from './herdr-install'
 import * as migrate from './migrate'
 import {
   bdEnv,
+  hasRigBeads,
   httpsRemote,
   inAx,
   isLaptopPane,
@@ -9412,6 +9412,8 @@ function edit(fn: (list: Rig[]) => Rig[]) {
   }
 }
 const rigOf = (repo: string) => rigs().find(r => r.repo === repo)
+/** in the AX task a rig with a beadsRemote has beads, with no .beads in git */
+const hasBeads = (repo: string) => hasRigBeads(repo, rigs())
 /** `rig.personOnlyContexts`, or undefined when it is absent or not an array of strings (a rigs.json written outside the CLI) */
 const personOnlyContexts = (rig?: Pick<Rig, 'personOnlyContexts'>): string[] | undefined =>
   Array.isArray(rig?.personOnlyContexts) && rig.personOnlyContexts.every(c => typeof c === 'string')
