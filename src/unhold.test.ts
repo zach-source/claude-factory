@@ -44,7 +44,7 @@ const def = (runner: string): Factory => ({
 const LIMIT = 'Claude usage limit (seven_day) until 2026-11-08T01:00:00Z'
 let n = 0
 /** a run held at implement by `reason` at time `at` */
-function held(runner: string, reason = LIMIT, at = 100, extra: Ev[] = []) {
+function held(runner: string, reason = LIMIT, at = 100, extra: Ev[] = [], bead?: string) {
   const id = `ship-${Date.now().toString(36)}x${n++}`
   const d = join(home, 'runs', id)
   const wt = join(dir, id)
@@ -55,7 +55,7 @@ function held(runner: string, reason = LIMIT, at = 100, extra: Ev[] = []) {
   writeFileSync(file, `export default ${JSON.stringify(f)}`)
   writeFileSync(
     join(d, 'run.json'),
-    JSON.stringify({ id, factory: file, repo: wt, goal: 'g', ws: 'w1', worktree: wt, branch: 'b' }),
+    JSON.stringify({ id, factory: file, repo: wt, goal: 'g', ws: 'w1', worktree: wt, branch: 'b', bead }),
   )
   const actor = createActor(compile(f)).start()
   actor.send({ type: 'TICK', at: 0 })
@@ -75,6 +75,64 @@ const mark = (name: string, m: object) => {
   writeFileSync(join(home, name), JSON.stringify(m))
 }
 const wakesOf = (r: { id: string }) => wakeLines(join(home, 'runs', r.id))
+
+test('p99sx AC1: status keeps good runs and shows one error line for a bad def', () => {
+  const good = held('herdr')
+  const bad = held('nope')
+  const all = factory(['status'])
+  expect(all.code).toBe(0)
+  expect(all.out).toContain(`${good.id}  implement/`)
+  expect(all.out).toContain('  goal: g')
+  const error = `${bad.id}  error: pinned factory does not load:`
+  expect(all.out).toContain(error)
+  expect(all.out.split('\n').find(l => l.startsWith(error))).toContain('runner "nope"')
+  const single = factory(['status', bad.id])
+  expect(single.code).toBe(0)
+  expect(single.out).toContain(error)
+  const valid = factory(['status', good.id])
+  expect(valid.code).toBe(0)
+  expect(valid.out).not.toContain('error: pinned factory')
+})
+
+test('p99sx AC2: waiting keeps the parked run', () => {
+  const good = held('herdr')
+  const file = join(home, 'runs', good.id, 'state.json')
+  const actor = createActor(compile(def('herdr'))).start()
+  actor.send({ type: 'TICK', at: 0 })
+  actor.send({ type: 'SPAWNED', seq: 1, pane: 'w1:p1', at: 1 })
+  actor.send({ type: 'BLOCKED', seq: 1, reason: 'PR #7 needs a human approval', at: 100 })
+  writeFileSync(file, JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }))
+  const bad = held('nope')
+  const result = factory(['waiting'])
+  expect(result.code).toBe(0)
+  expect(result.out).toContain(`${good.id} implement · parked`)
+  expect(result.out).not.toContain(bad.id)
+})
+
+test('p99sx AC2 negative: waiting with only a bad def has no rows', () => {
+  held('nope')
+  const result = factory(['waiting'])
+  expect(result.code).toBe(0)
+  expect(result.out.trim()).toBe('nothing waits on you')
+})
+
+test('p99sx AC3: digest tolerates a bad def with a bead', () => {
+  held('herdr')
+  held('nope', LIMIT, 100, [], 'acme-3')
+  const result = factory(['digest'])
+  expect(result.code).toBe(0)
+  expect(result.err).not.toContain('runner "nope"')
+})
+
+test('p99sx sibling: flows keeps good runs when one def does not load', () => {
+  const bad = held('nope')
+  const good = held('herdr')
+  const result = factory(['flows', '--factory', 'ship', '--json'])
+  expect(result.err).not.toContain('runner "nope"')
+  expect(result.code).toBe(0)
+  expect(result.out).toContain(good.id)
+  expect(result.out).not.toContain(bad.id)
+})
 
 test('AC1/AC4: a mark wakes the held stations of its runner only', () => {
   const a = held('ax')
