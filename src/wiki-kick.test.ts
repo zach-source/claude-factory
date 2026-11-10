@@ -24,79 +24,168 @@ const dir = join(realpathSync(tmpdir()), `wiki-kick-${process.pid}`)
 let n = 0
 let home = ''
 
-// Child ownership (AC10). The CLI starts detached passes and then exits, so the test cannot hold their handles.
-// So every `bun` the CLI starts goes through a shim that adds a preload (supervisor). The supervisor wraps
-// node:child_process.spawn in that process: it keeps every child handle and neutralises unref(), so the process
-// ends only after each child it spawned has exited (the Node handle in the spawning process is the authority).
-// A tick, and each pass it starts, is therefore finished when factory() returns. On SIGTERM the supervisor kills
-// the children it holds by handle, awaits them and exits. A scope that the test had to time out has no exit
-// proof: it is recorded in `stuck`, and the hook keeps the fixture. Direct Bun children the test starts are
-// owned with own(). Limit: a child started by Bun.spawn or Bun.$ inside the CLI is not tracked.
-const handles: ReturnType<typeof Bun.spawn>[] = []
-/** handles of supervised processes: they need SIGTERM, so that they await their own children */
-const supervisors = new WeakSet<object>()
-/** own a direct child: cleanup kills it and awaits child.exited */
-function own<T extends ReturnType<typeof Bun.spawn>>(child: T, supervised = false): T {
-  handles.push(child)
-  if (supervised) supervisors.add(child)
-  return child
+// Child ownership (AC10). Every `bun` that the CLI starts goes through a shim that loads SUPERVISOR. SUPERVISOR
+// holds each Node and Bun child handle. The process exits only after each child has exited. A scope holds the
+// handles that the test owns. The hook removes a fixture only when each handle has exit proof. A signal, a lock,
+// a stamp, a timeout or a death by signal is not proof.
+type Handle = {
+  kill(sig?: string | number): void
+  exited: Promise<unknown>
+  readonly exitCode: number | null
+  readonly signalCode: string | null
 }
-/** scopes without exit proof (a forced supervisor death): they block cleanup */
-const stuck: string[] = []
+type Owned = { h: Handle; supervised: boolean; settled: boolean }
+type Scope = { dir: string; handles: Owned[]; linked: Scope[]; synthetic?: boolean }
+type Exit = { exitCode: number | null; signalCode: string | null }
+const main: Scope = { dir, handles: [], linked: [] }
+/** fake handles: only a synthetic scope (no process in it) accepts them without a real exit */
+const fakes = new WeakSet<object>()
+let synth = 0
+/** own a child in a scope (the main scope by default). A supervised handle needs SIGTERM, so that it awaits its own children. */
+function own<T extends Handle>(h: T, supervised = false, scope = main): T {
+  if (scope.synthetic && !fakes.has(h)) throw new Error('a synthetic scope owns fake handles only')
+  const o: Owned = { h, supervised, settled: false }
+  scope.handles.push(o)
+  void h.exited.then(
+    () => (o.settled = true),
+    () => (o.settled = true),
+  )
+  return h
+}
+/** a scope in a subdirectory of the fixture: the hook cleans it before the main scope */
+function linkedScope(): Scope {
+  const s: Scope = { dir: join(dir, `scope-${++synth}`), handles: [], linked: [] }
+  mkdirSync(s.dir, { recursive: true })
+  main.linked.push(s)
+  return s
+}
+/** a scope with its own directory and no process: the test removes the directory itself */
+function syntheticScope(): Scope {
+  const s: Scope = { dir: `${dir}-synthetic-${++synth}`, handles: [], linked: [], synthetic: true }
+  mkdirSync(s.dir, { recursive: true })
+  return s
+}
+/** a handle that the test controls: kill(sig, resolve) decides what a signal does */
+function fakeHandle(kill: (sig: string | number | undefined, resolve: (r: Exit) => void) => void = () => {}) {
+  let done!: (r: Exit) => void
+  const exited = new Promise<unknown>(r => (done = r))
+  const h = {
+    exitCode: null as number | null,
+    signalCode: null as string | null,
+    exited,
+    kill(sig?: string | number) {
+      kill(sig, resolve)
+    },
+  }
+  const resolve = (r: Exit) => {
+    h.exitCode = r.exitCode
+    h.signalCode = r.signalCode
+    done(r)
+  }
+  fakes.add(h)
+  return { handle: h as Handle, resolve }
+}
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
-const exitedWithin = (c: ReturnType<typeof Bun.spawn>, ms: number) =>
+const exitedWithin = (c: Handle, ms: number) =>
   Promise.race([c.exited.then(() => true), sleep(ms).then(() => false)])
 // Fixture children are single Bun processes: a shell would leave a `sleep` descendant that no handle owns.
 const q = (s: string) => JSON.stringify(s)
-const script = (js: string) => Bun.spawn([process.execPath, '-e', `const fs = require('node:fs'); ${js}`])
 // the nested row (AC10 assertion cleanup) shortens the hook wait; a normal run keeps this
 let hookMs = 10_000
-/** stop one handle by its own handle; a signal error keeps it. true only when its exit is awaited. */
-async function stopOne(h: ReturnType<typeof Bun.spawn>, ms: number) {
-  const sup = supervisors.has(h)
+/** exit proof: a direct handle has exited; a supervised handle has exited and was not killed by a signal */
+const proof = (o: Owned) => o.settled && (!o.supervised || o.h.signalCode === null)
+/** the first signal to one owned handle; an error is returned as text. A settled handle gets none. */
+function signal(o: Owned): string | undefined {
+  if (o.settled) return undefined
   try {
-    h.kill(sup ? 'SIGTERM' : 'SIGKILL')
-  } catch {} // a signal error is not exit proof: wait for the handle
-  if (await exitedWithin(h, ms)) return true
-  if (sup) {
-    // forced death of a supervisor cannot prove that its descendants exited
-    try {
-      h.kill('SIGKILL')
-    } catch {}
-    stuck.push('forced supervisor death')
+    o.h.kill(o.supervised ? 'SIGTERM' : 'SIGKILL')
+  } catch (e) {
+    return String(e)
   }
-  return false
+  return undefined
 }
-/** stop every owned child and await its exit; false when one did not exit or a scope has no exit proof */
-async function stopOwned(ms = hookMs) {
-  const all = handles.splice(0)
-  const done = await Promise.all(all.map(h => stopOne(h, ms)))
-  all.forEach((h, i) => {
-    if (!done[i]) handles.push(h) // no exit proof: keep it
-  })
-  return stuck.length === 0 && done.every(Boolean)
+/** await the exit of one owned handle; a supervisor that stays gets SIGKILL, which proves nothing about its children */
+async function settle(o: Owned, ms: number) {
+  if (!(await exitedWithin(o.h, ms)) && o.supervised) {
+    try {
+      o.h.kill('SIGKILL')
+    } catch {}
+    await exitedWithin(o.h, ms)
+  }
+  return proof(o)
+}
+/** signal every owned handle (a signal error does not stop the next), await each exit, keep the handles without proof; remove the fixture only when none is left */
+async function cleanup(scope: Scope, ms = hookMs): Promise<{ ok: boolean; errors: string[] }> {
+  const errors: string[] = []
+  const linked = await Promise.all(scope.linked.map(async s => ({ s, r: await cleanup(s, ms) })))
+  for (const { s, r } of linked) {
+    errors.push(...r.errors)
+    if (r.ok) scope.linked = scope.linked.filter(x => x !== s)
+  }
+  for (const o of scope.handles) {
+    const e = signal(o)
+    if (e) errors.push(e)
+  }
+  const results = await Promise.all(scope.handles.map(o => settle(o, ms)))
+  scope.handles = scope.handles.filter((_, i) => !results[i])
+  const ok = scope.handles.length === 0 && scope.linked.length === 0
+  if (ok) rmSync(scope.dir, { recursive: true, force: true })
+  return { ok, errors }
 }
 afterEach(async () => {
   // no exit proof: keep the fixture, so no child works on a deleted home
-  if (!(await stopOwned())) throw new Error(`an owned child did not exit: fixture kept in ${dir}`)
-  rmSync(dir, { recursive: true, force: true })
+  const r = await cleanup(main)
+  if (!r.ok) throw new Error(`an owned child did not exit: fixture kept in ${dir}: ${r.errors.join('; ')}`)
+  rmSync(`${dir}-log`, { recursive: true, force: true })
 })
 
 const SUPERVISOR = `const cp = require('node:child_process')
 const spawn = cp.spawn
+const bunSpawn = Bun.spawn
+const realExit = process.exit.bind(process)
 const live = []
 const ended = []
+let pending = 0
+let cancelling = false
+let exitCode
+let finishing = false
+function track(c, p) {
+  pending++
+  live.push(c)
+  ended.push(p)
+  const done = () => { pending-- }
+  Promise.resolve(p).then(done, done)
+  if (cancelling) try { c.kill('SIGTERM') } catch {}
+}
+async function finish(code) {
+  if (exitCode === undefined) exitCode = code
+  if (finishing) return
+  finishing = true
+  while (pending > 0) await Promise.allSettled(ended)
+  realExit(exitCode)
+}
 cp.spawn = function (...a) {
   const c = spawn.apply(this, a)
-  live.push(c)
-  ended.push(new Promise(r => { c.once('exit', r); c.once('error', () => { if (c.pid === undefined) r() }) }))
   c.unref = () => c
+  track(c, new Promise(r => { c.once('exit', r); c.once('error', () => { if (c.pid === undefined) r() }) }))
   return c
 }
+Bun.spawn = function (...a) {
+  const c = bunSpawn.apply(this, a)
+  try { c.unref = () => {} } catch {}
+  track(c, c.exited)
+  return c
+}
+process.exit = code => {
+  if (pending === 0) realExit(code ?? process.exitCode ?? 0)
+  finish(code ?? process.exitCode ?? 0)
+}
 process.on('SIGTERM', () => {
-  for (const c of live) c.kill('SIGKILL')
-  Promise.all(ended).then(() => process.exit(143))
+  cancelling = true
+  for (const c of live) try { c.kill('SIGTERM') } catch {}
+  finish(143)
 })
+for (const ev of ['uncaughtException', 'unhandledRejection']) process.on(ev, e => { console.error(e); finish(1) })
 `
 /** fixture gh, glab, claude and codex first on PATH: each records its call in forge-calls and fails. The bun shim adds the supervisor. */
 const fx = () => join(dir, 'fx')
@@ -138,14 +227,15 @@ const factory = async (args: string[], env: Record<string, string> = {}, timeout
   )
   const out = new Response(p.stdout as ReadableStream).text()
   const err = new Response(p.stderr as ReadableStream).text()
-  let timedOut = false
-  const timer = setTimeout(() => {
-    timedOut = true
-    p.kill('SIGTERM')
-  }, timeout)
-  const code = await p.exited
-  clearTimeout(timer)
-  handles.splice(handles.indexOf(p), 1) // exit awaited: this scope has its proof
+  const o = main.handles.find(x => x.h === p)!
+  let timer: ReturnType<typeof setTimeout>
+  const late = new Promise<boolean>(r => (timer = setTimeout(() => r(true), timeout)))
+  const timedOut = await Promise.race([p.exited.then(() => false), late])
+  clearTimeout(timer!)
+  if (timedOut) signal(o)
+  await settle(o, hookMs) // a supervisor that stays has no exit proof: the entry stays and the hook refuses
+  if (proof(o)) main.handles = main.handles.filter(x => x !== o)
+  const code = p.exitCode
   return { code, out: await out, err: await err, timedOut }
 }
 const stamp = () => join(home, 'wiki-refresh.stamp')
@@ -226,11 +316,16 @@ test('AC7 a negative FACTORY_WIKI_REFRESH_MIN falls back to 30 min', async () =>
 
 // ---- the write kick (claude-factory-tx6c.7): every 180 min, never while halted ----
 const wstamp = () => join(home, 'wiki-write.stamp')
-/** a rig with .beads and a bd that waits 1 s and fails: a pass holds wiki.lock long enough */
-function slowPass() {
+/** a rig with .beads and a bd that waits `ms` on its first call and fails: a pass holds wiki.lock long enough. One process only (exec). */
+function slowPass(ms = 1000) {
   mkdirSync(join(dir, `repo${n}`, '.beads'), { recursive: true })
   fixtureTools()
-  writeFileSync(join(fx(), 'bd'), '#!/bin/sh\nsleep 1\nexit 1\n')
+  const marker = join(dir, `bd-slow-${n}`)
+  const bun = process.execPath
+  writeFileSync(
+    join(fx(), 'bd'),
+    `#!/bin/sh\nif [ -e '${marker}' ]; then exec '${bun}' -e 'process.exit(1)'; fi\n: > '${marker}'\nexec '${bun}' -e 'setTimeout(() => process.exit(1), ${ms})'\n`,
+  )
   chmodSync(join(fx(), 'bd'), 0o755)
 }
 /** the write stamp, set `min` minutes old */
@@ -298,7 +393,10 @@ test('write AC6 a launch whose pass fails at once is not repeated by the next tw
   mkdirSync(join(dir, `repo${n}`, '.beads'))
   const bin = join(dir, `bin${n}`)
   mkdirSync(bin)
-  writeFileSync(join(bin, 'bd'), '#!/bin/sh\nsleep 1\nexit 1\n')
+  writeFileSync(
+    join(bin, 'bd'),
+    `#!/bin/sh\nexec '${process.execPath}' -e 'setTimeout(() => process.exit(1), 1000)'\n`,
+  )
   chmodSync(join(bin, 'bd'), 0o755)
   const env = { PATH: `${bin}:${process.env.PATH}` }
   expect(await launched(env)).toBe(true)
@@ -427,16 +525,16 @@ const waitFor = async (f: () => boolean, ms = 10_000) => {
 }
 /** a script run through the shim (so with the supervisor) that starts one detached child and records its pid */
 function supervised(childArgs: string, pidFile: string) {
-  const main = join(fx(), `main-${++n}.js`)
+  const file = join(fx(), `main-${++n}.js`)
   writeFileSync(
-    main,
+    file,
     `const { spawn } = require('node:child_process')
 const c = spawn(${q(process.execPath)}, ['-e', ${q(childArgs)}], { detached: true, stdio: 'ignore' })
 c.unref()
 require('node:fs').writeFileSync(${q(pidFile)}, String(c.pid))
 `,
   )
-  return own(Bun.spawn([join(fx(), 'bun'), main], { stdout: 'ignore', stderr: 'ignore' }), true)
+  return own(Bun.spawn([join(fx(), 'bun'), file], { stdout: 'ignore', stderr: 'ignore' }), true)
 }
 
 test('AC10 supervisor: a process ends only after its detached child exits', async () => {
@@ -467,123 +565,258 @@ test('AC10 supervisor: a tick returns only after its detached pass ended', async
   await factory(['tick'])
   expect(existsSync(join(home, 'wiki', 'rigs', 'acme.md'))).toBe(true) // the refresh pass finished
   expect(existsSync(join(home, 'wiki.lock'))).toBe(false)
-  expect(stuck).toEqual([])
+  expect(main.handles).toEqual([])
 }, 60_000)
 
-test('AC10 cancellation awaits the descendant scope: a timed-out run ends only after its tool and pass exit', async () => {
+// ---- AC10.1 order and ready files live in ${dir}-log, outside the fixture the hook removes ----
+const logDir = () => `${dir}-log`
+const O = () => join(logDir(), 'order')
+const R = () => join(logDir(), 'ready')
+const lines = (f: string) => (existsSync(f) ? readFileSync(f, 'utf8').split('\n').filter(Boolean) : [])
+const has = (f: string, line: string) => lines(f).includes(line)
+/** the start of every fixture script: ap(file, line) appends a line; O and R are the order and ready files */
+const PRE = () =>
+  `const fs = require('node:fs'); const { spawn } = require('node:child_process'); const O = ${q(O())}, R = ${q(R())}; const ap = (f, s) => fs.appendFileSync(f, s + '\\n');`
+/** a plain Bun child script (no supervisor) with a lifetime cap: a signal listener alone does not keep Bun alive */
+const kid = (js: string) => `${PRE()} setTimeout(() => process.exit(0), 30000); ${js}`
+const SLEEP = 'setTimeout(() => {}, 60000)'
+/** write a script and run it through the shim (with the supervisor): the supervisor is an owned, supervised handle */
+function runSup(js: string, name = `s${++n}.js`) {
+  fixtureTools()
+  mkdirSync(logDir(), { recursive: true })
+  const file = join(fx(), name)
+  writeFileSync(file, `${PRE()}\n${js}`)
+  return own(Bun.spawn([join(fx(), 'bun'), file], { stdout: 'ignore', stderr: 'ignore' }), true)
+}
+/** a Node spawn line for a child script */
+const sp = (js: string, v = 'c') =>
+  `const ${v} = spawn(${q(process.execPath)}, ['-e', ${q(kid(js))}], { stdio: 'ignore' }); ${v}.on('error', () => {});`
+
+test('AC10 cancellation awaits descendant scope: tool exits, then pass, then supervisor, then removal', async () => {
+  fixtureTools()
+  mkdirSync(logDir(), { recursive: true })
+  const pass = join(fx(), 'pass.js')
+  const tool = kid(`process.on('SIGTERM', () => { ap(O, 'tool'); process.exit(0) }); ap(R, 't')`)
+  writeFileSync(
+    pass,
+    `${PRE()} process.on('exit', () => ap(O, 'pass')); Bun.spawn([${q(process.execPath)}, '-e', ${q(tool)}])`,
+  )
+  const s = runSup(
+    `process.on('exit', () => ap(O, 'supervisor')); spawn(${q(join(fx(), 'bun'))}, [${q(pass)}], { stdio: 'ignore' })`,
+  )
+  const unrelated = Bun.spawn([process.execPath, '-e', SLEEP])
+  try {
+    await waitFor(() => has(R(), 't'))
+    const r = await cleanup(main)
+    expect(r.ok).toBe(true)
+    expect(lines(O())).toEqual(['tool', 'pass', 'supervisor'])
+    expect(s.signalCode).toBeNull()
+    expect(s.exitCode).toBe(143)
+    expect(existsSync(dir)).toBe(false)
+    expect(unrelated.exitCode === null && unrelated.signalCode === null).toBe(true) // no signal
+  } finally {
+    unrelated.kill('SIGKILL')
+    await unrelated.exited
+  }
+}, 60_000)
+
+test('AC10 cancellation awaits descendant scope: a spawn after cancel', async () => {
+  const s = runSup(`let c3
+spawn(${q(process.execPath)}, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' }) // a live child: the supervisor waits, so the listener below still runs
+process.on('SIGTERM', () => { c3 = spawn(${q(process.execPath)}, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' }); ap(O, 'c3-spawned') })
+process.on('exit', () => { ap(O, 'c3:' + c3.signalCode); ap(O, 'supervisor') })
+ap(R, 'ready'); setTimeout(() => {}, 30000)`)
+  await waitFor(() => has(R(), 'ready'))
+  expect((await cleanup(main)).ok).toBe(true)
+  expect(lines(O())).toEqual(['c3-spawned', 'c3:SIGTERM', 'supervisor'])
+  expect(s.exitCode).toBe(143)
+}, 60_000)
+
+test('AC10 cancellation awaits descendant scope: a throwing kill', async () => {
+  runSup(`process.on('exit', () => ap(O, 'supervisor'))
+${sp(`process.on('SIGTERM', () => {}); ap(R, 'c1-ready'); setTimeout(() => { ap(O, 'c1'); process.exit(0) }, 2500)`, 'c1')}
+${sp(`process.on('SIGTERM', () => { ap(O, 'c2'); process.exit(0) }); ap(R, 'c2-ready')`, 'c2')}
+c1.kill = () => { throw new Error('EPERM') }`)
+  await waitFor(() => has(R(), 'c1-ready') && has(R(), 'c2-ready'))
+  expect((await cleanup(main)).ok).toBe(true)
+  expect(lines(O())).toEqual(['c2', 'c1', 'supervisor'])
+}, 60_000)
+
+test('AC10 cancellation awaits descendant scope: forced death keeps the fixture', async () => {
+  const y = syntheticScope()
+  try {
+    const f = fakeHandle((sig, resolve) => {
+      if (sig === 'SIGKILL') resolve({ exitCode: null, signalCode: 'SIGKILL' })
+    })
+    own(f.handle, true, y)
+    const r = await cleanup(y, 200)
+    expect(r.ok).toBe(false)
+    expect(y.handles.map(o => o.h)).toEqual([f.handle]) // a forced death proves nothing about descendants
+    expect(existsSync(y.dir)).toBe(true)
+  } finally {
+    rmSync(y.dir, { recursive: true, force: true }) // no process exists in a synthetic scope
+  }
+})
+
+test('AC10 signal error retains all handles', async () => {
+  const l = linkedScope()
+  const h1 = fakeHandle(() => {
+    throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+  })
+  own(h1.handle, false, l)
+  const h2 = own(Bun.spawn([process.execPath, '-e', SLEEP]), false, l)
+  const r = await cleanup(l, 200)
+  expect(r.ok).toBe(false)
+  expect(r.errors.length).toBe(1)
+  expect(r.errors[0]).toContain('EPERM')
+  expect(h2.signalCode).toBe('SIGKILL') // the signal went on after the first error
+  expect(l.handles.map(o => o.h)).toEqual([h1.handle])
+  expect(existsSync(l.dir)).toBe(true)
+  expect((await cleanup(l, 200)).ok).toBe(false) // a repeat does not release
+  expect(existsSync(l.dir)).toBe(true)
+  h1.resolve({ exitCode: 0, signalCode: null })
+  await h1.handle.exited
+  const last = await cleanup(l, 200)
+  expect(last.ok).toBe(true)
+  expect(last.errors).toEqual([]) // a settled handle gets no signal
+  expect(existsSync(l.dir)).toBe(false)
+})
+
+test('AC10 delayed launch survives deadline: cancellation resolves the intent', async () => {
   await setup(false)
-  const r = await factory(['tick'], {}, 1)
+  mkdirSync(join(home, 'wiki.lock'))
+  rmSync(join(home, 'wiki.lock'), { recursive: true }) // a removed lock does not release ownership
+  const s = runSup(`setTimeout(() => { ${sp(SLEEP)} ap(O, 'launched') }, 4000)`)
+  await expect(waitFor(() => has(O(), 'launched'), 3000)).rejects.toThrow('timeout')
+  expect(main.handles.some(o => o.h === s)).toBe(true)
+  expect(s.exitCode).toBeNull()
+  await sleep(200)
+  expect((await cleanup(main)).ok).toBe(true)
+  expect(s.signalCode).toBeNull()
+  expect(s.exitCode).toBe(143)
+  expect(existsSync(dir)).toBe(false)
+  await sleep(1500) // past 4 s
+  expect(has(O(), 'launched')).toBe(false)
+}, 60_000)
+
+test('AC10 spawn error is not live child exit: a failed spawn with no child completes', async () => {
+  const s = runSup(`spawn('/nonexistent/acme-tool', [], { stdio: 'ignore' }).on('error', () => {})`)
+  expect(await exitedWithin(s, 10_000)).toBe(true)
+  expect(s.exitCode).toBe(0)
+  expect((await cleanup(main)).ok).toBe(true)
+}, 30_000)
+
+test('AC10 spawn error is not live child exit: a Bun.spawn that throws completes', async () => {
+  const s = runSup(`try { Bun.spawn(['/nonexistent/acme-tool']) } catch {}`)
+  expect(await exitedWithin(s, 10_000)).toBe(true)
+  expect(s.exitCode).toBe(0)
+}, 30_000)
+
+test('AC10 spawn error is not live child exit: an error after the child exists is no proof', async () => {
+  const s = runSup(`process.on('exit', () => ap(O, 'supervisor'))
+${sp(`process.on('SIGTERM', () => { ap(O, 'child-term'); process.exit(0) }); ap(R, 'ready')`)}
+c.emit('error', new Error('late'))`)
+  await waitFor(() => has(R(), 'ready'))
+  expect(await exitedWithin(s, 1500)).toBe(false)
+  expect((await cleanup(main)).ok).toBe(true)
+  expect(lines(O())).toEqual(['child-term', 'supervisor'])
+}, 60_000)
+
+test('AC10 spawn error is not live child exit: an explicit exit waits for the child', async () => {
+  const t = Date.now()
+  const s = runSup(`process.on('exit', () => ap(O, 'supervisor'))
+${sp(`setTimeout(() => { ap(O, 'child'); process.exit(0) }, 1500)`)}
+process.exit(3)`)
+  await s.exited
+  expect(s.exitCode).toBe(3)
+  expect(s.signalCode).toBeNull()
+  expect(Date.now() - t).toBeGreaterThanOrEqual(1400)
+  expect(lines(O())).toEqual(['child', 'supervisor'])
+}, 30_000)
+
+test('AC10 spawn error is not live child exit: a crash waits for the child', async () => {
+  const s = runSup(`process.on('exit', () => ap(O, 'supervisor'))
+${sp(`setTimeout(() => { ap(O, 'child'); process.exit(0) }, 1500)`)}
+setTimeout(() => { throw new Error('acme') }, 0)`)
+  await s.exited
+  expect(s.exitCode).toBe(1)
+  expect(lines(O())).toEqual(['child', 'supervisor'])
+}, 30_000)
+
+test('AC10 spawn error is not live child exit: a CLI timeout keeps descendant exit proof', async () => {
+  await setup()
+  rmSync(wstamp())
+  writeFileSync(stamp(), '')
+  slowPass(6000)
+  const r = await factory(['tick'], {}, 3000)
   expect(r.timedOut).toBe(true)
-  expect(handles).toEqual([]) // the supervisor exit was awaited
-  expect(stuck).toEqual([])
-}, 30_000)
-
-test('AC10 signal error retains all handles: the first handle throws on kill, the second is still awaited', async () => {
-  const bad = {
-    kill: () => {
-      throw new Error('EPERM')
-    },
-    exited: new Promise(() => {}),
-  } as unknown as ReturnType<typeof Bun.spawn>
-  const good = own(Bun.spawn(['sleep', '60']))
-  own(bad)
-  expect(await stopOwned(100)).toBe(false)
-  expect(gone(good.pid)).toBe(true)
-  expect(handles).toEqual([bad]) // kept
-  expect(await stopOwned(100)).toBe(false) // a repeat cleanup still denies removal
-  handles.length = 0
-})
-
-test('AC10 forced supervisor death keeps the fixture: no exit proof for its descendants', async () => {
-  const stubborn = { kill: () => {}, exited: new Promise(() => {}) } as unknown as ReturnType<
-    typeof Bun.spawn
-  >
-  own(stubborn, true)
-  expect(await stopOwned(50)).toBe(false)
-  expect(stuck).toEqual(['forced supervisor death'])
-  handles.length = 0
-  stuck.length = 0
-})
-
-test('AC10 delayed launch survives the deadline: a supervised process waits for a child it starts after 4 s', async () => {
-  fixtureTools()
-  const pidFile = join(dir, 'late.pid')
-  const main = join(fx(), 'late.js')
-  writeFileSync(
-    main,
-    `const { spawn } = require('node:child_process')
-setTimeout(() => {
-  const c = spawn(${q(process.execPath)}, ['-e', 'setTimeout(() => {}, 500)'], { detached: true, stdio: 'ignore' })
-  c.unref()
-  require('node:fs').writeFileSync(${q(pidFile)}, String(c.pid))
-}, 4000)
-`,
-  )
-  const p = own(Bun.spawn([join(fx(), 'bun'), main], { stdout: 'ignore', stderr: 'ignore' }), true)
-  expect(await p.exited).toBe(0)
-  expect(gone(Number(readFileSync(pidFile, 'utf8')))).toBe(true)
-}, 30_000)
-
-test('AC10 spawn error: before a child exists it resolves; after one exists it is not exit proof', async () => {
-  fixtureTools()
-  const pidFile = join(dir, 'err.pid')
-  const main = join(fx(), 'err.js')
-  writeFileSync(
-    main,
-    `const { spawn } = require('node:child_process')
-spawn('/nonexistent/acme-tool', [], { stdio: 'ignore' }).on('error', () => {})
-const c = spawn(${q(process.execPath)}, ['-e', 'setTimeout(() => {}, 60000)'], { detached: true, stdio: 'ignore' })
-c.unref()
-c.on('error', () => {})
-c.emit('error', new Error('late'))
-require('node:fs').writeFileSync(${q(pidFile)}, String(c.pid))
-`,
-  )
-  const p = own(Bun.spawn([join(fx(), 'bun'), main], { stdout: 'ignore', stderr: 'ignore' }), true)
-  await waitFor(() => existsSync(pidFile) && readFileSync(pidFile, 'utf8') !== '')
-  p.kill('SIGTERM')
-  expect(await exitedWithin(p, 10_000)).toBe(true)
-  expect(gone(Number(readFileSync(pidFile, 'utf8')))).toBe(true)
-}, 30_000)
+  expect(r.code).toBe(143)
+  expect(main.handles).toEqual([]) // factory() returned only after the supervisor exit was awaited
+  expect((await cleanup(main)).ok).toBe(true)
+}, 60_000)
 
 test('AC10 control: a direct child is killed and awaited; an unrelated child gets no signal', async () => {
-  const mine = own(Bun.spawn(['sleep', '60']))
-  const other = Bun.spawn(['sleep', '60'])
+  const mine = own(Bun.spawn([process.execPath, '-e', SLEEP]))
+  const other = Bun.spawn([process.execPath, '-e', SLEEP])
   try {
-    expect(await stopOwned()).toBe(true)
-    expect(mine.exitCode === null && mine.signalCode === null).toBe(false)
-    expect(gone(mine.pid)).toBe(true)
-    expect(gone(other.pid)).toBe(false)
+    expect((await cleanup(main)).ok).toBe(true)
+    expect(mine.signalCode).toBe('SIGKILL')
+    expect(other.exitCode === null && other.signalCode === null).toBe(true)
   } finally {
-    other.kill(9)
+    other.kill('SIGKILL')
     await other.exited
   }
 }, 30_000)
 
 test('AC10 control: a direct child that does not exit keeps the handle and denies proof', async () => {
-  const fake = { kill: () => {}, exited: new Promise(() => {}) } as unknown as ReturnType<typeof Bun.spawn>
-  own(fake)
-  expect(await stopOwned(100)).toBe(false)
-  expect(handles).toEqual([fake]) // kept: still unproven
-  handles.length = 0
+  const l = linkedScope()
+  const f = fakeHandle()
+  own(f.handle, false, l)
+  expect((await cleanup(l, 100)).ok).toBe(false)
+  expect(l.handles.map(o => o.h)).toEqual([f.handle]) // kept: still unproven
+  f.resolve({ exitCode: 0, signalCode: null }) // an independent exit
+  await f.handle.exited
+  expect((await cleanup(l, 100)).ok).toBe(true)
 })
 
-// ---- AC10 assertion cleanup: a nested `bun test` runs only the fixture test below, with this file's real afterEach ----
-// The nested test starts its own child (a handle in its process) and fails an assertion on purpose. The outer test
-// knows the nested pid, so it knows the nested fixture path and removes it itself.
+// ---- AC10.3 assertion cleanup: a nested `bun test` runs only the fixture test below, with this file's real afterEach ----
+// The nested test starts K, which holds the nested stdout pipe and stops when the outer test makes a stop file (an
+// inherited stdin does not work: `bun test` closes it at exit, and K would stop at once). The outer test owns the
+// nested process, so it knows the nested fixture path. EOF on that pipe comes only after K and the nested runner
+// have exited. The nested run does not use the shim: a preloaded `bun test` hangs.
 const nestedRow = process.env.FACTORY_WIKI_NESTED
-test.skipIf(!nestedRow)('AC10 nested fixture (started by the AC10 assertion cleanup test)', async () => {
+test.skipIf(!nestedRow)('AC10 nested fixture (started by the AC10 assertion cleanup tests)', async () => {
   await setup(false)
   hookMs = 1_000
-  const child = own(Bun.spawn([process.execPath, '-e', 'setTimeout(() => {}, 15000)']))
-  writeFileSync(process.env.FACTORY_WIKI_NESTED_OUT!, String(child.pid))
-  if (nestedRow === 'denied') stuck.push('nested') // a scope without exit proof
+  const k = Bun.spawn(
+    [
+      process.execPath,
+      '-e',
+      "const f = process.env.FACTORY_WIKI_NESTED_STOP; setInterval(() => { if (require('node:fs').existsSync(f)) process.exit(0) }, 50); setTimeout(() => process.exit(0), 30000)",
+    ],
+    { stdin: 'ignore', stdout: 'inherit', stderr: 'ignore' },
+  )
+  if (nestedRow === 'denied') {
+    // a handle whose signal is refused: the hook keeps the fixture and the child
+    own({
+      kill() {
+        throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+      },
+      exited: k.exited,
+      get exitCode() {
+        return k.exitCode
+      },
+      get signalCode() {
+        return k.signalCode
+      },
+    })
+  } else own(k)
   expect(1).toBe(2) // the intentional assertion error
 })
 
+const stopFile = () => join(logDir(), 'k-stop')
 async function nestedRun(row: 'clean' | 'denied') {
-  const out = join(dir, `nested-${row}.pid`)
-  mkdirSync(dir, { recursive: true })
+  mkdirSync(logDir(), { recursive: true })
   const p = own(
     Bun.spawn(
       [
@@ -596,34 +829,38 @@ async function nestedRun(row: 'clean' | 'denied') {
         'AC10 nested fixture',
       ],
       {
-        env: { ...process.env, FACTORY_WIKI_NESTED: row, FACTORY_WIKI_NESTED_OUT: out },
-        stdout: 'ignore',
+        env: { ...process.env, FACTORY_WIKI_NESTED: row, FACTORY_WIKI_NESTED_STOP: stopFile() },
+        stdin: 'ignore',
+        stdout: 'pipe',
         stderr: 'ignore',
       },
     ),
   )
-  const exit = await p.exited
-  return {
-    exit,
-    child: Number(readFileSync(out, 'utf8')),
-    nestedDir: join(realpathSync(tmpdir()), `wiki-kick-${p.pid}`), // known to the outer test, not read from the nested run
-  }
+  // EOF on stdout: every process that holds the write end (the nested runner and K) has exited
+  const eof = new Response(p.stdout as ReadableStream).text()
+  return { p, eof, nestedDir: join(realpathSync(tmpdir()), `wiki-kick-${p.pid}`) }
 }
 
-test('AC10 assertion cleanup: after a failed assertion the hook stops the child, then removes the fixture', async () => {
-  const r = await nestedRun('clean')
-  expect(r.exit).not.toBe(0)
-  expect(gone(r.child)).toBe(true)
-  expect(existsSync(r.nestedDir)).toBe(false)
+test('AC10 assertion cleanup: clean', async () => {
+  const { p, eof, nestedDir } = await nestedRun('clean')
+  await Promise.race([eof, sleep(10_000).then(() => Promise.reject(new Error('no stdout EOF: K is live')))]) // K has not seen a stop file
+  await p.exited
+  expect(p.exitCode).not.toBe(0)
+  expect(existsSync(stopFile())).toBe(false)
+  expect(existsSync(nestedDir)).toBe(false)
 }, 60_000)
 
-test('AC10 assertion cleanup: without exit proof the hook fails and the fixture stays', async () => {
-  const r = await nestedRun('denied')
+test('AC10 assertion cleanup: denied', async () => {
+  const { p, eof, nestedDir } = await nestedRun('denied')
   try {
-    expect(r.exit).not.toBe(0)
-    expect(existsSync(r.nestedDir)).toBe(true)
+    await p.exited
+    expect(p.exitCode).not.toBe(0)
+    expect(existsSync(nestedDir)).toBe(true)
+    expect(await Promise.race([eof.then(() => 'eof'), sleep(1000).then(() => 'live')])).toBe('live') // K is live
   } finally {
-    rmSync(r.nestedDir, { recursive: true, force: true }) // the outer test removes it, by the path it knows
+    writeFileSync(stopFile(), '') // the outer test stops K
+    await Promise.race([eof, sleep(10_000).then(() => Promise.reject(new Error('K did not exit')))])
+    rmSync(nestedDir, { recursive: true, force: true })
   }
 }, 60_000)
 
