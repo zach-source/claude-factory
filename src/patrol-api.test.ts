@@ -135,7 +135,10 @@ describe('1ocuv AC1 identity before application access', () => {
     ['too many rigs', r => [{ ...r, rigs: Array.from({ length: 101 }, (_, i) => `rig-${i}`) }]],
     [
       'too many records',
-      r => Array.from({ length: 101 }, (_, i) => ({ ...r, id: `id-${i}`, digest: digest(`fake-${i}`) })),
+      r => [
+        r,
+        ...Array.from({ length: 100 }, (_, i) => ({ ...r, id: `id-${i}`, digest: digest(`fake-${i}`) })),
+      ],
     ],
     ['null', () => null],
   ]
