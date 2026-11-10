@@ -80,6 +80,9 @@ test('ksx5 AC3: display cuts use source extents and complete tokens', SLOW, asyn
   expect(question(visibleHits)).not.toContain('more dollar signs')
   const joinedHits = `${prefix}${'\\\n'.repeat(180)}$x ${'a'.repeat(50)} $y`
   expect(question(joinedHits)).not.toContain('more dollar signs')
+  const hitPrefix = `${prefix}$x `
+  const lateJoin = `${hitPrefix}${'a'.repeat(300 - hitPrefix.length)}$y \\\ntail`
+  expect(question(lateJoin)).toContain('1 more dollar signs')
   const spacedCut = `${prefix}${' '.repeat(300)}${'a'.repeat(300)}`
   const shownSource = prefix.length - 1 + 301 + (300 - (prefix.length - 1) - '\\x20{301}'.length)
   expect(question(spacedCut)).toContain(
