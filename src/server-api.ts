@@ -21,6 +21,7 @@ import { join, resolve, sep } from 'node:path'
 import { createServer as createTlsServer } from 'node:tls'
 import {
   CATALOG,
+  boardView,
   OpError,
   readBody,
   readQuery,
@@ -263,7 +264,13 @@ export function clientHandler(o: ClientOpts) {
   type Sub = { send: (id: bigint, frame: string) => void }
   const subs = new Set<Sub>()
   const publish = (board: unknown) => {
-    const json = JSON.stringify(board ?? null)
+    let view: unknown
+    try {
+      view = boardView(board) // a client frame never holds env, params or beadsRemote
+    } catch {
+      return // fail closed: a malformed board makes no frame
+    }
+    const json = JSON.stringify(view ?? null)
     if (json === lastJson) return
     lastJson = json
     const ev = { id: ++lastId, frame: `id: ${lastId}\ndata: ${json}\n\n` }

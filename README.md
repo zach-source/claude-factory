@@ -385,6 +385,12 @@ station then merges, and only with this form: `gh pr merge <number> --merge --ma
 (`-R` is required and must name the rig's own repo, read from its origin remote at launch). On a repo with a merge queue, the station adds `--auto`: this puts the pull request in the queue, and GitHub merges it only after the ruleset's review and checks pass. The hook denies every other merge form there. Every other rig and station
 keeps the deny below. The rig takes the setting at the next worker launch.
 
+A person can list extra sensitive paths for a rig: `factory rig set acme --sensitive-path src/cli.ts --sensitive-path mod/`.
+A changed path that equals an entry, or lies under an entry, makes the security route required. The plan line
+`Security-sensitive: no` cannot remove this. An entry is a repo path or directory (letters, digits, `.`, `_`, `-` and `/`; no glob).
+A malformed list makes every route of the rig required. `--sensitive-path none` alone removes the list.
+`rig add` drops the list, so run `rig set` again after it.
+
 A worker's PreToolUse hook denies these commands:
 
 - a `git push` to a protected branch, to `main` or `master`, or to the branch that `origin/HEAD` names
@@ -1306,6 +1312,23 @@ The command does these steps:
 
 The app home is `--app-home`, else `$HERDR_APP_HOME`, else `~/.config/herdr-app`. To update the
 mod, run the command again. The app reloads it.
+
+### Remote mode (manager in AX)
+
+When the manager runs in the AX task `f-manager`, install the mod in remote mode:
+
+```sh
+factory herdr install --machine f-manager [--home /workspace/w/home] [--app-home <dir>]
+```
+
+- `config.json` gets `machine`. The default `--home` is `/workspace/w/home`. The CLI on the machine is `factory`.
+- Every exec and file read of the mod runs on that `hc` machine.
+- The mod is a view and control client. It never runs `tick`, `patrol`, `brief`, `review` or `pm`. It takes no lease.
+- It shows the board (`factory tick --board`, which changes nothing) and the decisions.
+- The buttons call `factory stop`, `resume`, `unhold ax` and `abort <run>` on the machine.
+- The button "Manager chat" opens the `hc` terminal `<machine>/manager`.
+- A local install (no `--machine`) refuses a home whose manager runs in AX. A second manager must not start.
+- The machine must run a `factory` that has `tick --board`. Update the manager image first.
 
 To show the mod, switch to the factory layout:
 

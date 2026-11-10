@@ -6,7 +6,7 @@ All commands are person-only (`refuseWorker`) except `rig show` and `rig list`. 
 
 ```text
 factory rig show <rig>
-factory rig set <rig> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm]
+factory rig set <rig> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--sensitive-path path|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm]
                       [--mcp file] [--param name=value]...
 factory rig env set <rig> KEY=VALUE
 factory rig env unset <rig> KEY
