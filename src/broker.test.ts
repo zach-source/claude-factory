@@ -220,6 +220,88 @@ test('POST /token/best answers 409 while a swap runs, then 502 with a fixed body
 })
 
 const U = (key: string) => 'ate-secret://agent-vault/v1/' + key
+
+test('lntv AC1 trusted vault config', () => {
+  for (const vault of ['acme-vault', '-', '', undefined])
+    expect(configFrom({ FACTORY_AX_VAULT: vault })).toMatchObject({ vault: vault || undefined })
+  for (const vault of [' ', ' acme', 'acme ', 'acme\n', 'ACME', 'a_b', 'a/b', '.', 'a%2Fb', 'é'])
+    expect(() => configFrom({ FACTORY_AX_VAULT: vault }), vault).toThrow('FACTORY_AX_VAULT')
+})
+
+test('lntv AC2 handler pins every credential path before commands', async () => {
+  const inVault = (rule: unknown, vault: string) =>
+    JSON.parse(JSON.stringify(rule).replaceAll('agent-vault/v1/', `agent-vault/${vault}/`))
+  const check = async (body: unknown, vault: string | undefined, status: number) => {
+    for (const update of [false, true]) {
+      const { calls, c } = setup(
+        a =>
+          a.includes('get')
+            ? update
+              ? { code: 0, out: JSON.stringify({ metadata: { uid: 'u', version: '1' }, rules: [] }) }
+              : { code: 1, err: 'egress policy not found' }
+            : { code: 0 },
+        vault === undefined ? {} : { FACTORY_AX_VAULT: vault },
+      )
+      const res = await handle(req('PUT', '/policy/factory/f-r1-1', JSON.stringify(body)), c)
+      expect([vault, body, res.status]).toEqual([vault, body, status])
+      if (status === 400) expect(calls).toEqual([])
+      else {
+        expect(calls).toHaveLength(2)
+        expect(calls[0]!.argv).toContain('get')
+        expect(calls[1]!.argv).toContain(update ? 'update' : 'create')
+      }
+    }
+  }
+  const generic = hostRule(['api.anthropic.com'], 'ANTHROPIC')
+  const api = inVault(reviewerRule(), 'acme-vault')
+  const git = inVault(gitRule(), 'acme-vault')
+  for (const vault of ['acme-vault', 'other-vault', '-', 'acme-vault-extra', 'acme']) {
+    const g = inVault(generic, vault)
+    const a = inVault(reviewerRule(), vault)
+    const b = inVault(gitRule(), vault)
+    for (const body of [
+      rulesOf(g),
+      rulesOf(a),
+      rulesOf(a, git),
+      rulesOf(api, b),
+      rulesOf(a, b),
+      rulesOf(inVault(generic, 'acme-vault'), g),
+    ]) {
+      expect(workerPolicyRefusal(body, 'acme-vault') === null).toBe(vault === 'acme-vault')
+      expect(workerPolicyRefusal(body)).toBeNull()
+      expect(workerPolicyRefusal(body, '')).toBeNull()
+      await check(body, 'acme-vault', vault === 'acme-vault' ? 200 : 400)
+      await check(body, undefined, 200)
+      await check(body, '', 200)
+    }
+  }
+  for (const suffix of ['\n', '?q=x', '#x', '/extra'])
+    for (const rule of [generic, reviewerRule(), gitRule()]) {
+      const malformed = JSON.parse(JSON.stringify(inVault(rule, 'acme-vault')))
+      malformed.effects.replaceHeaders[0].credentialUri += suffix
+      const body = rule.hostnames[0] === 'github.com' ? rulesOf(api, malformed) : rulesOf(malformed)
+      expect(workerPolicyRefusal(body, 'acme-vault')).not.toBeNull()
+      await check(body, 'acme-vault', 400)
+    }
+  for (const vault of ['acme%2Dvault', 'ACME', 'é'])
+    await check(rulesOf(inVault(generic, vault)), 'acme-vault', 400)
+  for (const body of [
+    rulesOf(inVault(hostRule(['api.anthropic.com'], 'AX_AUTH'), 'acme-vault')),
+    rulesOf(inVault(hostRule(['relay.example.com'], 'ANTHROPIC'), 'acme-vault')),
+    { credentialUri: 'ate-secret://agent-vault/acme-vault/ANTHROPIC', rules: [] },
+    rulesOf({ ...api, paths: ['/user'] }),
+  ])
+    await check(body, 'acme-vault', 400)
+  for (const vault of ['acme-vault', 'other-vault', '', undefined])
+    await check(rulesOf({ hostnames: ['example.com'] }), vault, 200)
+  await check(rulesOf(inVault(generic, 'other-vault')), 'other-vault', 200)
+  const first = setup(undefined, { FACTORY_AX_VAULT: 'acme-vault' })
+  const second = setup(undefined, { FACTORY_AX_VAULT: 'other-vault' })
+  const body = JSON.stringify(rulesOf(inVault(generic, 'acme-vault')))
+  expect((await handle(req('PUT', '/policy/factory/f-r1-1', body), first.c)).status).toBe(200)
+  expect((await handle(req('PUT', '/policy/factory/f-r1-1', body), second.c)).status).toBe(400)
+  expect(second.calls).toEqual([])
+})
 const withHeader = (h: Record<string, unknown>, host = 'a.example.com') => ({
   rules: [{ https: { hostnames: [host], effects: { replaceHeaders: [h] } } }],
 })

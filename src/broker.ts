@@ -26,6 +26,7 @@ export type Config = {
   swap: string[] | null
   /** vault keys that are not built in, each with the hosts it can go to (FACTORY_BROKER_KEY_HOSTS) */
   keyHosts: Record<string, string[]>
+  vault?: string
 }
 
 async function spawn(argv: string[], stdin?: string, op = false) {
@@ -89,12 +90,15 @@ export function keyHostsFrom(raw: string | undefined): Record<string, string[]> 
 
 export const configFrom = (env: Record<string, string | undefined>, run: Run = spawn): Config => {
   const kubectl = env.FACTORY_KUBECTL ?? 'kubectl'
+  const vault = env.FACTORY_AX_VAULT || undefined
+  if (vault && /[^a-z0-9-]/.test(vault)) throw new Error('FACTORY_AX_VAULT must contain only a-z, 0-9 and -')
   return {
     atespaces: (env.FACTORY_BROKER_ATESPACES ?? 'factory').split(',').filter(Boolean),
     manager: env.FACTORY_AX_MANAGER ?? 'f-manager',
     run,
     kubectl,
     keyHosts: keyHostsFrom(env.FACTORY_BROKER_KEY_HOSTS),
+    vault,
     swap: env.CLAUDE_TOKEN_ITEM ? [env.FACTORY_BROKER_TOKEN_CMD ?? 'claude-token', 'best'] : null,
     ate: [
       kubectl,
@@ -142,10 +146,14 @@ async function body(req: Request) {
 /** only the manager task can use these vault keys: they give full AX control or write access to the backup repo */
 const MANAGER_ONLY_KEYS = /(^|[^A-Za-z0-9_])(AX_AUTH|GITHUB_BASIC_MANAGER)([^A-Za-z0-9_]|$)/i
 /** a vault name is a-z, 0-9 and hyphen, as agent-vault makes it: no percent escape, dot or upper case */
-const vaultUri = (key: string) => new RegExp('^ate-secret://agent-vault/[a-z0-9-]+/' + key + '$')
+const vaultUri = (key: string) => new RegExp('^ate-secret://agent-vault/([a-z0-9-]+)/' + key + '$')
 const CREDENTIAL_URI = vaultUri('[A-Z][A-Z0-9_]*')
 const REVIEWER_URI = vaultUri('GITHUB_REVIEWER')
 const REVIEWER_BASIC_URI = vaultUri('GITHUB_REVIEWER_BASIC')
+const credentialMatches = (uri: string, pattern: RegExp, vault?: string) => {
+  const match = pattern.exec(uri)
+  return !!match && (!vault || match[1] === vault)
+}
 
 const same = (a: unknown, b: unknown[]) => JSON.stringify(a) === JSON.stringify(b)
 const safeSegment = (x: string) => /^[A-Za-z0-9_.-]+$/.test(x) && x !== '.' && x !== '..'
@@ -155,7 +163,7 @@ const safeSegment = (x: string) => /^[A-Za-z0-9_.-]+$/.test(x) && x !== '.' && x
  * GitHub API for one repo (/repos/<owner>/<repo>/) and for /graphql, which gh pr view, checks and review use.
  * The grammar is closed. The broker refuses any other key, host, path or header.
  */
-function reviewerApiRule(o: Record<string, unknown>): boolean {
+function reviewerApiRule(o: Record<string, unknown>, vault?: string): boolean {
   if (!same(Object.keys(o).sort(), ['effects', 'hostnames', 'pathPrefixes', 'paths'])) return false
   const hosts = o.hostnames
   if (
@@ -177,7 +185,7 @@ function reviewerApiRule(o: Record<string, unknown>): boolean {
     h.header === 'Authorization' &&
     h.prefix === 'Bearer ' &&
     typeof h.credentialUri === 'string' &&
-    REVIEWER_URI.test(h.credentialUri)
+    credentialMatches(h.credentialUri, REVIEWER_URI, vault)
   )
 }
 
@@ -185,7 +193,7 @@ function reviewerApiRule(o: Record<string, unknown>): boolean {
  * True for the one github.com rule that gives the reviewer Basic key for git. egressPolicy builds this rule for
  * a reviewer task. The broker refuses any other key, host or header, as in reviewerApiRule.
  */
-function reviewerGitRule(o: Record<string, unknown>): boolean {
+function reviewerGitRule(o: Record<string, unknown>, vault?: string): boolean {
   if (!same(Object.keys(o).sort(), ['effects', 'hostnames']) || !same(o.hostnames, ['github.com']))
     return false
   const e = o.effects as Record<string, unknown> | null
@@ -198,7 +206,7 @@ function reviewerGitRule(o: Record<string, unknown>): boolean {
     h.header === 'Authorization' &&
     h.prefix === 'Basic ' &&
     typeof h.credentialUri === 'string' &&
-    REVIEWER_BASIC_URI.test(h.credentialUri)
+    credentialMatches(h.credentialUri, REVIEWER_BASIC_URI, vault)
   )
 }
 
@@ -222,7 +230,7 @@ const namesReviewerKey = (s: string) =>
  * With a reviewer API rule, no other rule can have a GitHub author key (a vault key that starts with GITHUB)
  * or an extra key on a github host. One policy cannot hold the two keys.
  */
-export function workerPolicyRefusal(policy: unknown): string | null {
+export function workerPolicyRefusal(policy: unknown, vault?: string): string | null {
   const norm = (k: string) => k.toLowerCase().replaceAll('_', '')
   const reviewerRules = new Set<unknown>()
   let apiRules = 0
@@ -233,8 +241,8 @@ export function workerPolicyRefusal(policy: unknown): string | null {
       r && typeof r === 'object' && same(Object.keys(r), ['https']) ? (r as { https: unknown }).https : null
     if (!https || typeof https !== 'object' || Array.isArray(https)) continue
     const h = https as Record<string, unknown>
-    const api = reviewerApiRule(h)
-    if (api || reviewerGitRule(h)) {
+    const api = reviewerApiRule(h, vault)
+    if (api || reviewerGitRule(h, vault)) {
       reviewerRules.add(https)
       if (api) apiRules++
       else gitRules++
@@ -257,8 +265,11 @@ export function workerPolicyRefusal(policy: unknown): string | null {
       if (/[^\x20-\x7e]/.test(k)) return 'has a key with a non-ASCII character'
       const bad = walk(k, depth + 1)
       if (bad) return bad
-      if (norm(k) === 'credentialuri' && !(typeof o[k] === 'string' && CREDENTIAL_URI.test(o[k] as string)))
-        return 'has a credentialUri that is not an ate-secret://agent-vault/<vault>/<KEY> string (vault: a-z, 0-9, -)'
+      if (
+        norm(k) === 'credentialuri' &&
+        !(typeof o[k] === 'string' && credentialMatches(o[k] as string, CREDENTIAL_URI, vault))
+      )
+        return 'has a credentialUri with invalid syntax or a different vault'
       if (apiRules && norm(k) === 'credentialuri' && /\/GITHUB[A-Z0-9_]*$/.test(o[k] as string))
         return 'has a GitHub vault key beside the reviewer rule'
       if (norm(k) === 'pathprefixes' || norm(k) === 'paths') {
@@ -266,7 +277,7 @@ export function workerPolicyRefusal(policy: unknown): string | null {
         const hosts = h === undefined ? null : o[h]
         if (!Array.isArray(hosts) || !hosts.length || hosts.some(x => typeof x !== 'string'))
           return 'has a path rule without a list of hostnames'
-        if (hosts.some(githubHost) && !reviewerApiRule(o)) return 'has a path rule on a github host'
+        if (hosts.some(githubHost) && !reviewerApiRule(o, vault)) return 'has a path rule on a github host'
       }
       if (apiRules && norm(k) === 'hostnames') {
         const hosts = o[k]
@@ -429,7 +440,7 @@ export async function handle(req: Request, c: Config): Promise<Response> {
   const policy = policyText(raw)
   if (!policy) return text(400, 'body is not an EgressPolicy (a JSON object with rules)\n')
   const parsed = JSON.parse(policy)
-  const why = workerPolicyRefusal(parsed) ?? keyHostRefusal(parsed, c.keyHosts)
+  const why = workerPolicyRefusal(parsed, c.vault) ?? keyHostRefusal(parsed, c.keyHosts)
   if (why) {
     // JSON.stringify escapes a newline in an attacker's host, and the cap bounds the line: one refusal, one log line
     console.error(`policy refused for ${r.atespace}/${r.actor}: ${JSON.stringify(why).slice(0, 300)}`)
