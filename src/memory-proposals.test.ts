@@ -105,7 +105,7 @@ test.each(lockCommands.map((args, i) => [i, args] as const))('ot1ew memory busy 
     expect(readFileSync(join(f.memory, '.proposals', 'sample.md'), 'utf8')).toBe(proposal)
     expect(readFileSync(join(skillSources(f.memory), 'sample', 'SKILL.md'), 'utf8')).toBe(skill)
     expect(f.git('status', '--porcelain')).toBe(before)
-    for (const extra of [{ FACTORY_RUN: 'r1' }, { FACTORY_PATROL: '1' }]) {
+    for (const extra of [{ FACTORY_RUN: 'r1' }, { FACTORY_PATROL: '1' }] as Record<string, string>[]) {
       const denied = f.run(args, extra)
       expect(denied.code).toBe(1)
       expect(denied.err).toContain('cannot')

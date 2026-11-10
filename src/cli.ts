@@ -14335,7 +14335,7 @@ if (import.meta.main && !outboxCmd)
             break
           }
           try {
-            memory.installSkill(MEMORY, name)
+            memory.installSkill(MEMORY, name!)
             commitMemory(`the manager installed the skill ${name}`)
             console.log(`installed ${name}: the manager's Claude picks it up now`)
           } finally {
@@ -14351,7 +14351,7 @@ if (import.meta.main && !outboxCmd)
             break
           }
           try {
-            memory.rejectSkill(MEMORY, name, why.join(' '))
+            memory.rejectSkill(MEMORY, name!, why.join(' '))
             commitMemory(`the manager rejected the skill ${name}`)
             console.log(`rejected ${name}; the dream reads why`)
           } finally {

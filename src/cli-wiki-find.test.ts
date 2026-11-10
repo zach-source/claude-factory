@@ -174,35 +174,35 @@ test('AC5 control chars in a title become spaces; no origin gives an empty third
   expect(ghCalls()).toBe(0)
 })
 
-test.each([
-  ['wiki', 'find', 'acme-3w8o'],
-  ['wiki', 'status'],
-])('ot1ew wiki busy matrix %p', (...args) => {
-  base()
-  const before = readFileSync(join(wiki(), LOCK), 'utf8')
-  const gitCalls = join(dir, 'git-calls')
-  for (const tool of ['git', 'bd']) {
-    writeFileSync(join(bin, tool), `#!/bin/sh\nprintf '%s\\n' '${tool}' >> '${gitCalls}'\nexit 99\n`)
-    chmodSync(join(bin, tool), 0o755)
-  }
-  mkdirSync(join(home, 'wiki.lock'), { recursive: true })
-  const pid = join(home, 'wiki.lock', 'pid')
-  writeFileSync(pid, String(process.pid))
-  const r = factory(args)
-  expect([r.code, r.out, r.err.trim()]).toEqual([1, '', 'wiki: busy'])
-  expect(existsSync(gitCalls)).toBe(false)
-  expect(ghCalls()).toBe(0)
-  expect(readFileSync(join(wiki(), LOCK), 'utf8')).toBe(before)
-  expect(readFileSync(pid, 'utf8')).toBe(String(process.pid))
-  for (const invalid of [
-    ['wiki', 'find'],
-    ['wiki', 'status', 'extra'],
-  ]) {
-    expect(factory(invalid).code).toBe(2)
-  }
-  expect(factory(args, { FACTORY_RUN: 'r1' }).err).toContain('a worker cannot')
-  expect(existsSync(gitCalls)).toBe(false)
-})
+test.each([{ args: ['wiki', 'find', 'acme-3w8o'] }, { args: ['wiki', 'status'] }])(
+  'ot1ew wiki busy matrix %p',
+  ({ args }) => {
+    base()
+    const before = readFileSync(join(wiki(), LOCK), 'utf8')
+    const gitCalls = join(dir, 'git-calls')
+    for (const tool of ['git', 'bd']) {
+      writeFileSync(join(bin, tool), `#!/bin/sh\nprintf '%s\\n' '${tool}' >> '${gitCalls}'\nexit 99\n`)
+      chmodSync(join(bin, tool), 0o755)
+    }
+    mkdirSync(join(home, 'wiki.lock'), { recursive: true })
+    const pid = join(home, 'wiki.lock', 'pid')
+    writeFileSync(pid, String(process.pid))
+    const r = factory(args)
+    expect([r.code, r.out, r.err.trim()]).toEqual([1, '', 'wiki: busy'])
+    expect(existsSync(gitCalls)).toBe(false)
+    expect(ghCalls()).toBe(0)
+    expect(readFileSync(join(wiki(), LOCK), 'utf8')).toBe(before)
+    expect(readFileSync(pid, 'utf8')).toBe(String(process.pid))
+    for (const invalid of [
+      ['wiki', 'find'],
+      ['wiki', 'status', 'extra'],
+    ]) {
+      expect(factory(invalid).code).toBe(2)
+    }
+    expect(factory(args, { FACTORY_RUN: 'r1' }).err).toContain('a worker cannot')
+    expect(existsSync(gitCalls)).toBe(false)
+  },
+)
 
 test('AC9 a worker cannot run find', () => {
   base()
@@ -312,32 +312,32 @@ test('AC8 a failed bd leaves the rig out and exits 0; a symlinked needs-person.m
   expect(r.err).toContain('wiki status: rig widget bead list failed')
 })
 
-test.each([
-  ['wiki', 'find', 'acme-3w8o'],
-  ['wiki', 'status'],
-])('ot1ew wiki lock lifetime and unlocked controls %p', (...args) => {
-  base()
-  const realGit = Bun.which('git')!
-  const log = join(dir, 'lock-calls')
-  const pid = join(home, 'wiki.lock', 'pid')
-  writeFileSync(
-    join(bin, 'git'),
-    `#!/bin/sh\npid=$(cat '${pid}' 2>/dev/null || true)\nheld=no\nif [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && ! mkdir '${home}/wiki.lock' 2>/dev/null; then held=yes; fi\nprintf '%s:%s\\n' "$pid" "$held" >> '${log}'\nexec '${realGit}' "$@"\n`,
-  )
-  chmodSync(join(bin, 'git'), 0o755)
-  mkdirSync(join(home, 'dream.lock'))
-  writeFileSync(join(home, 'dream.lock', 'pid'), String(process.pid))
-  const r = factory(args)
-  expect(r.code).toBe(0)
-  if (args[1] === 'find') expect(r.out).toBe(LINE)
-  else expect(JSON.parse(r.out)).toHaveProperty('pending')
-  for (const call of readFileSync(log, 'utf8').trim().split('\n')) expect(call).toMatch(/^[1-9][0-9]*:yes$/)
-  expect(existsSync(join(home, 'wiki.lock'))).toBe(false)
-  writeFileSync(join(bin, 'git'), '#!/bin/sh\nexit 1\n')
-  factory(args)
-  expect(existsSync(join(home, 'wiki.lock'))).toBe(false)
-  expect(factory(args).err).not.toContain('wiki: busy')
-})
+test.each([{ args: ['wiki', 'find', 'acme-3w8o'] }, { args: ['wiki', 'status'] }])(
+  'ot1ew wiki lock lifetime and unlocked controls %p',
+  ({ args }) => {
+    base()
+    const realGit = Bun.which('git')!
+    const log = join(dir, 'lock-calls')
+    const pid = join(home, 'wiki.lock', 'pid')
+    writeFileSync(
+      join(bin, 'git'),
+      `#!/bin/sh\npid=$(cat '${pid}' 2>/dev/null || true)\nheld=no\nif [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && ! mkdir '${home}/wiki.lock' 2>/dev/null; then held=yes; fi\nprintf '%s:%s\\n' "$pid" "$held" >> '${log}'\nexec '${realGit}' "$@"\n`,
+    )
+    chmodSync(join(bin, 'git'), 0o755)
+    mkdirSync(join(home, 'dream.lock'))
+    writeFileSync(join(home, 'dream.lock', 'pid'), String(process.pid))
+    const r = factory(args)
+    expect(r.code).toBe(0)
+    if (args[1] === 'find') expect(r.out).toBe(LINE)
+    else expect(JSON.parse(r.out)).toHaveProperty('pending')
+    for (const call of readFileSync(log, 'utf8').trim().split('\n')) expect(call).toMatch(/^[1-9][0-9]*:yes$/)
+    expect(existsSync(join(home, 'wiki.lock'))).toBe(false)
+    writeFileSync(join(bin, 'git'), '#!/bin/sh\nexit 1\n')
+    factory(args)
+    expect(existsSync(join(home, 'wiki.lock'))).toBe(false)
+    expect(factory(args).err).not.toContain('wiki: busy')
+  },
+)
 
 test('AC9 a worker cannot run status', () => {
   base()
