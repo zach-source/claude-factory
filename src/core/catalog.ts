@@ -1,4 +1,6 @@
 /** The operation catalog. It imports node: modules, ./chat, ./guards, the operation files in ./ops, and types from ../metrics and ../once. */
+import type { FlowRun } from '../flows'
+import type { Factory } from '../machine'
 import type { ManagerUsage, RunRecord } from '../metrics'
 import type { ModelCall, ModelResult } from '../once'
 import { redactRig } from '../rigs-edit'
@@ -9,6 +11,7 @@ import * as decisionsOps from './ops/decisions'
 import * as gatesOps from './ops/gates'
 import * as leaseOps from './ops/lease'
 import * as mailOps from './ops/mail'
+import * as flowsOps from './ops/flows'
 import * as metricsOps from './ops/metrics'
 import * as planOps from './ops/plan'
 import * as prsOps from './ops/prs'
@@ -34,6 +37,8 @@ export type Port = {
   planShowText: () => string
   gateBriefFacts: (id: string | undefined) => Promise<unknown>
   records: () => RunRecord[]
+  /** the factory (default lifecycle) and its runs, for flows.show */
+  flowData: (factory: string | undefined) => Promise<{ def: Factory; runs: FlowRun[] }>
   refreshMerges: (recs: RunRecord[]) => Promise<RunRecord[]>
   managerUsage: (since: number) => ManagerUsage[]
   rigList: (print: Print) => Promise<void>
@@ -295,7 +300,7 @@ export function boardView(b: unknown): unknown {
   return { ...b, rigs: view }
 }
 
-/** The 27 operations cover the client port, board, catalog and parity fixture. */
+/** The 28 operations cover the client port, board, catalog and parity fixture. */
 export const CATALOG: Op[] = makeCatalog([
   {
     ...local(
@@ -480,6 +485,20 @@ export const CATALOG: Op[] = makeCatalog([
     },
     'text',
     (c, i) => metricsOps.show(c, i),
+  ),
+  local(
+    {
+      name: 'flows.show',
+      summary: 'Show the workflow graph: stations, runs, edge traversals, dwell and moves.',
+      method: 'GET',
+      path: '/v1/flows',
+      inputs: [
+        f('factory', 'id', false, 'the factory name; default lifecycle'),
+        f('since', 'id', false, 'a window (1h, 24h, 7d) or a time in ms; default 24h'),
+      ],
+    },
+    'json',
+    (c, i) => flowsOps.show(c, i),
   ),
   local(
     {

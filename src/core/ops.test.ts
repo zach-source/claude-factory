@@ -17,6 +17,10 @@ const fake = () => {
     planShowText: () => (calls.push(['planShowText']), 'plan'),
     gateBriefFacts: async id => (calls.push(['gateBriefFacts', id]), {}),
     records: () => (calls.push(['records']), []),
+    flowData: async () => ({
+      def: { name: 'f', start: 'a', nodes: { a: { prompt: 'p', next: { done: 'done' } } } },
+      runs: [],
+    }),
     refreshMerges: async recs => (calls.push(['refreshMerges', recs]), recs),
     managerUsage: since => (calls.push(['managerUsage', typeof since]), []),
     rigList: async print => (calls.push(['rigList']), print('rig')),
@@ -119,6 +123,12 @@ describe('a failure gives the CLI line (inProc)', () => {
       out: 'first\n',
       err: 'factory: no run "x"\n',
     })
+  })
+  test('flows.show gives the graph as JSON; a bad since gives a reason', async () => {
+    const r = await run('flows.show', fake().ctx(), { since: '1h' })
+    expect(r.code).toBe(0)
+    expect(JSON.parse(r.out)).toMatchObject({ factory: 'f', nodes: [{ id: 'a', rank: 0 }], moves: [] })
+    expect((await run('flows.show', fake().ctx(), { since: 'soon' })).err).toContain('since must be')
   })
   test('a bad since gives the usage line', async () => {
     const r = await run('metrics.show', fake().ctx(), { since: '0d' })

@@ -148,5 +148,23 @@
     "station": "all",
     "bead": "claude-factory-gf16e.12",
     "reason": "the deny hook fails open when it cannot start"
+  },
+  {
+    "op": "flows.show",
+    "frontEnd": "web",
+    "bead": "claude-factory-hpmc.28",
+    "reason": "the web UI has no Flow view"
+  },
+  {
+    "op": "flows.show",
+    "frontEnd": "claude-mod",
+    "bead": "claude-factory-hpmc.29",
+    "reason": "the Claude mod has no Flow view"
+  },
+  {
+    "op": "flows.show",
+    "frontEnd": "herdr-mod",
+    "bead": "claude-factory-hpmc.26",
+    "reason": "the Herdr mod has no Flow tab"
   }
 ]
