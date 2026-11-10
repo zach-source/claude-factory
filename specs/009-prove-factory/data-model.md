@@ -8,7 +8,7 @@ The parent run walks these stations. A `lemma` run is a child run on a child bea
 | --- | --- | --- | --- |
 | `pick` | worker (Claude) | Spec writer. Reads the code. Checks the fit (FR-004). Proposes properties. | `proposed` → `choose`; `nofit` → done (reject) |
 | `choose` | gate | The person picks properties. | `picked` → `draft`; `again` → `pick`; `stop` → done (reject) |
-| `draft` | worker (Claude) | Spec writer. Writes the Lean statements and the hook contracts that they need. | `drafted` → `review` |
+| `draft` | worker (Claude) | Spec writer. Writes the Lean statements and the hook contracts that they need. Lists the parts in `proofs/parts.json` and files one child bead (`station:part`) for each part. | `drafted` → `review` |
 | `review` | worker (Codex) | Reviewer of a different model family. | `ok` → `checks`; `changes` → `draft` |
 | `checks` | worker (Claude) | Writes the vacuity witnesses, the mutants and their disproofs, and the historical-bug disproofs. Pushes the run branch and opens a draft pull request. | `written` → `precheck`; `nohistory` → `precheck` (the brief says that no historical bug was found) |
 | `precheck` | `ciCheck` | No worker. Reads `prove-gate` on the head. With no `proofs/approved.json`, `gate.sh` runs in draft mode (contracts/prove.md). | `pass` → `approve`; `fail` → `draft` |
@@ -21,6 +21,7 @@ The parent run walks these stations. A `lemma` run is a child run on a child bea
 | `gatekeep` | `ciCheck` | No worker. Compares `proofs/approved.json` with the core's record, then reads the `prove-gate` check. | `pass` → done (ship); `fail` → `integrate` |
 | `repair` | worker (Claude) | Entry station for a red `prove-gate` on the default branch. Updates the proofs for the new machine code. | `updated` → `integrate`; `amend` → `critic` |
 | `lemma` | worker (Claude) | Prover on a child run. Owns one proof file. | `proved` → done; `unproved` → done (defer, with the reason) |
+| `part` | gate, `freeze` | On a child run: the person approves one runtime contract or one exact-proof part (research.md R16). | `approve` → done; `refuse` → done (reject) |
 
 ## Entities
 
@@ -30,7 +31,7 @@ The parent run walks these stations. A `lemma` run is a child run on a child bea
 | --- | --- | --- |
 | `id` | string | Unique in the run. |
 | `rig` | string | A rig of `rigs.json`. |
-| `function` | string | The full Go symbol, for example `substrate/internal/egresspolicy.HostnamePattern.Matches`. |
+| `function` | string | The full Go symbol, for example `<module>/<package>.<Type>.<Method>`. |
 | `claim` | string | Plain English. |
 | `path` | `go-arm64` (phase 1) | Later: `wasm`, `rust-musl-arm64`. |
 | `fit` | `fits` or a list of limits | FR-004. |
@@ -51,7 +52,7 @@ The core stores it in `<factory home>/proofs/<run id>/approvals.jsonl`. Only the
 | Field | Type | Rule |
 | --- | --- | --- |
 | `decision` | string | The gate decision id. |
-| `kind` | `statements` or `amendment` | |
+| `kind` | `statements`, `amendment` or `part` | A `part` record covers one runtime contract or one exact-proof part. |
 | `person` | string | From the decision. A worker or a patrol cannot answer (FR-005). |
 | `at` | ISO time | |
 | `commit` | git SHA | The approved commit of the run branch. |
@@ -104,6 +105,6 @@ Each `approve` and `amend` brief shows:
 
 ## State changes
 
-- `approve` with outcome `approve`: the core writes an approval record of `kind: statements` and the held-out copy. Then the run goes to `architect`.
+- `approve` with outcome `approve`: if a part in `proofs/parts.json` has no approval record, the core refuses the decision and names the open parts. Else the core writes an approval record of `kind: statements` and the held-out copy. Then the run goes to `architect`.
 - `amend` with outcome `approve`: the core writes an approval record of `kind: amendment` and changes the held-out copy. Then the run goes to `integrate`.
 - `gatekeep` with outcome `fail` and check `hash`: the runner also mails the manager. A changed statement with no decision is a guard event, not a proof failure.

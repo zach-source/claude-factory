@@ -788,3 +788,91 @@ test('a962: the backup auth header goes only to git calls under the backup remot
     srv.kill()
   }
 })
+
+/** a gitleaks stand-in that logs the size of each file it is given, then runs the real one */
+function countingGitleaks() {
+  const d = tmp()
+  const log = join(d, 'sizes.log')
+  const bin = join(d, 'gitleaks')
+  const real = Bun.which('gitleaks')!
+  writeFileSync(bin, `#!/bin/sh\nfind "$2" -type f -exec wc -c {} + >> '${log}'\nexec '${real}' "$@"\n`)
+  Bun.spawnSync(['chmod', '755', bin])
+  return {
+    bin,
+    scanned: () => (existsSync(log) ? readFileSync(log, 'utf8') : ''),
+    reset: () => rmSync(log, { force: true }),
+  }
+}
+const biggest = (s: string) =>
+  Math.max(
+    0,
+    ...s
+      .split('\n')
+      .flatMap(l =>
+        /^\s*(\d+)\s+\S+$/.exec(l) && !l.includes('total') ? [Number(l.trim().split(/\s+/)[0])] : [],
+      ),
+  )
+
+test('d289.27: an append-only file over 1 MB scans only the appended tail; a secret in it is redacted', () => {
+  const r = remote()
+  const ws = workspace()
+  const g = countingGitleaks()
+  const c = { ...cfg(ws, r), gitleaks: g.bin }
+  const filler =
+    Array.from({ length: 30_000 }, (_, i) => `{"n":${i},"text":"plain line ${i}"}`).join('\n') + '\n'
+  put(join(ws, 'home', 'metrics.jsonl'), filler)
+  expect(backup(c, true).error).toBeUndefined()
+  expect(biggest(g.scanned())).toBeGreaterThan(1_000_000) // the first backup scans the whole file
+  g.reset()
+  const tail = `{"t":"${TOKEN}"}\n{"n":"after"}\n`
+  put(join(ws, 'home', 'metrics.jsonl'), filler + tail)
+  const out = backup(c, true)
+  expect(out.error).toBeUndefined()
+  expect(biggest(g.scanned())).toBeLessThan(10_000)
+  const got = pushedFile(r, 'home/metrics.jsonl')
+  expect(got).not.toContain(TOKEN)
+  expect(got).toContain('{"t":"[REDACTED]"}\n{"n":"after"}')
+  expect(got.startsWith(filler.slice(0, 1000))).toBe(true)
+  expect(out.redacted).toContain('github-pat home/metrics.jsonl')
+  // a later append goes on from the redacted copy
+  g.reset()
+  put(join(ws, 'home', 'metrics.jsonl'), filler + tail + '{"n":"more"}\n')
+  expect(backup(c, true).error).toBeUndefined()
+  expect(biggest(g.scanned())).toBeLessThan(10_000)
+  expect(pushedFile(r, 'home/metrics.jsonl')).toContain('{"t":"[REDACTED]"}\n{"n":"after"}\n{"n":"more"}')
+})
+
+test('d289.27: a secret already in the scanned part stays redacted when the file grows', () => {
+  const r = remote()
+  const ws = workspace()
+  const g = countingGitleaks()
+  const c = { ...cfg(ws, r), gitleaks: g.bin }
+  const filler =
+    Array.from({ length: 30_000 }, (_, i) => `{"n":${i},"text":"plain line ${i}"}`).join('\n') + '\n'
+  put(join(ws, 'home', 'metrics.jsonl'), `{"t":"${TOKEN}"}\n${filler}`)
+  expect(backup(c, true).error).toBeUndefined()
+  g.reset()
+  put(join(ws, 'home', 'metrics.jsonl'), `{"t":"${TOKEN}"}\n${filler}{"n":"more"}\n`)
+  expect(backup(c, true).error).toBeUndefined()
+  expect(biggest(g.scanned())).toBeLessThan(10_000)
+  const got = pushedFile(r, 'home/metrics.jsonl')
+  expect(got).not.toContain(TOKEN)
+  expect(got.startsWith('{"t":"[REDACTED]"}\n{"n":0')).toBe(true)
+  expect(got.endsWith('{"n":"more"}')).toBe(true)
+})
+
+test('d289.27: a rewritten file (not an append) is scanned whole, and a secret in it is found', () => {
+  const r = remote()
+  const ws = workspace()
+  const g = countingGitleaks()
+  const c = { ...cfg(ws, r), gitleaks: g.bin }
+  const filler =
+    Array.from({ length: 30_000 }, (_, i) => `{"n":${i},"text":"plain line ${i}"}`).join('\n') + '\n'
+  put(join(ws, 'home', 'metrics.jsonl'), filler)
+  expect(backup(c, true).error).toBeUndefined()
+  g.reset()
+  put(join(ws, 'home', 'metrics.jsonl'), `{"t":"${TOKEN}"}\n${filler}{"n":"more"}\n`)
+  expect(backup(c, true).error).toBeUndefined()
+  expect(biggest(g.scanned())).toBeGreaterThan(1_000_000)
+  expect(pushedFile(r, 'home/metrics.jsonl')).not.toContain(TOKEN)
+})

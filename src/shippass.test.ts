@@ -136,6 +136,17 @@ test('a rig with a queue gets one ship run, flagged; a second pass starts none; 
   expect(runs().some(r => r.repo === b!.repo)).toBe(false)
 })
 
+test('a queued GOTO on an ended ship run blocks ship dispatch until the next tick', () => {
+  setup([{ name: 'a', queued: true }])
+  expect(factory(['beads']).code).toBe(0)
+  const { id } = runs()[0]!
+  expect(factory(['abort', id]).code).toBe(0)
+  expect(factory(['tick']).code).toBe(0)
+  expect(factory(['goto', id, 'release']).code).toBe(0)
+  expect(factory(['beads']).code).toBe(0)
+  expect(runs()).toHaveLength(1)
+})
+
 test('two queued rigs get one ship run each', () => {
   setup([
     { name: 'a', queued: true },

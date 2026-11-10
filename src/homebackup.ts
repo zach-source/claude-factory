@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { join, relative } from 'node:path'
+import { createHash } from 'node:crypto'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import { claudeFiles } from './migrate'
 import { gitFenced } from './memory'
@@ -325,6 +326,19 @@ function scrub(cfg: BackupCfg, staged: Staged[]): { redacted: string[] } | { err
   const r = git(cfg, ['cat-file', '--batch'], 120_000, { input: staged.map(s => s.blob).join('\n') + '\n' })
   if (!r.ok) return { error: `git cat-file: ${r.err}` }
   const blobs = splitBatch(r.buf)
+  const t0 = Date.now()
+  // d289.27: a big file that only grew since the last backup scans (and redacts) its new bytes alone
+  const state = readScanned(cfg)
+  const bases = new Map<number, { prior: Buffer; rawLen: number }>() // index -> the committed copy of the scanned part
+  for (const [i, b] of blobs.entries()) {
+    const st = state[staged[i]!.path]
+    if (b.length < TAIL_OVER || !st || b.length <= st.rawLen || sha(b.subarray(0, st.rawLen)) !== st.rawSha)
+      continue
+    const prior = committed(cfg, staged[i]!.path)
+    if (prior && prior.length >= st.outLen && sha(prior.subarray(0, st.outLen)) === st.outSha)
+      bases.set(i, { prior: prior.subarray(0, st.outLen), rawLen: st.rawLen })
+  }
+  const piece = (i: number, b: Buffer) => (bases.has(i) ? b.subarray(bases.get(i)!.rawLen) : b)
   const scan = (files: Map<number, Buffer>) => {
     const dir = mkdtempSync(join(cfg.ws, '.backup-scan-')) // the workspace disk: /tmp can be small; no pathspec covers it
     try {
@@ -341,10 +355,29 @@ function scrub(cfg: BackupCfg, staged: Staged[]): { redacted: string[] } | { err
       rmSync(dir, { recursive: true, force: true })
     }
   }
-  const found = scan(new Map(blobs.map((b, i) => [i, b])))
+  const found = scan(new Map(blobs.map((b, i) => [i, piece(i, b)])))
   if ('error' in found) return { error: `backup refused: ${found.error}` }
-  const fixed = new Map([...found].map(([i, leaks]) => [i, redact(blobs[i]!, leaks)]))
-  const left = scan(fixed)
+  // the output of each blob: the committed scanned part, then the redacted new part. A split at a line end is
+  // recorded, so the next backup starts there. ponytail: a secret over two lines is not seen across the split
+  const out = blobs.map((b, i) => {
+    const leaks = found.get(i) ?? []
+    const base = bases.get(i)
+    const body = base ? b.subarray(base.rawLen) : b
+    const cut = body.lastIndexOf(10) + 1
+    const a = redact(body.subarray(0, cut), leaks)
+    const rest = redact(body.subarray(cut), leaks)
+    const head = base ? base.prior : Buffer.alloc(0)
+    return {
+      buf: Buffer.concat([head, a, rest]),
+      outLen: head.length + a.length,
+      rawLen: (base?.rawLen ?? 0) + cut,
+    }
+  })
+  const fixed = new Map<number, Buffer>()
+  for (const [i, o] of out.entries()) if (!o.buf.equals(blobs[i]!)) fixed.set(i, o.buf)
+  const left = scan(
+    new Map([...fixed].map(([i, b]) => [i, bases.has(i) ? b.subarray(bases.get(i)!.prior.length) : b])),
+  )
   if ('error' in left) return { error: `backup refused: ${left.error}` }
   if (left.size)
     return {
@@ -356,10 +389,55 @@ function scrub(cfg: BackupCfg, staged: Staged[]): { redacted: string[] } | { err
     const u = git(cfg, ['update-index', '--cacheinfo', `${staged[i]!.mode},${h.out},${staged[i]!.path}`])
     if (!u.ok) return { error: `git update-index: ${u.err}` }
   }
+  for (const [i, b] of blobs.entries()) {
+    const o = out[i]!
+    if (b.length >= TAIL_OVER && o.rawLen > 0)
+      state[staged[i]!.path] = {
+        rawLen: o.rawLen,
+        rawSha: sha(b.subarray(0, o.rawLen)),
+        outLen: o.outLen,
+        outSha: sha(o.buf.subarray(0, o.outLen)),
+      }
+  }
+  writeScanned(cfg, state)
+  console.error(
+    `backup scan: ${Date.now() - t0} ms, ${blobs.length} files, ${bases.size} by tail only, ${found.size} with findings`,
+  )
   return {
     redacted: [...found].flatMap(([i, leaks]) => [
       ...new Set(leaks.map(l => `${l.RuleID} ${staged[i]!.path}`)),
     ]),
+  }
+}
+
+/** d289.27: a file this big or bigger is scanned by its new tail when the last backup scanned its start */
+const TAIL_OVER = 1_000_000
+const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex')
+type Scanned = Record<string, { rawLen: number; rawSha: string; outLen: number; outSha: string }>
+/** hashes only, never text: outside every pathspec, so it stays in the workspace */
+const scannedFile = (cfg: BackupCfg) => join(cfg.ws, '.backup-scanned.json')
+function readScanned(cfg: BackupCfg): Scanned {
+  try {
+    return JSON.parse(readFileSync(scannedFile(cfg), 'utf8')) as Scanned
+  } catch {
+    return {}
+  }
+}
+function writeScanned(cfg: BackupCfg, s: Scanned) {
+  try {
+    writeFileSync(scannedFile(cfg), JSON.stringify(s))
+  } catch {}
+}
+/** the file as the last backup committed it (a big one is stored as <path>.gz), else undefined */
+function committed(cfg: BackupCfg, path: string): Buffer | undefined {
+  const plain = git(cfg, ['cat-file', 'blob', `HEAD:${path}`])
+  if (plain.ok) return plain.buf
+  const gz = git(cfg, ['cat-file', 'blob', `HEAD:${path}.gz`])
+  if (!gz.ok) return undefined
+  try {
+    return gunzipSync(gz.buf)
+  } catch {
+    return undefined
   }
 }
 
