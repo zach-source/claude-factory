@@ -109,6 +109,8 @@ const deny = [
   'F=/repo/bin/factory; for r in $(cat /tmp/s); do $F show $r; done',
 ]
 const allow = [
+  'ls $FACTORY_HOME/runs',
+  'cat "${FACTORY_HOME}/rigs.json"',
   '/repo/bin/factory settings list',
   '/repo/bin/factory settings',
   '/repo/bin/factory memory search settings set',
@@ -168,6 +170,74 @@ test('factory settings set and unset ask the person for every key', () => {
     }
 })
 
+test('FACTORY_ text asks the person', () => {
+  for (const command of [
+    'FACTORY_AX_IMAGE=x factory start acme w-1',
+    'FACTORY_AX_IMAGE=x /repo/bin/factory retry r1',
+    'env FACTORY_AX_IMAGE=x factory tick',
+    'export FACTORY_AX_IMAGE=x; factory goto r1 plan',
+    'export FACTORY_AX_IMAGE',
+    'FACTORY_HOME=/tmp/acme factory start acme w-1',
+    'FACTORY_AX_CODEX=1 factory start acme w-1',
+    'unset FACTORY_MAIN_CHAT',
+    'env -u FACTORY_MAIN_CHAT factory decide r1 ship',
+    'FACTORY_ALLOW=x factory status',
+    'FACT""ORY_AX_IMAGE=x factory start acme w-1',
+    'FACTORY_AX_\\\nIMAGE=x factory start acme w-1',
+    "export $'FACTORY_AX_IMAGE=x'",
+    'echo ${FACTORY_AX_IMAGE:=x}',
+    'export FACT"$FACTORY_HOME"ORY_AX_IMAGE=x',
+    'echo $FACTORY_HOMEX',
+    "echo 'export FACTORY_AX_IMAGE=x' >> ~/.zshenv",
+    'read FACTORY_AX_IMAGE',
+    ...SETTING_KEYS.flatMap(s => s.env ? [`${s.env}=v factory start acme w-1`] : []),
+  ]) {
+    const g = gatedCommand(command)
+    expect([command, g?.ask]).toEqual([command, true])
+    expect(g!.kinds).toContain('factory-env')
+    expect(check(command, 'subagent').decision).toBe('deny')
+  }
+  for (const command of [
+    'factory settings list', 'factory settings', 'factory status',
+    'ls $FACTORY_HOME/runs', 'cat "${FACTORY_HOME}/rigs.json"',
+    'echo $FACTORY_HOME', 'factory memory search factory env',
+  ]) expect([command, gatedCommand(command)]).toEqual([command, null])
+})
+
+test('text-only kinds do not turn a substitution deny into a dialog', () => {
+  for (const command of [
+    '/repo/bin/factory mail r1 plan "$(id)" # FACTORY_',
+    'FACTORY_AX_IMAGE=$(id) factory start acme w-1',
+    '/repo/bin/factory mail r1 plan "$(id)" settings.json',
+  ]) {
+    expect(gatedCommand(command)?.ask).toBe(false)
+    expect(check(command, 'manager').decision).toBe('deny')
+  }
+  expect(gatedCommand('FACTORY_WIKI_REMOTE=$(id) /repo/bin/factory wiki init')?.ask).toBe(true)
+})
+
+test('a settings file name asks the person', () => {
+  for (const command of [
+    'echo {} > "$FACTORY_HOME/settings.json"',
+    'tee $FACTORY_HOME/devenv.json',
+    'cp /tmp/x ~/.factory/settings.json',
+    'mv x setting""s.json',
+    'cat > SETTINGS.JSON',
+    `python3 -c "open('settings.json','w')"`,
+    'ln -s $FACTORY_HOME/settings.json /tmp/x',
+    'cat $FACTORY_HOME/settings.json',
+  ]) {
+    const g = gatedCommand(command)
+    expect([command, g?.ask]).toEqual([command, true])
+    expect(g!.kinds).toContain('settings-file')
+    expect(check(command, 'subagent').decision).toBe('deny')
+  }
+  for (const command of [
+    'factory settings list', 'cat $FACTORY_HOME/rigs.json',
+    'cat package.json', 'factory memory search settings set',
+  ]) expect(gatedCommand(command)).toBeNull()
+})
+
 test('the patrol rules preserve their order and exact reasons', () => {
   const bd =
     'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author. Write a bd command in literal words with bd as its first word: no $, backtick, glob, brace, # or <. Put other comment text in a file: bd comments add <id> -f <file>'
@@ -191,7 +261,7 @@ test('the patrol rules preserve their order and exact reasons', () => {
 })
 
 const repeated = 'factory start factory wiki '.repeat(Math.ceil((256 * 1024) / 27))
-const speed = [repeated, '#x\\\n' + repeated, '--owned init ' + repeated]
+const speed = [repeated, '#x\\\n' + repeated, '--owned init ' + repeated, 'FACTORY_x settings.json '.repeat(12000)]
 
 test('the lazy gate kinds finish within one second', () => {
   for (const command of speed) {
