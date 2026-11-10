@@ -401,12 +401,14 @@ test('0s5e remote text is data: server mail reads only the caller file', async (
       const path = txt('remote.md', text)
       const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, FACTORY_DEF_NAME, ...base } =
         process.env
-      const p = Bun.spawn([CLI, 'mail', 'r1', 'manager', '--text-file', path], {
-        env: { ...base, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_SERVER: server.url.origin },
-      })
-      expect(await p.exited).toBe(0)
-      expect(bodies.at(-1)).toMatchObject({ text: text.trimEnd(), to: 'manager' })
-      expect(bodies.at(-1)).not.toHaveProperty('wake', true)
+      for (const wake of [[], ['--wake']]) {
+        const p = Bun.spawn([CLI, 'mail', 'r1', 'manager', ...wake, '--text-file', path], {
+          env: { ...base, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_SERVER: server.url.origin },
+        })
+        expect(await p.exited).toBe(0)
+        expect(bodies.at(-1)).toMatchObject({ text: text.trimEnd(), to: 'manager' })
+        expect((bodies.at(-1) as Record<string, unknown>).wake).toBe(wake.length ? true : undefined)
+      }
     }
     for (const wake of [[], ['--wake']]) {
       const p = Bun.spawn([CLI, 'mail', 'r1', 'manager', ...wake, '--', 'literal'], {
