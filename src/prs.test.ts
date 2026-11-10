@@ -11,6 +11,8 @@ import {
   evidenceLine,
   foldFound,
   gitlabMergedJson,
+  gitlabOrphanView,
+  gitlabOpenFacts,
   foldMentions,
   keepSearchHit,
   namesBead,
@@ -26,6 +28,143 @@ import {
   type PrRecord,
   type PrsFile,
 } from './prs'
+
+test('6r645 AC2: GitLab list rejects every invalid decision field', async () => {
+  const mr = {
+    iid: 7,
+    state: 'opened',
+    web_url: 'https://gitlab.com/acme/widget/-/merge_requests/7',
+    source_branch: 'factory/run-1',
+  }
+  const invalid = [
+    '{',
+    'null',
+    '{}',
+    'true',
+    '[null]',
+    '[[]]',
+    '[1]',
+    ...[
+      { iid: 0 },
+      { iid: -1 },
+      { iid: 1.5 },
+      { iid: '7' },
+      { iid: null },
+      { state: 'closed' },
+      { state: null },
+      { web_url: null },
+      { web_url: '' },
+      { web_url: 'https://github.com/acme/widget/pull/7' },
+      { web_url: 'https://gitlab.com/other/widget/-/merge_requests/7' },
+      { web_url: 'https://gitlab.com/acme/widget/-/merge_requests/8' },
+      { web_url: 'https://other.gitlab.com/acme/widget/-/merge_requests/7' },
+      { source_branch: '' },
+      { source_branch: ' ' },
+      { source_branch: null },
+    ].map(over => JSON.stringify([{ ...mr, ...over }])),
+  ]
+  for (const out of invalid)
+    expect(
+      await gitlabOpenFacts(async () => ({ code: 0, out, err: '' }), 'gitlab.com', 'acme/widget', '/repo'),
+    ).toBeNull()
+  expect(
+    await gitlabOpenFacts(
+      async () => ({ code: 0, out: JSON.stringify([mr]), err: '' }),
+      'gitlab.com',
+      'acme/widget',
+      '/repo',
+    ),
+  ).toEqual([{ number: 7, state: 'OPEN', url: mr.web_url, headRefName: mr.source_branch }])
+})
+
+test('6r645 AC4: an invalid IID permits no approval endpoint call', async () => {
+  for (const iid of [0, -1, 1.5, NaN]) {
+    let calls = 0
+    expect(
+      await gitlabOrphanView(
+        async () => {
+          calls++
+          return { code: 0, out: '{}', err: '' }
+        },
+        'gitlab.com',
+        'acme/widget',
+        iid,
+        '/repo',
+      ),
+    ).toBeNull()
+    expect(calls).toBe(0)
+  }
+})
+
+test('6r645 AC4: GitLab orphan view rejects timeouts and invalid evidence', async () => {
+  const valid = { code: 0, out: '{"has_conflicts":false,"detailed_merge_status":"draft_status"}', err: '' }
+  const approved = { code: 0, out: '{"approved":true}', err: '' }
+  const bad = [
+    { code: 124, out: '', err: 'timed out' },
+    ...['{', 'null', '[]', '0', 'false'].map(out => ({ code: 0, out, err: '' })),
+  ]
+  for (const [detail, approval] of [
+    ...bad.map(row => [row, approved]),
+    ...[
+      ...bad,
+      ...['{}', '{"approved":"true"}', '{"approved":"false"}', '{"approved":0}', '{"approved":1}'].map(
+        out => ({ code: 0, out, err: '' }),
+      ),
+    ].map(row => [valid, row]),
+  ]) {
+    let calls = 0
+    expect(
+      await gitlabOrphanView(
+        async () => (++calls === 1 ? detail! : approval!),
+        'gitlab.example',
+        'acme/sub/widget',
+        7,
+        '/repo',
+      ),
+    ).toBeNull()
+  }
+})
+
+test('6r645 AC3: GitLab orphan view reads approval and preserves detail semantics', async () => {
+  for (const [status, conflicts, mergeable] of [
+    ['draft_status', false, 'MERGEABLE'],
+    ['mergeable', false, 'MERGEABLE'],
+    ['requested_changes', false, 'UNKNOWN'],
+    ['conflict', false, 'CONFLICTING'],
+    ['checking', true, 'CONFLICTING'],
+    ['checking', false, 'UNKNOWN'],
+  ] as const) {
+    for (const approved of [true, false]) {
+      const calls: string[][] = []
+      const view = await gitlabOrphanView(
+        async (argv, opts) => {
+          calls.push(argv)
+          expect(opts).toEqual({ cwd: '/repo', timeout: 60_000 })
+          return {
+            code: 0,
+            err: '',
+            out: JSON.stringify(
+              calls.length === 1 ? { has_conflicts: conflicts, detailed_merge_status: status } : { approved },
+            ),
+          }
+        },
+        'gitlab.example',
+        'acme/sub/widget',
+        7,
+        '/repo',
+      )
+      expect(calls).toEqual(
+        ['', '/approvals'].map(suffix => [
+          'api',
+          '--hostname',
+          'gitlab.example',
+          `projects/acme%2Fsub%2Fwidget/merge_requests/7${suffix}`,
+        ]),
+      )
+      expect(view).toEqual({ approved, mergeable, changes: status === 'requested_changes' })
+    }
+  }
+})
 
 test('namesBead matches the bead itself and a dotted descendant, not a longer sibling or a shorter ancestor', () => {
   expect(namesBead('ex-12.3', 'ex-12.3: build.')).toBe(true)

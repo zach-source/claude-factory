@@ -1003,6 +1003,35 @@ export async function gitlabOpenFacts(glab: Gh, host: string, project: string, c
   }
 }
 
+/** Read MR detail and approval for orphan actions. Unknown approval permits no action. */
+export async function gitlabOrphanView(glab: Gh, host: string, project: string, iid: number, cwd: string) {
+  if (!Number.isSafeInteger(iid) || iid <= 0) return null
+  const path = `projects/${encodeURIComponent(project)}/merge_requests/${iid}`
+  const detail = await glab(['api', '--hostname', host, path], { cwd, timeout: 60_000 })
+  const mr = detail.code === 0 ? (asJson(detail.out) as Json | null) : null
+  if (!mr || typeof mr !== 'object' || Array.isArray(mr)) return null
+  const approval = await glab(['api', '--hostname', host, `${path}/approvals`], { cwd, timeout: 60_000 })
+  const approvals = approval.code === 0 ? (asJson(approval.out) as Json | null) : null
+  if (
+    !approvals ||
+    typeof approvals !== 'object' ||
+    Array.isArray(approvals) ||
+    typeof approvals.approved !== 'boolean'
+  )
+    return null
+  const status = String(mr.detailed_merge_status ?? '')
+  return {
+    mergeable:
+      mr.has_conflicts === true || status === 'conflict'
+        ? 'CONFLICTING'
+        : mr.has_conflicts === false && ['mergeable', 'draft_status'].includes(status)
+          ? 'MERGEABLE'
+          : 'UNKNOWN',
+    changes: status === 'requested_changes',
+    approved: approvals.approved,
+  }
+}
+
 /** `GET repos/<slug>/pulls` pages, newest first, until a short page; null when a call fails */
 export async function githubPulls(
   gh: Gh,

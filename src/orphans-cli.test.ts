@@ -294,6 +294,7 @@ type MrOpts = {
   detailExit?: number
   mergeStatus?: string
   labels?: string[]
+  following?: boolean
 }
 
 /** a fake glab: the opened MRs hold one draft on the source run's branch; every call is logged to glab.calls */
@@ -316,9 +317,11 @@ function fakeGlab(src: string, sha: string, o: MrOpts = {}) {
   script('glab', [
     `echo "$*" >> "${join(dir, 'glab.calls')}"`,
     'case "$*" in',
-    `  *merge_requests?state=opened*) ${o.listExit ? `exit ${o.listExit}` : `printf '%s' '${JSON.stringify([mr])}'`};;`,
+    `  *merge_requests?state=opened*) ${o.listExit ? `exit ${o.listExit}` : `printf '%s' '${JSON.stringify(o.following ? [mr, { ...mr, iid: 8, web_url: MR_URL.replace('/7', '/8') }] : [mr])}'`};;`,
     `  "api --hostname gitlab.com projects/acme%2Fwidget/merge_requests/7/approvals") ${o.approvalExit ? `exit ${o.approvalExit}` : `printf '%s' '${o.approval ?? '{"approved":false}'}'`};;`,
     `  "api --hostname gitlab.com projects/acme%2Fwidget/merge_requests/7") ${o.detailExit ? `exit ${o.detailExit}` : `printf '%s' '${o.detail ?? JSON.stringify(mr)}'`};;`,
+    `  "api --hostname gitlab.com projects/acme%2Fwidget/merge_requests/8/approvals") printf '%s' '{"approved":false}';;`,
+    `  "api --hostname gitlab.com projects/acme%2Fwidget/merge_requests/8") printf '%s' '${JSON.stringify(mr)}';;`,
     '  "mr update"*|"mr note"*|"mr close"*) exit 0;;',
     '  *) exit 1;;',
     'esac',
@@ -540,13 +543,14 @@ for (const [index, opts] of unreadableViews.entries())
   test(`6r645 AC4: unreadable GitLab view ${index} permits no effect`, () => {
     const src = setup('https://gitlab.com/acme/widget.git')
     closedBead('closed')
-    fakeGlab(src, SHA1, opts)
+    fakeGlab(src, SHA1, { ...opts, following: true })
     pass()
     const calls = readFileSync(join(dir, 'glab.calls'), 'utf8')
-    expect(calls).not.toContain('mr close')
+    expect(calls).not.toContain('mr close 7')
+    expect(calls).toContain('mr close 8')
     expect(calls).not.toContain('mr update')
     expect(runIds()).toHaveLength(1)
-    expect(read('orphan-forks.json')).toEqual({})
+    expect(existsSync(join(home(), 'orphan-forks.json'))).toBe(false)
   })
 
 test('AC6: a GitLab MR that is not green, not a draft, from a fork or off factory/ forks nothing', () => {

@@ -297,6 +297,7 @@ import {
   gitlabChecks,
   githubPulls,
   gitlabOpenFacts,
+  gitlabOrphanView,
   githubRows,
   githubSlugOf,
   githubWatchView,
@@ -11502,30 +11503,7 @@ async function orphanPass() {
                 }
               )
             }
-            const r = await spawnGlab(
-              [
-                'api',
-                '--hostname',
-                gl!.host,
-                `projects/${encodeURIComponent(project)}/merge_requests/${pr.number}`,
-              ],
-              { cwd: rig.repo, timeout: 60_000 },
-            )
-            const mr = r.code === 0 ? (JSON.parse(r.out || 'null') as Record<string, unknown> | null) : null
-            if (!mr) return null
-            // a draft MR reports detailed_merge_status "draft_status", so read has_conflicts and the review ask directly
-            const status = String(mr.detailed_merge_status ?? '')
-            return {
-              mergeable:
-                mr.has_conflicts === true || status === 'conflict'
-                  ? 'CONFLICTING'
-                  : mr.has_conflicts === false && ['mergeable', 'draft_status'].includes(status)
-                    ? 'MERGEABLE'
-                    : 'UNKNOWN',
-              changes: status === 'requested_changes',
-              // ponytail: the MR endpoint has no approval field, so a GitLab MR never counts as approved. Upgrade: the MR /approvals endpoint (as src/prs.ts reads approvals.approved).
-              approved: false,
-            }
+            return gitlabOrphanView(spawnGlab, gl!.host, project, pr.number, rig.repo).catch(() => null)
           },
           label: async (pr, labels) => {
             const r = ref
