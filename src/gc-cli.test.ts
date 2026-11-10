@@ -16,7 +16,6 @@ import {
   rmSync,
   statSync,
   symlinkSync,
-  cpSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs'
@@ -688,38 +687,48 @@ const repoint = (d: string, patch: Record<string, string>) => {
   const rj = join(d, 'run.json')
   writeFileSync(rj, JSON.stringify({ ...JSON.parse(readFileSync(rj, 'utf8')), ...patch }))
 }
-const unsafeCases: [string, (id: string, victim: string) => Record<string, string>][] = [
-  ['a worktree outside the worktrees root', (_id, victim) => ({ worktree: victim })],
+// each case returns the run.json patch and the dir that must keep its files. Each target is named for the run, so only its own guard refuses it.
+const unsafeCases: [string, (id: string) => [Record<string, string>, string]][] = [
   [
-    'a worktree that is a symlink to another dir',
-    (id, victim) => {
-      const link = join(home, 'worktrees', id + '-link')
-      symlinkSync(victim, link)
-      return { worktree: link }
+    'a worktree outside the worktrees root',
+    id => {
+      const out = join(dir, 'outside', id)
+      mkdirSync(out, { recursive: true })
+      return [{ worktree: out }, out]
+    },
+  ],
+  [
+    'a worktree that is a symlink',
+    id => {
+      const real = join(home, 'worktrees', 'real', id)
+      mkdirSync(real, { recursive: true })
+      mkdirSync(join(home, 'worktrees', 'lnk'), { recursive: true })
+      const link = join(home, 'worktrees', 'lnk', id)
+      symlinkSync(real, link)
+      return [{ worktree: link }, real]
     },
   ],
   [
     'a worktree named for another run',
-    (_id, victim) => {
+    id => {
       const other = join(home, 'worktrees', 'other-name')
-      cpSync(victim, other, { recursive: true })
-      return { worktree: other }
+      mkdirSync(other, { recursive: true })
+      return [{ worktree: other }, other]
     },
   ],
 ]
-for (const [name, patch] of unsafeCases) {
+for (const [name, make] of unsafeCases) {
   test(`lt4u.7 AC4: plain gc keeps a run with ${name}; the target and the run dir stay`, () => {
     reset()
     const id = freshId('ship')
     const d = writeRun(id, { outcome: 'done', finishedAt: OLD(), real: true })
-    const victim = join(dir, 'victim')
-    mkdirSync(victim, { recursive: true })
-    writeFileSync(join(victim, 'mine.txt'), 'keep me')
-    repoint(d, patch(id, victim))
+    const [patch, keep] = make(id)
+    writeFileSync(join(keep, 'mine.txt'), 'keep me')
+    repoint(d, patch)
     const t = tip(id)
     expect(factory(['gc']).code).toBe(0)
     expect(existsSync(d)).toBe(true)
-    expect(readFileSync(join(victim, 'mine.txt'), 'utf8')).toBe('keep me')
+    expect(readFileSync(join(keep, 'mine.txt'), 'utf8')).toBe('keep me')
     expect(tip(id)).toBe(t)
     expect(metricIds()).not.toContain(id)
     expect(readFileSync(join(home, 'gc.log'), 'utf8')).toContain(`refused ${id}`)
