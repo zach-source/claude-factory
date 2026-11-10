@@ -94,3 +94,22 @@ test('the settings usage line names the devenv keys', () => {
     .find(l => l.startsWith('  settings [list]'))
   expect(line).toContain('devenv.builder')
 })
+
+test('docs/server.md names each owner step, both modes and the way back; README links it', () => {
+  const text = readFileSync(join(root, 'docs/server.md'), 'utf8')
+  for (const s of [
+    'S2',
+    'dm-g14',
+    'S8',
+    'SVID',
+    'FACTORY_SERVER',
+    'port 8444',
+    'PVC',
+    'person CA',
+    'Local mode',
+    'Server mode',
+    'The way back',
+  ])
+    expect(text).toContain(s)
+  expect(readFileSync(join(root, 'README.md'), 'utf8')).toContain('docs/server.md')
+})
