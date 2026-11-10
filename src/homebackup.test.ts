@@ -82,9 +82,7 @@ test('d289.19: a staged file over 50 MB goes up as <path>.gz and comes back byte
   for (const l of tree.split('\n')) expect(Number(l.split(/\s+/)[3]) || 0).toBeLessThan(50 * 1024 * 1024)
   // A second backup with the same files makes no commit.
   const tip = sh('--git-dir', r, 'rev-parse', 'manager-home')
-  expect(tip).toBeTypeOf('string')
-  expect(tip).not.toBe('')
-  expect(tip).toBe(out.sha!)
+  expect(tip).toBe(out.sha)
   const second = backup(cfg(a, r), true)
   expect(second.error).toBeUndefined()
   expect(second.sha).toBeTypeOf('string')
