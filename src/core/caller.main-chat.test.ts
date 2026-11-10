@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { GATED_KINDS } from '../../mod/hooks/view'
@@ -50,6 +50,7 @@ test('mainChatRefusal rows (AC4)', () => {
   put(home, `${U}.json`, ok())
   expect(r({ ...M, FACTORY_ALLOW: U })).toBeUndefined()
   expect(existsSync(join(home, 'allow', `${U}.json`))).toBe(false)
+  expect(readdirSync(join(home, 'allow')).filter(n => n.endsWith('.used'))).toEqual([])
   expect(r({ ...M, FACTORY_ALLOW: U })).toContain(DENIED)
   put(home, `${U}.json`, ok(['answer']))
   expect(r({ ...M, FACTORY_ALLOW: U })).toContain(DENIED)
