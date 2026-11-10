@@ -139,7 +139,7 @@ RUN curl -fsSL -o /tmp/hc.tgz https://releases.herdr.dev/core/${HC_VERSION}/herd
 
 # the factory CLI: `factory worker serve`, and report, mail and memory add, which queue in the outbox
 WORKDIR /opt/factory
-COPY package.json bun.lock tsconfig.json ./
+COPY package.json bun.lock tsconfig.json parity-gaps.json ./
 RUN bun install --frozen-lockfile --production
 COPY bin bin
 COPY src src
