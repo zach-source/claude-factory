@@ -454,7 +454,15 @@ test('approve: the approval lasts one turn and the core cleans up', async () => 
 
 test('approve: the hook argument grammar fails closed', () => {
   const h = sha(ASK)
-  for (const args of [['c'], ['c', h], ['c', h, 'x'], ['c', h, N, N], ['c', h.toUpperCase()], ['c', h.slice(1)], ['../x', h, N]])
+  for (const args of [
+    ['c'],
+    ['c', h],
+    ['c', h, 'x'],
+    ['c', h, N, N],
+    ['c', h.toUpperCase()],
+    ['c', h.slice(1)],
+    ['../x', h, N],
+  ])
     for (const c of ['/repo/bin/factory status', ASK])
       expect(hook(c, args)).toEqual({ code: 2, err: 'bad chat-guard arguments\n' })
   expect(guardHook('{}', home, ['c'])).toEqual({ code: 2, err: 'bad chat-guard arguments\n' })
