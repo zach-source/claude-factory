@@ -1401,6 +1401,10 @@ export const register: Register = (on, options) => {
     return { text: out || 'ok' }
   })
 
+  on('tool.call', { tool: 'Monitor' }, () => ({
+    deny: 'Monitor is disabled in the factory mod. Use Bash for shell commands.',
+  }))
+
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     // e.agentId is the subagent's own loop id (AgentLoop), absent on the main loop: the patrol's
     // first Bash call learns rt.patrolId from it. agent.spawn's resolved value never carries an
