@@ -3,7 +3,7 @@ import { expect, spyOn, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { agentsOrder, harnessLimited, pickAgent, recordHarnessLimit } from './cli'
+import { agentsOrder, clearHarnessLimit, harnessLimited, pickAgent, recordHarnessLimit } from './cli'
 import type { Harness } from './harness'
 
 const def = {
@@ -113,4 +113,15 @@ test('a recorded limit holds until it lifts', () => {
   expect(harnessLimited('ax', 'claude', 6000, home)).toBe(false)
   expect(harnessLimited('ax', 'codex', 6000, home)).toBe(true)
   expect(harnessLimited('herdr', 'codex', 6000, home)).toBe(false)
+})
+
+test('clearHarnessLimit drops only the named harness entry', () => {
+  const home = mkdtempSync(join(tmpdir(), 'order-'))
+  const far = Date.now() + 3600_000
+  recordHarnessLimit('ax', 'claude', far, home)
+  recordHarnessLimit('ax', 'codex', far, home)
+  clearHarnessLimit('ax', 'claude', home)
+  expect(harnessLimited('ax', 'claude', Date.now(), home)).toBe(false)
+  expect(harnessLimited('ax', 'codex', Date.now(), home)).toBe(true)
+  clearHarnessLimit('herdr', 'claude', home) // no file: no error
 })
