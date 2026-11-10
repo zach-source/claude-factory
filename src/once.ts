@@ -84,6 +84,10 @@ export type ModelResult = {
   calls: { id: string; command: string }[]
   /** the Claude session id of the run */
   session?: string
+  /** the call's own timer stopped the child (runModelAsync only) */
+  timedOut?: boolean
+  /** the result event's api_error_status */
+  apiErrorStatus?: number
 }
 
 export type ModelCall = {
@@ -107,6 +111,8 @@ export type ModelCall = {
   cwd?: string
   /** the env that the child starts from, in place of process.env */
   baseEnv?: Record<string, string | undefined>
+  /** Claude only: pass --strict-mcp-config, so no MCP server loads from a config */
+  strictMcp?: boolean
 }
 
 /** the same check as FACTORY_DREAM_CODEX */
@@ -124,8 +130,10 @@ function readJsonFile<T>(path: string, fallback: T): T {
 
 /** atomic: a reader never sees half a file */
 function saveJson(path: string, value: unknown) {
-  writeFileSync(`${path}.tmp`, JSON.stringify(value, null, 2))
-  renameSync(`${path}.tmp`, path)
+  // a tmp name per pid: the server and a patrol child never rename the same tmp file
+  const tmp = `${path}.${process.pid}.tmp`
+  writeFileSync(tmp, JSON.stringify(value, null, 2))
+  renameSync(tmp, path)
 }
 
 const readState = (home: string): PatrolState => ({
@@ -234,6 +242,7 @@ export function parseStream(
     commands,
     calls,
     session: typeof result.session_id === 'string' ? result.session_id : undefined,
+    apiErrorStatus: typeof result.api_error_status === 'number' ? result.api_error_status : undefined,
   }
 }
 
@@ -256,6 +265,7 @@ function modelSpawn(c: ModelCall): Spawn {
         ...(c.tools ? ['--allowedTools', c.tools] : []),
         ...['--system-prompt', c.system, '--disable-slash-commands'],
         ...(c.settings ? ['--settings', JSON.stringify(c.settings)] : []),
+        ...(c.strictMcp ? ['--strict-mcp-config'] : []),
       ]
   // codex has no system prompt flag: the step text leads its stdin
   const stdin = c.codex ? `${c.system}\n\n${c.input}` : c.input
@@ -331,6 +341,7 @@ export async function runModelAsync(c: ModelCall): Promise<ModelResult> {
   const start = Date.now()
   const { argv, env, stdin } = modelSpawn(c)
   let timer: ReturnType<typeof setTimeout> | undefined
+  let timedOut = false
   try {
     const proc = Bun.spawn(argv, {
       env,
@@ -341,6 +352,7 @@ export async function runModelAsync(c: ModelCall): Promise<ModelResult> {
       detached: true,
     })
     timer = setTimeout(() => {
+      timedOut = true
       try {
         process.kill(-proc.pid, 'SIGKILL')
       } catch {}
@@ -350,7 +362,8 @@ export async function runModelAsync(c: ModelCall): Promise<ModelResult> {
       new Response(proc.stderr).text(),
       proc.exited,
     ])
-    return modelResult(c, out, err, proc.exitCode, start)
+    const r = modelResult(c, out, err, proc.exitCode, start)
+    return timedOut ? { ...r, timedOut } : r
   } catch (err) {
     return spawnFailed(line(String(err), 300), start)
   } finally {

@@ -332,6 +332,7 @@ test('runModelAsync kills the process group at the timeout', async () => {
     expect(Date.now() - t).toBeLessThan(3000)
     expect(r.isOk).toBe(false)
     expect(r.reason).toBe('spawn-failed')
+    expect(r.timedOut).toBe(true)
   } finally {
     if (old === undefined) delete process.env.FACTORY_CLAUDE
     else process.env.FACTORY_CLAUDE = old
