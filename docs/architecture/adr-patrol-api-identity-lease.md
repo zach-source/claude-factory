@@ -382,6 +382,28 @@ The activation diff remains empty. Only tests call `patrolListener`.
 The owner listener still calls `serveSocket` without the patrol policy.
 Prior patrol mutations remain applicable because no patrol source or test changed.
 
+### AC6 local Nix repeat, 2026-11-10
+
+Source head remains `5789f1f5`. Fetched main remains `741dff82`.
+`git merge origin/main` reports `Already up to date.`
+The existing five successful CI jobs remain on this source head, run `42880804740`.
+
+A fresh `nix build .#factory` exits 1 after 93.52 seconds.
+Dependency downloads complete, but the node-modules build environment fails before its first build phase.
+The error remains `reading a line: Input/output error`.
+`nix log /nix/store/f8c4bvj0rz2g7hh5ipca344is7g2d4py-claude-factory-node-modules-0.16.0.drv` returns an empty build log.
+`nix config show sandbox` returns `false`. No Nix setting changed.
+This result does not fit the dependency-download exception. Task `.6` remains open.
+The manager has a new request about this evidence boundary. No reply has arrived.
+
+The first focused patrol command lacks `xstate` in this fresh worker.
+`bun install --frozen-lockfile` restores the installed dependencies without a tracked change.
+`bun test --timeout 30000 src/patrol-api.test.ts src/patrol-lease.test.ts` then passes all 165 tests.
+It reports zero failures and 4910 assertions.
+The activation diff remains empty. No patrol source or test changed.
+The prior full-gate results remain unchanged evidence, not new local passes.
+This evidence-only commit needs its own CI results before acceptance.
+
 ## Test plan and tasks
 
 Write tests before implementation. Use temporary homes and fake credentials only.
