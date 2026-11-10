@@ -156,6 +156,24 @@ All scans exited 0, with no subprocess signal or timeout error.
 These observations show runtime variance in the unchanged production path.
 They do not identify why the original second backup returned no `changed` value.
 
+### Proof after the first main merge
+
+At `72ba8312`, all nine independent mutations returned factory exit 0 and test exit 1.
+Each mutant failed at its intended assertion, not a timeout or an earlier shared assertion.
+The result mutants used `ReturnType<typeof backup>`. A separate TypeScript check accepted each synthetic result shape.
+The tool restored the test file after each run. The complete focused suite then passed 33 tests and 272 assertions.
+That suite took 203.65 seconds. All five CI jobs passed on the same head.
+
+The local full gate used the CI command with both required-test variables set to `1`.
+Its 2400-second command limit expired with exit 124, 57 failed cases, and no final totals.
+The large backup test passed. The gate used Python 3.12.15 and Go 1.26.10; CI uses Go 1.23.
+This result is a local gate gap, not a pass or a cause for the original backup failure.
+The station report holds the selected-case comparison and the next head's remaining proof work.
+
+Main advanced during this gate. The next merge includes test-isolation fixes outside the backup files.
+Proof on `72ba8312` does not replace the final self-check after that merge.
+The timeout and production code remain unchanged.
+
 ### Rejected alternatives
 
 - A larger timeout can hide an operation failure and lacks a measured basis.
