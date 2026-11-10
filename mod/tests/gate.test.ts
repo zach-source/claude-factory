@@ -74,6 +74,39 @@ test('ksx5 AC1: the actual question escapes controls and preserves the cut mark'
   expect(ran).toBe(0)
 })
 
+test(
+  'ksx5 AC3: compressed spaces retain a hidden second gate and exact source counts',
+  SLOW,
+  async ($, on) => {
+    mock.clock(on)
+    const questions: string[] = []
+    let ran = 0
+    on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
+      const question = e.questions[0]!.question
+      questions.push(question)
+      return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+    })
+    on('tool.call', { tool: 'Bash' }, () => {
+      ran++
+      return { result: { stdout: '', stderr: '', interrupted: false } }
+    })
+    const prefix = `/repo/bin/factory decide${' '.repeat(300)}r1 reject '`
+    const command = `${prefix}${'a'.repeat(300)}' && factory decide r2 ship`
+    const shown = '/repo/bin/factory decide\\x20{300}r1 reject '
+    const sourceEnd = prefix.length + 300 - shown.length - 1
+    const result = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(result.deny).toContain('did not confirm')
+    expect(questions.length).toBe(1)
+    expect(questions[0]).toContain('\\x20{300}')
+    expect(questions[0]).toContain(
+      `… (${command.length - sourceEnd} of ${command.length} characters not shown)`,
+    )
+    expect(questions[0]).toMatch(/The text not shown holds[^.]*decide a factory gate/)
+    expect(questions[0]).not.toContain('factory decide r2 ship')
+    expect(ran).toBe(0)
+  },
+)
+
 test('ksx5 AC4: absent and invalid answers deny without a downstream call', SLOW, async ($, on) => {
   mock.clock(on)
   let answer: string | undefined
