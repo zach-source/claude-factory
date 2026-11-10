@@ -10785,12 +10785,20 @@ async function liveByBead() {
   for (const id of startedRunIds()) {
     const { run, value, c } = current(id)
     if (!run.bead || ['done', 'aborted'].includes(where(value)[0])) continue
-    const r = row(run, await loadPinned(run.factory), value, c)
-    out.set(run.bead, {
-      blocked: !!holdOf(r),
-      why: r.gate?.question ?? r.last?.summary,
-      since: r.last?.at ?? r.since,
-    })
+    try {
+      const r = row(run, await loadPinned(run.factory), value, c)
+      out.set(run.bead, {
+        blocked: !!holdOf(r),
+        why: r.gate?.question ?? r.last?.summary,
+        since: r.last?.at ?? r.since,
+      })
+    } catch (err) {
+      out.set(run.bead, {
+        blocked: true,
+        why: `pinned factory does not load: ${(err as Error).message.replace(/\s+/g, ' ')}`,
+        since: c.startedAt,
+      })
+    }
   }
   return out
 }
@@ -12921,8 +12929,14 @@ async function status(id: string | undefined, print: Print = l => console.log(l)
   if (!runIds().length) print("no runs yet: factory start <factory> <repo> '<goal...>'")
   for (const runId of id ? [id] : startedRunIds()) {
     const { run, value, c } = current(runId)
-    const def = await loadPinned(run.factory)
-    const r = row(run, def, value, c, agentOf(def, value, c), tickError(runId))
+    let r: Row
+    try {
+      const def = await loadPinned(run.factory)
+      r = row(run, def, value, c, agentOf(def, value, c), tickError(runId))
+    } catch (err) {
+      print(`${runId}  error: pinned factory does not load: ${(err as Error).message.replace(/\s+/g, ' ')}`)
+      continue
+    }
     const at = r.sub ? `${r.node}/${r.sub}` : r.node
     print(`${r.id}  ${at}  try ${r.attempt}/${r.attempts}  pane ${r.pane ?? '-'} (${r.agent ?? '-'})`)
     // a bead's goal carries its whole description: bd show <bead> has it
@@ -12960,8 +12974,12 @@ const runRows = () =>
   Promise.all(
     startedRunIds().map(async id => {
       const { run, value, c } = current(id)
-      const def = await loadPinned(run.factory)
-      return row(run, def, value, c, agentOf(def, value, c))
+      try {
+        const def = await loadPinned(run.factory)
+        return row(run, def, value, c, agentOf(def, value, c))
+      } catch (err) {
+        return { id, error: `pinned factory does not load: ${(err as Error).message.replace(/\s+/g, ' ')}` }
+      }
     }),
   )
 

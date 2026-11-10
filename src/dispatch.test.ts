@@ -1791,8 +1791,12 @@ function fixtureReset(beads: Record<string, unknown>[], ready = beads) {
 test('p99sx AC4: repair releases an absent run but keeps a bad def bead live', () => {
   const id = 'ship-p99sxbad'
   const bead = (id: string, run: string) => ({
-    id, title: 't', status: 'in_progress', labels: ['factory'],
-    assignee: `factory/${run}/implement`, lease_expires_at: '2026-01-01T00:00:00Z',
+    id,
+    title: 't',
+    status: 'in_progress',
+    labels: ['factory'],
+    assignee: `factory/${run}/implement`,
+    lease_expires_at: '2026-01-01T00:00:00Z',
   })
   fixtureReset([bead('acme-2', 'lifecycle-gone'), bead('acme-3', id)], [])
   const d = join(phome, 'runs', id)
@@ -1800,14 +1804,25 @@ test('p99sx AC4: repair releases an absent run but keeps a bad def bead live', (
   mkdirSync(d, { recursive: true })
   mkdirSync(wt, { recursive: true })
   const def: Factory = {
-    name: 'ship', start: 'implement',
+    name: 'ship',
+    start: 'implement',
     nodes: { implement: { prompt: 'do it', runner: 'nope', next: { ready: 'done' } } },
   }
   const file = join(d, 'factory.ts')
   writeFileSync(file, `export default ${JSON.stringify(def)}`)
-  writeFileSync(join(d, 'run.json'), JSON.stringify({
-    id, factory: file, repo: join(pdir, 'repo'), goal: 'g', ws: 'w1', worktree: wt, branch: 'b', bead: 'acme-3',
-  }))
+  writeFileSync(
+    join(d, 'run.json'),
+    JSON.stringify({
+      id,
+      factory: file,
+      repo: join(pdir, 'repo'),
+      goal: 'g',
+      ws: 'w1',
+      worktree: wt,
+      branch: 'b',
+      bead: 'acme-3',
+    }),
+  )
   const actor = createActor(compile(def)).start()
   actor.send({ type: 'TICK', at: 0 })
   actor.send({ type: 'SPAWNED', seq: 1, pane: 'w1:p1', at: 1 })
