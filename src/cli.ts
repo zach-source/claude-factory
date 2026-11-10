@@ -1415,7 +1415,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
         status: 'gone',
         agent: 'ax',
         bdSkew: skew,
-        failed: `needs the person: bd version skew on ax (\`${skew}\`). The worker wrote, unverified: ${cleanText(argv![3] ?? '', 40)}: ${clipReport(cleanText(argv!.slice(4).join(' '), Infinity))}`,
+        failed: `needs the person: bd version skew on ax (\`${skew}\`). The worker wrote, unverified: ${cleanText(argv![3] ?? '', 40)}: ${clipReport(cleanText(worker.literalText('report', argv!.slice(1))?.text ?? argv!.slice(4).join(' '), Infinity))}`,
       }
   }
   // a line this laptop already counted as replayed, now missing from the outbox: the worker edited it after

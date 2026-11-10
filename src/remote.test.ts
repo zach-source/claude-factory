@@ -4372,6 +4372,22 @@ describe('a bd schema skew on the VM (claude-factory-lahb)', () => {
     finish('sk3')
   })
 
+  test('yn9ag AC3: a skew hold preserves literal report text', () => {
+    rmSync(markerFile(), { force: true })
+    const seq = launched('sk3literal')
+    const line = skewLine('sk3literal', seq, {
+      bdSkew: SKEW_OUT,
+      argv: ['report', 'sk3literal', String(seq), 'ready', '--', '--summary-file text'],
+    })
+    cluster('Running', { status: 'idle', session: 's1', lines: [line] })
+    factory(['tick'])
+    expect(ctxOfRun('sk3literal').log.at(-1).summary).toBe(
+      `needs the person: bd version skew on ax (\`${SKEW_OUT}\`). The worker wrote, unverified: ready: --summary-file text`,
+    )
+    expect(inbox('sk3literal')).not.toContain('"outcome":"ready"')
+    finish('sk3literal')
+  })
+
   test('a skew hold strips ESC and U+202E from the outcome and the summary', () => {
     rmSync(markerFile(), { force: true })
     const seq = launched('sk3c')
