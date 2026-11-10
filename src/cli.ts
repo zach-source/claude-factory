@@ -790,6 +790,12 @@ export function replayable(
   run: string,
 ): string[] | null {
   const [cmd, id, seq] = argv
+  const literal = worker.literalText(cmd!, argv.slice(1))
+  if (literal === null) return null
+  if (literal !== undefined)
+    return (cmd === 'report' && id === run && seq === String(side.seq)) || (cmd === 'mail' && id === run)
+      ? argv
+      : null
   // a VM expands --summary-file, --text-file and --body-file before it queues; a line that still has it would read a laptop file
   if (cmd === 'report' && id === run && seq === String(side.seq))
     return argv[4] === '--summary-file' ? null : argv
@@ -805,12 +811,15 @@ export function replayable(
 }
 
 /**
- * `report <run> <seq> <outcome> --summary-file <path>` -> [run, seq, outcome, <file text>]; any other args pass
- * unchanged. The flag counts only right after the outcome, with exactly one path and a non-blank file. A bad form
- * throws. A whole word `--summary-file` in a later slot also throws: it would post the flag as text and lose the
- * report. A VM expands it before it queues, so the laptop never reads a path a VM chose (see `replayable`)
+ * Expand `report <run> <seq> <outcome> --summary-file <path>` to [run, seq, outcome, <file text>].
+ * The flag must follow the outcome, with one path and a nonblank file. Other flag positions throw.
+ * A literal boundary skips the file parse. Replay refuses VM file options (see `replayable`).
+ * Other args pass unchanged.
  */
 export function summaryArgs(args: string[]): string[] {
+  const literal = worker.literalText('report', args)
+  if (literal === null) return fail(worker.OUTBOX_USAGE.report)
+  if (literal) return [...args.slice(0, 3), literal.text]
   if (args[3] !== '--summary-file') {
     if (args.slice(3).includes('--summary-file'))
       return fail(
@@ -835,13 +844,16 @@ const MEMORY_ADD_VALUE_FLAGS = ['--rig', '--from', '--kind', '--until', '--super
  * report --summary-file (see summaryArgs);
  * mail <run> <box> [--wake] --text-file <path>, which counts only in that slot (a later whole word throws);
  * memory add --body-file <path>, which replaces the body words.
- * The path goes through textFileArg. Other args pass unchanged. A bad form throws.
+ * Report files use summaryArgs. Mail and memory files use textFileArg. Other args pass unchanged. A bad form throws.
  * A VM expands before it queues, so the laptop never reads a path that a VM chose.
  * ponytail: a body file whose text starts with "--" fails the unknown-flag check of memory add. Upgrade: skip that check for the body-file value.
  */
 export function fileArgs(cmd: string, args: string[]): string[] {
   if (cmd === 'report') return summaryArgs(args)
   if (cmd === 'mail') {
+    const literal = worker.literalText(cmd, args)
+    if (literal === null) return fail(worker.OUTBOX_USAGE.mail)
+    if (literal) return args
     const at = args[2] === '--wake' ? 3 : 2
     if (args[at] !== '--text-file') {
       if (args.slice(at).includes('--text-file'))
@@ -850,7 +862,7 @@ export function fileArgs(cmd: string, args: string[]): string[] {
     }
     if (!args[at + 1] || args.length !== at + 2)
       return fail('usage: factory mail <run> <box> [--wake] --text-file <path> (one path, nothing after it)')
-    return [...args.slice(0, at), textFileArg('--text-file', args[at + 1]!)]
+    return [...args.slice(0, at), textFileArg('--text-file', args[at + 1]!, true)]
   }
   if (cmd !== 'memory' || args[0] !== 'add' || !args.includes('--body-file')) return args
   const i = args.indexOf('--body-file')
@@ -868,6 +880,15 @@ export function fileArgs(cmd: string, args: string[]): string[] {
     )
   if (words.length > 1) return fail('--body-file replaces the body words: give the summary and the file only')
   return [...rest, textFileArg('--body-file', path)]
+}
+
+/** Parse options before file text, then queue one literal value after the boundary. */
+function queuedTextArgs(cmd: string, args: string[]): string[] {
+  if (cmd !== 'report' && cmd !== 'mail') return fileArgs(cmd, args)
+  if (worker.outboxUsage(cmd, args) || worker.literalText(cmd, args)) return args
+  const expanded = fileArgs(cmd, args)
+  const at = cmd === 'report' ? 3 : args[2] === '--wake' ? 3 : 2
+  return [...expanded.slice(0, at), '--', expanded.slice(at).join(' ')]
 }
 
 /** the stat/size/read core of --summary-file and the text-file flags; a bad file fails with the flag and path named */
@@ -898,11 +919,12 @@ function readTextFile(flag: string, path: string): string {
 /**
  * claude-factory-2z48: untrusted text (a bead, a Linear issue) reaches a verb by file, never in a shell argument.
  * The file must sit inside <FACTORY_HOME>/text/, or inside the real .scratch/ folder (not a symlink) of the git toplevel, and only when the cwd
- * is inside that toplevel, so injected text cannot steer a flag to a secret such as a token file. Returns the text without trailing whitespace.
+ * is inside that toplevel, so injected text cannot steer a flag to a secret such as a token file.
+ * With exact=true, return all text. Other calls remove trailing whitespace.
  * ponytail: the verb does not delete the file, so text/ grows by one small file per filing. Upgrade: unlink after
  * success, or a gc pass.
  */
-function textFileArg(flag: string, path: string): string {
+function textFileArg(flag: string, path: string, exact = false): string {
   const dir = join(HOME, 'text')
   mkdirSync(dir, { recursive: true })
   let real: string
@@ -926,7 +948,8 @@ function textFileArg(flag: string, path: string): string {
     return fail(
       `${flag} ${path} is outside ${dir} and the .scratch/ of the git worktree: write the text there first`,
     )
-  return readTextFile(flag, real).trimEnd()
+  const text = readTextFile(flag, real)
+  return exact ? text : text.trimEnd()
 }
 
 /** claude-factory-p1j6: fail on a Unicode Cc character (C0, DEL, C1) in untrusted text. A multiline field (a description) may keep newline and tab. The error names the code point, never the raw character. */
@@ -13458,7 +13481,7 @@ const outboxCmd =
 let queuedArgs = args
 if (outboxCmd)
   try {
-    queuedArgs = fileArgs(cmd!, args)
+    queuedArgs = queuedTextArgs(cmd!, args)
   } catch (e) {
     console.error((e as Error).message)
     process.exit(cmd === 'memory' ? 2 : 1)
@@ -14695,14 +14718,10 @@ if (import.meta.main && !outboxCmd)
       case 'mail': {
         // --wake comes right after the box; in a later word it stays text
         const [id, to, ...rest] = fileArgs('mail', args)
-        const wake = rest[0] === '--wake'
-        const text = wake ? rest.slice(1) : rest
-        emit(
-          await runsOp.mail(
-            cliCtx(),
-            defined({ id, to, text: text.join(' '), wake: wake || undefined, cwd: here() }),
-          ),
-        )
+        const literal = worker.literalText('mail', args)
+        const wake = literal ? literal.wake === true : args[2] === '--wake'
+        const text = literal ? literal.text : (wake ? rest.slice(1) : rest).join(' ')
+        emit(await runsOp.mail(cliCtx(), defined({ id, to, text, wake: wake || undefined, cwd: here() })))
         break
       }
       case 'poke': {
