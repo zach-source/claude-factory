@@ -267,6 +267,9 @@ test('lntv AC2 handler pins every credential path before commands', async () => 
       rulesOf(a, b),
       rulesOf(inVault(generic, 'acme-vault'), g),
     ]) {
+      expect(workerPolicyRefusal(body, 'acme-vault') === null).toBe(vault === 'acme-vault')
+      expect(workerPolicyRefusal(body)).toBeNull()
+      expect(workerPolicyRefusal(body, '')).toBeNull()
       await check(body, 'acme-vault', vault === 'acme-vault' ? 200 : 400)
       await check(body, undefined, 200)
       await check(body, '', 200)
@@ -276,7 +279,9 @@ test('lntv AC2 handler pins every credential path before commands', async () => 
     for (const rule of [generic, reviewerRule(), gitRule()]) {
       const malformed = JSON.parse(JSON.stringify(inVault(rule, 'acme-vault')))
       malformed.effects.replaceHeaders[0].credentialUri += suffix
-      await check(rulesOf(api, malformed), 'acme-vault', 400)
+      const body = rule.hostnames[0] === 'github.com' ? rulesOf(api, malformed) : rulesOf(malformed)
+      expect(workerPolicyRefusal(body, 'acme-vault')).not.toBeNull()
+      await check(body, 'acme-vault', 400)
     }
   for (const vault of ['acme%2Dvault', 'ACME', 'é'])
     await check(rulesOf(inVault(generic, vault)), 'acme-vault', 400)
@@ -290,6 +295,12 @@ test('lntv AC2 handler pins every credential path before commands', async () => 
   for (const vault of ['acme-vault', 'other-vault', '', undefined])
     await check(rulesOf({ hostnames: ['example.com'] }), vault, 200)
   await check(rulesOf(inVault(generic, 'other-vault')), 'other-vault', 200)
+  const first = setup(undefined, { FACTORY_AX_VAULT: 'acme-vault' })
+  const second = setup(undefined, { FACTORY_AX_VAULT: 'other-vault' })
+  const body = JSON.stringify(rulesOf(inVault(generic, 'acme-vault')))
+  expect((await handle(req('PUT', '/policy/factory/f-r1-1', body), first.c)).status).toBe(200)
+  expect((await handle(req('PUT', '/policy/factory/f-r1-1', body), second.c)).status).toBe(400)
+  expect(second.calls).toEqual([])
 })
 const withHeader = (h: Record<string, unknown>, host = 'a.example.com') => ({
   rules: [{ https: { hostnames: [host], effects: { replaceHeaders: [h] } } }],
