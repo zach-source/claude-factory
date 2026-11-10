@@ -3186,6 +3186,7 @@ test("inside a VM, a report carries the session's usage, subagents included (hr9
     FACTORY_FROM: 'a',
     FACTORY_RUN: '',
     FACTORY_WORKER_DIR: own,
+    FACTORY_HARNESS: 'claude',
     CLAUDE_CONFIG_DIR: claudeHome,
   }
   expect(factory(['report', 'r1', '1', 'ready', 'done'], env).code).toBe(0)

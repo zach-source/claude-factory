@@ -128,7 +128,7 @@ The person can still run a factory on the laptop, with the manager as a Claude C
 
 **Why this priority**: Some repos need laptop workers (herdr panes), and a local factory needs no cluster resources.
 
-**Independent Test**: With `FACTORY_SERVER` not set, start `bin/up` on a local home. One herdr rig and one AX rig each finish a run.
+**Independent Test**: With `FACTORY_SERVER` not set, start `bin/factory up` on a local home. One herdr rig and one AX rig each finish a run.
 
 **Acceptance Scenarios**:
 
