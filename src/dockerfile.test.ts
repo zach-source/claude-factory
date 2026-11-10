@@ -37,6 +37,18 @@ test('each plugin dir of VM_PLUGINS has a COPY line in the worker stage, and EGM
 const serverFile = () => readFileSync(join(ROOT, 'Dockerfile.server'), 'utf8')
 const serverStage = () => serverFile().slice(serverFile().lastIndexOf('\nFROM oven/bun:'))
 
+test('4px5z AC2: every full CLI package includes its parity data', () => {
+  const docker = readFileSync(join(ROOT, 'Dockerfile.worker'), 'utf8')
+  const worker = docker.slice(docker.indexOf(' AS worker'), docker.indexOf(' AS manager'))
+  for (const stage of [worker, serverStage()])
+    expect(stage).toMatch(/^COPY package.json bun.lock tsconfig.json parity-gaps.json \.\/$/m)
+  expect(docker).toMatch(/^FROM worker AS manager$/m)
+  const nix = readFileSync(join(ROOT, 'flake.nix'), 'utf8')
+  expect(nix.slice(nix.indexOf('runtime = ['), nix.indexOf('];', nix.indexOf('runtime = [')))).toContain(
+    '"parity-gaps.json"',
+  )
+})
+
 test('the images and workflows pin Bun with the gVisor timeout fix', () => {
   for (const name of ['ci', 'release', 'release-tag']) {
     const workflow = readFileSync(join(ROOT, `.github/workflows/${name}.yml`), 'utf8')
