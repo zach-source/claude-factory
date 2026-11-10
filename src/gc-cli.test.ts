@@ -773,3 +773,180 @@ test('lt4u.7 AC1: the archived record keeps the node and the journal entry', () 
   expect(rec.node).toBe('done')
   expect(rec.log.at(-1)).toMatchObject({ outcome: 'ready', summary: 's', at })
 })
+
+// ---- claude-factory-lt4u.7 rework 3: submodules, orphans, usage, live recheck, dry-run contents
+const SUBPROTO = ['-c', 'protocol.file.allow=always']
+/** adds a pushed submodule `sub` to the shared repo; call it before writeRun so run branches carry it */
+function addSubmodule() {
+  const repo = join(dir, 'repo')
+  mkdirSync(repo, { recursive: true })
+  git(repo, 'init', '-q', '-b', 'main')
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'root')
+  const origin = join(dir, 'sub-origin.git')
+  const src = join(dir, 'sub-src')
+  git(dir, 'init', '-q', '--bare', '-b', 'main', origin)
+  git(dir, 'clone', '-q', origin, src)
+  git(src, 'commit', '-q', '--allow-empty', '-m', 'sub init')
+  git(src, 'push', '-q', 'origin', 'HEAD:main')
+  git(repo, ...SUBPROTO, 'submodule', 'add', '-q', origin, 'sub')
+  git(repo, 'commit', '-q', '-m', 'add sub')
+}
+/** a done run with an initialised submodule; change runs on its worktree and the repo */
+function subRun(change: (wt: string, repo: string, id: string) => void = () => {}) {
+  reset()
+  addSubmodule()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'done', finishedAt: OLD(), real: true })
+  const wt = join(home, 'worktrees', id)
+  git(wt, ...SUBPROTO, 'submodule', 'update', '--init', '-q')
+  change(wt, join(dir, 'repo'), id)
+  return { id, d, wt }
+}
+const subKept = (name: string, change: (wt: string, repo: string, id: string) => void, kept?: string) =>
+  test(`lt4u.7 AC4: plain gc keeps a worktree whose submodule ${name}`, () => {
+    const { id, d, wt } = subRun(change)
+    const t = tip(id)
+    expect(factory(['gc']).code).toBe(0)
+    expect(existsSync(d)).toBe(true)
+    expect(existsSync(wt)).toBe(true)
+    if (kept) expect(readFileSync(join(wt, kept), 'utf8')).toBe('u')
+    expect(tip(id)).toBe(t)
+    expect(metricIds()).not.toContain(id)
+    expect(readFileSync(join(home, 'gc.log'), 'utf8')).toContain(`refused ${id}`)
+  })
+subKept('has an untracked file', wt => writeFileSync(join(wt, 'sub', 'u.txt'), 'u'), 'sub/u.txt')
+subKept('has a commit on no remote', wt =>
+  git(join(wt, 'sub'), 'commit', '-q', '--allow-empty', '-m', 'local'),
+)
+subKept('status read fails', (wt, repo, id) => {
+  git(repo, 'config', 'submodule.sub.ignore', 'all')
+  writeFileSync(join(repo, '.git', 'worktrees', id, 'modules', 'sub', 'index'), 'garbage')
+})
+
+test('lt4u.7 AC4: plain gc reaps a worktree with a clean pushed submodule and keeps the branch', () => {
+  const { id, d, wt } = subRun()
+  const t = tip(id)
+  expect(factory(['gc']).code).toBe(0)
+  expect(existsSync(d)).toBe(false)
+  expect(existsSync(wt)).toBe(false)
+  expect(tip(id)).toBe(t)
+  expect(metricIds()).toContain(id)
+})
+
+test('lt4u.7 AC4: an unregistered dir with a live git dir is kept; one with a dead git dir link is reaped', () => {
+  reset()
+  const live = freshId('aaa')
+  const dead = freshId('zzz')
+  const dl = writeRun(live, { outcome: 'done', finishedAt: OLD(), real: true })
+  const dd = writeRun(dead, { outcome: 'done', finishedAt: OLD(), real: true })
+  const repo = join(dir, 'repo')
+  for (const id of [live, dead]) git(repo, 'worktree', 'remove', '--force', join(home, 'worktrees', id))
+  // the dirs come back as git no longer lists them
+  const wl = join(home, 'worktrees', live)
+  mkdirSync(join(wl, '.git'), { recursive: true }) // a git dir that still exists
+  writeFileSync(join(wl, 'mine.txt'), 'keep me')
+  const wd = join(home, 'worktrees', dead)
+  mkdirSync(wd, { recursive: true })
+  writeFileSync(join(wd, '.git'), `gitdir: ${join(repo, '.git', 'worktrees', dead)}\n`)
+  writeFileSync(join(wd, 'junk.txt'), 'x')
+  expect(factory(['gc']).code).toBe(0)
+  expect(existsSync(dl)).toBe(true)
+  expect(readFileSync(join(wl, 'mine.txt'), 'utf8')).toBe('keep me')
+  expect(existsSync(dd)).toBe(false)
+  expect(existsSync(wd)).toBe(false)
+  expect(metricIds()).toEqual([dead])
+  expect(readFileSync(join(home, 'gc.log'), 'utf8')).toContain(`refused ${live}`)
+})
+
+test('lt4u.7 AC1: the archived record holds the stored usage and the whole journal; no branch is deleted', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'done', finishedAt: OLD(), real: true })
+  const row = { node: 'implement', seq: 1, session: 's1', model: 'm1', input: 11, output: 22 }
+  writeFileSync(join(d, 'usage.jsonl'), JSON.stringify(row) + '\n')
+  const log = JSON.parse(readFileSync(join(d, 'state.json'), 'utf8')).snapshot.context.log
+  const branches = git(join(dir, 'repo'), 'for-each-ref', 'refs/heads')
+  expect(factory(['gc']).code).toBe(0)
+  const rec = JSON.parse(readFileSync(join(home, 'metrics.jsonl'), 'utf8').trim())
+  expect(rec.sessions).toEqual([row])
+  expect(rec.log).toEqual(log)
+  expect(git(join(dir, 'repo'), 'for-each-ref', 'refs/heads')).toBe(branches)
+})
+
+test('lt4u.7 AC2: a run that turns live after the plan is kept by the recheck; the run before it is reaped', () => {
+  reset()
+  const a = freshId('aaa')
+  const b = freshId('zzz')
+  const da = writeRun(a, { outcome: 'done', finishedAt: OLD(), real: true })
+  const db = writeRun(b, { outcome: 'done', finishedAt: OLD(), real: true })
+  const live = writeRun(freshId('tmp'), { outcome: 'working' })
+  const liveCopy = join(dir, 'live-state.json')
+  writeFileSync(liveCopy, readFileSync(join(live, 'state.json'), 'utf8'))
+  // a fake herdr: the first call is gc's plan read. The second is removeRun(a), which turns b live.
+  const bin = join(dir, 'herdr.sh')
+  const calls = join(dir, 'calls')
+  writeFileSync(
+    bin,
+    `#!/bin/sh
+echo x >> '${calls}'
+if [ "$(wc -l < '${calls}')" -ge 2 ]; then cp '${liveCopy}' '${join(db, 'state.json')}'; fi
+echo '{"result":{"panes":[]}}'
+`,
+    { mode: 0o755 },
+  )
+  const wtb = join(home, 'worktrees', b)
+  const tb = tip(b)
+  const out = factory(['gc'], { FACTORY_HERDR: bin })
+  expect(out.code).toBe(0)
+  expect(existsSync(da)).toBe(false)
+  expect(existsSync(db)).toBe(true)
+  expect(existsSync(wtb)).toBe(true)
+  expect(tip(b)).toBe(tb)
+  expect(metricIds()).toEqual([a])
+  expect(readFileSync(join(home, 'gc.log'), 'utf8')).toContain(`refused ${b}`)
+})
+
+test('lt4u.7 AC3: --dry-run leaves nested run files, worktree contents, metrics and gc.log byte for byte', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'done', finishedAt: OLD(), real: true })
+  const wt = join(home, 'worktrees', id)
+  mkdirSync(join(d, 'deep', 'er'), { recursive: true })
+  writeFileSync(join(d, 'deep', 'er', 'f'), 'nested')
+  writeFileSync(join(wt, 'mine.txt'), 'keep me')
+  writeFileSync(join(home, 'metrics.jsonl'), '{"id":"old"}\n')
+  writeFileSync(join(home, 'gc.log'), 'old line\n')
+  const snap = () =>
+    [d, wt, join(home, 'metrics.jsonl'), join(home, 'gc.log')].flatMap(root =>
+      statSync(root).isFile()
+        ? [`${root}:${readFileSync(root, 'utf8')}`]
+        : (readdirSync(root, { recursive: true }) as string[])
+            .sort()
+            .map(
+              p =>
+                `${join(root, p)}:${statSync(join(root, p)).isFile() ? readFileSync(join(root, p), 'utf8') : 'dir'}`,
+            ),
+    )
+  const before = snap()
+  const t = tip(id)
+  const out = factory(['gc', '--dry-run'])
+  expect(out.out).toContain(`would reap ${id}`)
+  expect(snap()).toEqual(before)
+  expect(tip(id)).toBe(t)
+})
+
+test('lt4u.7 AC5: one failing metrics record keeps its run; the next run is reaped', () => {
+  reset()
+  const a = freshId('aaa')
+  const b = freshId('zzz')
+  const da = writeRun(a, { outcome: 'done', finishedAt: OLD(), real: true })
+  const db = writeRun(b, { outcome: 'done', finishedAt: OLD(), real: true })
+  mkdirSync(join(da, 'usage.jsonl')) // record(a) cannot read its usage: only a fails
+  expect(factory(['gc']).code).toBe(0)
+  expect(existsSync(da)).toBe(true)
+  expect(existsSync(db)).toBe(false)
+  expect(metricIds()).toEqual([b])
+  const log = readFileSync(join(home, 'gc.log'), 'utf8')
+  expect(log).toContain(`refused ${a}`)
+  expect(log).toContain(`reaped ${b}`)
+})
