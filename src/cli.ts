@@ -622,7 +622,14 @@ async function readOnlyBoard(holder: leases.Lease) {
       runs.push({ id, error: (err as Error).message })
     }
   }
-  return { readOnly: leases.leaseLine(holder, Date.now()), lease: holder, runs, manager: [], rigs: rigs() }
+  return {
+    readOnly: leases.leaseLine(holder, Date.now()),
+    lease: holder,
+    runs,
+    manager: [],
+    managerLimited: managerLimited() ?? null,
+    rigs: rigs(),
+  }
 }
 const fail = (msg: string): never => {
   throw new Error(msg)
@@ -3130,6 +3137,26 @@ export function clearLimit(at: number) {
   writeJson(LIMITS, s)
 }
 
+/** <home>/manager-limit.json: the manager's Claude is refused and no account is free (claude-factory-y3f8w.3) */
+const managerLimitFile = (home = HOME) => join(home, 'manager-limit.json')
+const MANAGER_LIMIT_UNKNOWN_MS = 30 * 60_000 // a limit with no known reset counts for this long
+export function recordManagerLimit(hit: { at: number; kind: string; resetsAt: number }, home = HOME) {
+  writeJson(managerLimitFile(home), hit)
+}
+export function clearManagerLimit(home = HOME) {
+  rmSync(managerLimitFile(home), { force: true })
+}
+/** the manager's limit while it holds: its kind and when it lifts (ms), else null */
+export function managerLimited(now = Date.now(), home = HOME) {
+  try {
+    const h = readJson<{ at: number; kind: string; resetsAt: number }>(managerLimitFile(home))
+    const until = h.resetsAt > 0 ? h.resetsAt : h.at + MANAGER_LIMIT_UNKNOWN_MS
+    return until > now && until <= now + LIMIT_RESET_MAX_MS ? { kind: h.kind, until } : null
+  } catch {
+    return null
+  }
+}
+
 function swapAccount(hit: { at: number; resetsAt: number }, now: number): number {
   const file = LIMITS
   const s: Limits = existsSync(file) ? readJson<Limits>(file) : { at: 0, limits: {} }
@@ -4150,10 +4177,16 @@ async function superviseManager(args: string[]) {
     const watch = setInterval(() => {
       const tail = tailOf(process.cwd(), session)
       const hit = limitHit(tail)
-      if (!hit) clearLimit(servedAt(tail))
-      if (hit && hit.at > startedAt && swapAccount(hit, Date.now()) === 0) {
-        isSwapped = true
-        child.kill()
+      if (!hit) {
+        clearLimit(servedAt(tail))
+        if (servedAt(tail)) clearManagerLimit()
+      }
+      if (hit && hit.at > startedAt) {
+        const wait = swapAccount(hit, Date.now())
+        if (wait === 0) {
+          isSwapped = true
+          child.kill()
+        } else recordManagerLimit({ ...hit, resetsAt: wait || hit.resetsAt })
       }
     }, 60_000)
     const code = await child.exited
@@ -7990,6 +8023,8 @@ async function tick(isPatrol = false) {
     const out = {
       runs: [] as Row[],
       manager: [] as (Mail & { run: string })[],
+      // set while the manager's Claude is refused and every account is drained (claude-factory-y3f8w.3)
+      managerLimited: managerLimited() ?? null,
       // the manager's patrol works toward their goals; each opted-in rig carries its last Linear pull
       rigs: rigs().map(r => (linearState[r.name] ? { ...r, linearSync: linearState[r.name] } : r)),
       // each pending skill and proposal with no verdict yet, for the mod's reviewer (claude-factory-ag2)
