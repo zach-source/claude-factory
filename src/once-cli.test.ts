@@ -34,7 +34,7 @@ beforeEach(() => {
 })
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
-const factory = (args: string[], stdin = '') => {
+const factory = (args: string[], stdin = '', extra: Record<string, string> = {}) => {
   const {
     FACTORY_OUTBOX,
     FACTORY_FROM,
@@ -51,6 +51,7 @@ const factory = (args: string[], stdin = '') => {
       FACTORY_CLAUDE: join(dir, 'stub.sh'),
       FACTORY_SELF_UPDATE: '0',
       FACTORY_NO_KICK: '1',
+      ...extra,
     },
     stdin: Buffer.from(stdin),
     timeout: 60_000,
@@ -223,10 +224,41 @@ test('tick --keep-mail saves the tick output', () => {
   expect(read('patrol-state.json').unsent).toEqual([])
 })
 
-test('patrol --once refuses codex', () => {
-  const r = factory(['patrol', '--once', '--codex', 'gpt-5'])
-  expect(r.code).toBe(1)
-  expect(r.err).toContain('codex has no PreToolUse hook')
+test('patrol --once --fallback runs the patrol on codex with FACTORY_PATROL and a bd shim', () => {
+  write('manager-tick.json', { runs: [], manager: [], rigs: [] })
+  write('patrol-state.json', { unsent: [MAIL], seen: [], patrolAt: 0 })
+  const codex = join(dir, 'codex.sh')
+  writeFileSync(
+    codex,
+    `#!/bin/sh\ncat > '${dir}/stdin.txt'\nprintf '%s\\n' "$@" > '${dir}/args.txt'\nenv > '${dir}/env.txt'\necho answered r1\n`,
+  )
+  chmodSync(codex, 0o755)
+  const r = factory(['patrol', '--once', '--fallback'], '', {
+    FACTORY_CODEX: codex,
+    OPENAI_API_KEY: 'sk-live-x',
+  })
+  expect(r.err).toBe('')
+  expect(r.out).toContain('answered r1')
+  const args = readFileSync(join(dir, 'args.txt'), 'utf8')
+  expect(args).toContain('workspace-write')
+  expect(args).not.toContain('patrol-guard')
+  const env = readFileSync(join(dir, 'env.txt'), 'utf8')
+  expect(env).toContain('FACTORY_PATROL=1')
+  expect(env).toContain(`PATH=${join(home, 'patrol-bin')}:`)
+  expect(env).not.toContain('sk-live-x')
+  expect(readFileSync(join(home, 'patrol-bin', 'bd'), 'utf8')).toContain('patrol-bd')
+  expect(read('patrol-state.json').unsent).toEqual([])
+})
+
+test('patrol-bd refuses a write and the shim runs a read', () => {
+  const bad = factory(['patrol-bd', 'update', 'x-1', '--set-metadata', 'a=b'])
+  expect(bad.code).toBe(1)
+  expect(bad.err).toContain('subagent')
+  const fake = join(dir, 'fakebd.sh')
+  writeFileSync(fake, `#!/bin/sh\necho real-bd "$@"\n`)
+  chmodSync(fake, 0o755)
+  const ok = factory(['patrol-bd', 'show', 'x-1'], '', { FACTORY_REAL_BD: fake })
+  expect(ok.out).toContain('real-bd show x-1')
 })
 
 test('patrol-guard denies the subagent verbs and allows reads', () => {

@@ -2,7 +2,15 @@
 // The Claude Code mod runs the same steps as hidden subagents.
 // A mod with no subagent API calls these commands instead.
 // Each step builds its input, makes one model call (runModel) and files the answer.
-import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from 'node:fs'
 import { join } from 'node:path'
 import {
   BRIEFER_LOG_CAP,
@@ -100,7 +108,7 @@ export type ModelCall = {
   settings?: object
   settingSources?: 'user'
   env?: Record<string, string>
-  /** a codex model name: run codex in its read-only sandbox, not Claude */
+  /** a codex model name: run codex, not Claude. With tools set (the patrol) its sandbox is workspace-write, else read-only */
   codex?: string
   /** the longest the call runs */
   timeoutMs: number
@@ -253,10 +261,20 @@ const ALLOWED_ENV = ['PATH', 'HOME', 'TERM', 'LANG']
 type Spawn = { argv: string[]; env: Record<string, string | undefined>; stdin: string }
 
 function modelSpawn(c: ModelCall): Spawn {
+  // a codex step with tools (the patrol) writes in its workspace and the factory home; the others read only
+  const writes = !!(c.codex && c.tools)
   const argv = c.codex
     ? [
         process.env.FACTORY_CODEX ?? 'codex',
-        ...['exec', '-s', 'read-only', '-c', 'approval_policy="never"', '-m', c.codex, '-'],
+        ...['exec', '-s', writes ? 'workspace-write' : 'read-only', '-c', 'approval_policy="never"'],
+        ...(writes
+          ? [
+              '-c',
+              'sandbox_workspace_write.network_access=true',
+              ...(c.env?.FACTORY_HOME ? ['--add-dir', c.env.FACTORY_HOME] : []),
+            ]
+          : []),
+        ...['-m', c.codex, '-'],
       ]
     : [
         ...claudeCommand().split(/\s+/),
@@ -274,9 +292,12 @@ function modelSpawn(c: ModelCall): Spawn {
   const stdin = c.codex ? `${c.system}\n\n${c.input}` : c.input
   // codex can run printenv in its sandbox, so it gets an allowlist, not the whole env
   const env = c.codex
-    ? Object.fromEntries(
-        ALLOWED_ENV.flatMap(k => (process.env[k] === undefined ? [] : [[k, process.env[k]!]])),
-      )
+    ? {
+        ...Object.fromEntries(
+          ALLOWED_ENV.flatMap(k => (process.env[k] === undefined ? [] : [[k, process.env[k]!]])),
+        ),
+        ...(writes ? c.env : {}),
+      }
     : { ...(c.baseEnv ?? process.env), ...c.env }
   return { argv, env, stdin }
 }
@@ -376,8 +397,39 @@ export async function runModelAsync(c: ModelCall): Promise<ModelResult> {
 
 const mailId = (m: FactoryMail) => `${m.run}\0${m.from}\0${m.at}\0${m.text}`
 
+/** names a codex patrol keeps from the factory env: the bd and AX settings. A credential passes only as the literal placeholder. */
+const PATROL_KEEP =
+  /^(FACTORY_IN_AX|FACTORY_AX_[A-Z_]+|AX_[A-Z_]+|BEADS_[A-Z_]+|BD_[A-Z_]+|CODEX_HOME|SSL_CERT_FILE|NODE_EXTRA_CA_CERTS|HTTPS?_PROXY|NO_PROXY)$/
+const PATROL_SECRET = /TOKEN|SECRET|PASSWORD|KEY|CREDENTIAL/i
+
+/** The env of a codex patrol, and its bd shim: `bd` first on PATH runs `factory patrol-bd`, which refuses a write (patrolBdRefusal). */
+export function codexPatrolEnv(io: Io, env: Record<string, string | undefined> = process.env) {
+  const dir = join(io.home, 'patrol-bin')
+  mkdirSync(dir, { recursive: true })
+  const shim = join(dir, 'bd')
+  writeFileSync(shim, `#!/bin/sh\nexec '${io.cli}' patrol-bd "$@"\n`)
+  chmodSync(shim, 0o755)
+  const kept = Object.entries(env).filter(
+    (e): e is [string, string] =>
+      PATROL_KEEP.test(e[0]) && e[1] !== undefined && (!PATROL_SECRET.test(e[0]) || e[1] === 'placeholder'),
+  )
+  const real = Bun.which('bd', { PATH: env.PATH ?? '' })
+  return {
+    ...Object.fromEntries(kept),
+    FACTORY_HOME: io.home,
+    PATH: `${dir}:${env.PATH ?? ''}`,
+    ...(real && { FACTORY_REAL_BD: real }),
+    ...(env.FACTORY_IN_AX === '1' &&
+      env.FACTORY_AX_VAULT && { OPENAI_API_KEY: 'placeholder', CODEX_API_KEY: 'placeholder' }),
+  } as Record<string, string>
+}
+
 /** `factory patrol --once`. Gives the report text, or `nothing due`. */
-export async function patrolOnce(io: Io, deps: { specs?: Record<StepKey, StepSpec> } = {}): Promise<string> {
+export async function patrolOnce(
+  io: Io,
+  deps: { specs?: Record<StepKey, StepSpec> } = {},
+  codex?: string,
+): Promise<string> {
   const tick = readTick(io.home)
   const state = readState(io.home)
   const now = Date.now()
@@ -409,8 +461,11 @@ export async function patrolOnce(io: Io, deps: { specs?: Record<StepKey, StepSpe
     {
       system: stepPrompt('patrol', { cli: io.cli, factories: io.factories }),
       input: due.text,
-      settings: { ...io.settings, hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } },
-      env: { FACTORY_HOME: io.home },
+      // codex has no hook: the core refuses a factory verb (FACTORY_PATROL) and a bd shim refuses a bd write
+      ...(codex
+        ? { codex, env: codexPatrolEnv(io) }
+        : { settings: { ...io.settings, hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } } }),
+      ...(codex ? {} : { env: { FACTORY_HOME: io.home } }),
     },
     runModelAsync,
     deps,

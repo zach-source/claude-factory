@@ -122,6 +122,8 @@ minor release may change the factory format, the CLI or the run state.
 - Added: `factory rig history` lists the newest 20 snapshots of `rigs.json`. `factory rig undo [n]` restores snapshot n (default 1, the newest) through the rig edit lock. The undo makes its own snapshot, so a second `rig undo` reverses it (claude-factory-wy9u.6). A worker cannot run either verb.
 - Fix: `env -i` before `bun src/cli.ts` no longer clears FACTORY_FROM and FACTORY_RUN without a hook denial (claude-factory-qn8a.27). The worker hook now reads a JS runtime word (bun, node, npx and others) as a start of the factory CLI.
 
+- Fix: an ended ship run with a queued GOTO to work counts as live before the next tick. It blocks a second ship run from fork, goto or ship dispatch (claude-factory-eyxt).
+
 ## 0.16.0 (2026-11-03)
 
 - New: the console has a Runners tab (key 7; claude-factory-oulo). It has one section for each runner (`herdr`, `ax`). Each section lists the runner's rigs, with the sandbox class and `(off)` for `maxRuns` 0, and its live runs with rig, station, model and pane. `factory tick` and `factory show` rows have a new `model` field: the model of the station's worker.

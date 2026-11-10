@@ -2418,3 +2418,46 @@ test(
     ])
   },
 )
+
+test(
+  'a due patrol runs on Codex through the core while the manager is limited (claude-factory-y3f8w.5)',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const spawns: unknown[] = []
+    const calls: string[][] = []
+    let queued: readonly unknown[] = [mail(1)]
+    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+    on('fs.read', ($, e) => {
+      const stub = stepStub((e as { path: string }).path)
+      if (stub === undefined) throw new Error('ENOENT')
+      return { value: stub } as never
+    })
+    for (const event of ['ui.open', 'ui.toast', 'ui.status'] as const)
+      on(event, () => ({ value: undefined }) as never)
+    on('process.run', ($, e) => {
+      calls.push(e.argv as string[])
+      if (e.argv.includes('tick')) {
+        const out = JSON.stringify({
+          manager: queued,
+          rigs: [],
+          runs: [RUN],
+          managerLimited: { kind: 'seven_day', until: 9e15 },
+        })
+        queued = []
+        return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
+      }
+      return { value: { exitCode: 0, stdout: 'answered r1', stderr: '' } as never }
+    })
+    on('agent.spawn', ($, e) => (spawns.push(e), { model: 'sonnet' } as never))
+    on('turn.complete', ($, e) => ({ text: e.answer }) as never)
+    agentListMock(on, [])
+
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    expect(spawns).toHaveLength(0)
+    expect(calls.some(a => a.includes('patrol') && a.includes('--once') && a.includes('--fallback'))).toBe(
+      true,
+    )
+  },
+)

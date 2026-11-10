@@ -20,6 +20,14 @@ Facts come from a survey of these sources:
 | `leanprover/comparator` | Its own `LICENSE` file. | Apache-2.0 |
 | `landrun` | GitHub license field. | MIT |
 
+License facts that the owner checked on 2026-11-10:
+
+- The README of google-deepmind/code-verification says that all code is Apache 2.0 (Copyright 2026 Google LLC).
+- Only the `third_party/libsignal` files are AGPL-3.0. Phase 1 does not need them.
+- The hashbrown, Rust standard library and musl parts are MIT.
+
+Result: phase 1 can reuse `arm64-semantics/` and `comparator` under Apache 2.0. Apache 2.0 section 4 requires that the rig keeps the license text and any `NOTICE` text with the dependency. On 2026-11-10, the repo root and `arm64-semantics/` have no `NOTICE` file. If a later pinned commit adds one, the rig must keep it in `LICENSE-upstream`.
+
 Neither repo has a release (0 releases on 2026-11-10). So the rig pins a commit. The upstream `comparator/run.sh` runs `comparator` on two configs and fails unless both print `Your solution is okay!`. Its `install-tools.sh` builds `comparator` and `lean4export` at their `v4.34.0` tags, and `landrun` at a pinned commit. The factory copies this behavior, not the files.
 
 **Alternatives**: Copy the upstream files into this repo. That adds about 7,600 lines of trusted Lean to a public repo that does not run Lean. It also makes the upstream fixes hard to take.
@@ -32,7 +40,7 @@ Neither repo has a release (0 releases on 2026-11-10). So the rig pins a commit.
 
 - `comparator` uses `landrun`, and `landrun` uses Landlock. Landlock is Linux only. The laptop runs macOS.
 - The upstream core build needs about 6 GB and about 15 minutes. A full upstream build needs about 25 GiB. The manager process must not run a build of that size.
-- `substrate` is public and its CI uses `ubuntu-latest` (4 vCPU, 16 GB for a public repo). The core build fits.
+- `substrate` is public and its CI uses `ubuntu-latest` (4 vCPU, 16 GB for a public repo). The main private Go rig uses larger hosted Linux runners (8 and 16 vCPU). The core build fits on both.
 - FR-022 says that the gatekeeper is the same command in a run and in CI. When the run uses the CI result, there is only one command.
 - An agent cannot decide the result. The runner reads the check state from GitHub. No worker report goes into it.
 
@@ -115,9 +123,9 @@ The worker hook (`src/worker-hook.ts`, `fileWriteReason`) also denies a write to
 
 ## R9. The pilot
 
-**Decision**: `HostnamePattern.Matches` in `substrate` (`internal/egresspolicy/egresspolicy.go:342`). The spec gives the reasons ("Pilot of phase 1").
+**Decision (owner scope, 2026-11-10)**: The pilot is one pure Go function in the owner's main private Go rig. The private pilot bead names it, with the reasons and the historical bug. This public file does not, because the rig is private. Forked repos are out of scope.
 
-The historical bug for the historical-bug check is the code before commit `6621f2b4`. That code had no `case hostname == ""` and no `case p.any`. An empty host name then matched a pattern with an empty exact name.
+The second Go target is `HostnamePattern.Matches` in `substrate` (`internal/egresspolicy/egresspolicy.go:342`). It is public, owned and not a fork. Its historical bug is the code before commit `6621f2b4`. That code had no `case hostname == ""` and no `case p.any`. An empty host name then matched a pattern with an empty exact name.
 
 ## R10. Mutation tests and vacuity witnesses
 
@@ -154,17 +162,28 @@ These theorems are part of the approved statements. So `comparator` checks them,
 | WasmCert-Coq | Rocq | Wasm 2.0, mature. Not Lean. | — |
 | SpecTec | — | Has Rocq output. Lean output is only planned. | — |
 
-**Recommended path for phase 2** (not decided):
+| linobit-corp/wasm-lean | Lean | "Formalization of WebAssembly in Lean 4". Last push 2026-04-25. Scope not known. | MIT |
 
-- Write our own small Lean WebAssembly core semantics from the official spec. Scope: Wasm 2.0 MVP plus bulk memory and sign extension.
-- Test it against the WebAssembly/spec reference interpreter and the official testsuite (differential tests) before any proof.
-- Use Talos as a reference only, until a license decision. AGPL-3.0 and GPL-3.0 may not fit a public repo.
-- Write the decoder in Lean. Or keep `wasm-tools` outside the trusted base, with differential tests.
-- Build Rust cores with `-Ctarget-cpu=mvp` and `-Zbuild-std`, so that the `.wasm` uses only the MVP features.
+**Decision (owner, 2026-11-10)**: Phase 2 uses a new Lean 4 WebAssembly semantics. It does not use Rocq.
+
+- **Fork or build.** The fork base candidates are only the permissive ones: argumentcomputer/Wasm.lean (MIT, has a parser, no change since 2023) and linobit-corp/wasm-lean (MIT, scope not known). Task W1 evaluates both and picks a fork or a new build.
+- **Clean code.** Do not copy from AGPL or GPL code: Talos (AGPL-3.0), T-Brick/lean-wasm (GPL-3.0) and aionescu/lean-wasm (GPL-3.0). Read only their public docs. Our code then stays clean for a public repo.
+- **Scope.** Wasm 2.0 MVP plus bulk memory and sign extension. The semantics is executable. It has a decoder for that subset.
+- **State shape.** The top-level relation has the DeepMind style: a runs-to relation such as `ElfRunsTo` (`arm64-semantics/Arm64/Trusted/Process/Semantics.lean:126`), with partial and total forms. The same gatekeeper and `comparator` flow then work for phase 2.
+- **Gate before any proof.** The semantics must pass differential tests against the WebAssembly/spec reference interpreter and the official testsuite for the subset. No proof on it starts before this gate passes.
+- **Repo.** It lives in its own repo with a generic name. Rigs use it as a Lake dependency.
+- **Order.** It is phase 2 work with its own beads (W0 to W4). Phase 1 (Go on AArch64) does not wait for it.
+- **Build of the cores.** Build Rust cores with `-Ctarget-cpu=mvp` and `-Zbuild-std`, so that the `.wasm` uses only the MVP features.
+
+**Alternatives** (not chosen):
+
+- Rocq: WasmCert-Coq (`LICENSE.txt` mostly MIT, some vendored directories LGPL 2.1 or later) with logsem/iriswasm (Iris-Wasm, a separation logic on WasmCert, MIT). It gives a mature semantics and a program logic. But it adds a second proof assistant and a second gatekeeper flow.
+- A fork of Talos or a GPL Lean project: the licenses may not fit a public repo.
+- `wasm-tools` as the decoder: it can stay as a differential-test oracle, outside the trusted base.
 
 ## R13. Where the Go engine lives
 
-**Decision (default, owner question)**: The Go path is a Lean package in a new public repo that the owner makes. The package holds `go-elf2lean`, `go_spec`, the hook contracts and the added instructions. Each rig pins it, as it pins `arm64-semantics/`. The `substrate` proofs live in `substrate/proofs/`.
+**Decision (default, owner question)**: The Go path is a Lean package in a new public repo that the owner makes, in the owner's GitHub org, with a generic name. The package holds `go-elf2lean`, `go_spec`, the hook contracts and the added instructions. Each rig pins it, as it pins `arm64-semantics/`. The `substrate` proofs live in `substrate/proofs/`.
 
 **Rationale**: Seven Go rigs use the same engine. One package gets one review of its trusted code. claude-factory does not build Lean in its CI.
 
@@ -173,3 +192,40 @@ These theorems are part of the approved statements. So `comparator` checks them,
 - `lean/` in claude-factory. Its CI then needs Lean and about 6 GB.
 - In each rig. Seven copies of trusted code.
 - A fork of code-verification. Upstream changes then need a merge.
+
+## R14. The AX worker image for prove runs
+
+**Decision**: Add a second build target, `prove`, to `Dockerfile.worker`. It starts `FROM worker`, so it has the same skills, rules and plugins (constitution Principle I). It adds only toolchains and caches:
+
+| Layer | Content | Size |
+| --- | --- | --- |
+| Lean | elan with the toolchain `leanprover/lean4:v4.34.0` (the upstream `lean-toolchain`), in `/opt/elan`, which the `worker` user can read | The release archive `lean-4.34.0-linux.tar.zst` is 553 MiB. Slice I1 measures the size when unpacked. |
+| Lake cache | google-deepmind/code-verification at the pinned commit, with the default targets of `arm64-semantics/` built (`Arm64`, `ProofLib`), in `/opt/lean-cache` | Slice I1 measures it. The upstream core build needs about 6 GB of memory and 13 to 15 minutes. |
+| Gate tools | `comparator` and `lean4export` at their `v4.34.0` tags, `landrun` at a pinned commit | Small. Slice I1 measures it. |
+| Test tools | `qemu-aarch64` at the version that the upstream `scripts/fetch-qemu-aarch64` pins | Small |
+| Go toolchains | The Go version that each target rig uses in production, in the Go module cache (`GOTOOLCHAIN=local` for each version). The proof build must use the production compiler, not the newest one in the image. | About 70 MiB for each version |
+
+At the start of a prove run, the worker copies `/opt/lean-cache` into the rig's `proofs/.lake/packages`. The manifest pins the same commits, so Lake uses the built files and does not fetch from GitHub. AX pod egress cannot reach GitHub.
+
+Two new settings for each factory: `prove.image` (`FACTORY_PROVE_IMAGE`, the image of prove runs) and `prove.sandbox-class` (`FACTORY_PROVE_SANDBOX_CLASS`, default `microvm`). Prove runs use the `microvm` class for these reasons: the gVisor pool has less memory for each task, and the Kata guest kernel can have Landlock for `comparator`. Slice I1 checks Landlock in the guest. If Landlock is not there, `comparator` runs only in the rig's CI, which is the authoritative gate in all cases.
+
+If the image grows by more than 5 GiB, the Lake cache moves to the in-cluster object store. Then the worker fetches it at the start of the task. The owner builds, pushes and rolls the image. This spec does not change the cluster.
+
+**Alternatives**: Add the layers to the `worker` target. Then the 29 gVisor workers pull several GiB that they do not use. Fetch the toolchain at run time: AX pod egress cannot reach GitHub.
+
+## R15. The session limit
+
+**Decision**: A setting for each factory: `prove.max-sessions` (`FACTORY_PROVE_MAX_SESSIONS`), with the check `^[1-9][0-9]*$` and the default `2`. It is in `src/settings.ts` next to `max-runs`. The scheduler (`room()` in `src/cli.ts`) counts the active runs of factory `prove`. An active run is a parent or child run that holds a worker. A run at a gate or parked holds no worker, so it does not count. A prove run over the limit waits. It also counts against `max-runs` and the rig's `maxRuns`, as today. There is no token cap and no time cap (owner, 2026-11-10).
+
+**Rationale**: The default `2` fits the `microvm` pool: 3 workers of 16 GiB, shared with Nix builds.
+
+## R16. One decision for each part
+
+**Decision**: Each Go runtime contract and each exact-proof part is one part. The `draft` station lists the parts in `proofs/parts.json` and files one child bead for each part, with the labels `factory:prove` and `station:part`. The child run has one gate, `part`, with `freeze` on that one file. The person approves or refuses each part on its own. The `freeze` of the parent `approve` gate refuses the decision until each part in `proofs/parts.json` has an approval record. The core gives the reason, with the open parts.
+
+For an exact-proof part, the approval also files a bead on the rig: pin the workload of that part to `kubernetes.io/arch=arm64`. The factory does not change the cluster.
+
+**Rationale**: A worker cannot propose a decision (`decisionsPropose` in `src/cli.ts` refuses a worker). A gate is the only person decision that a run can make. One child run for each part reuses the gate and the child-bead flow of R5, with no new decision kind.
+
+**Alternatives**: One gate for all parts. The owner asked for one decision for each part. A gate that loops once for each part: the machine has no way to choose the next edge from the count of open parts.
+
