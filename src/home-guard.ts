@@ -100,12 +100,15 @@ const API =
 
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
+// claude-factory-ty63u: a cd, a pushd or a shell assignment of a whole-home word
+const BIND = String.raw`(?:\b(?:cd|pushd)\s+(?:--\s+)?|\w=)['"]?`
+
 /** a regex for a whole-home word: ~, $HOME, ${HOME}, a home path or a dir above it (not `/`) */
-function homeWord(protect: string[]): RegExp {
+function homeWord(protect: string[], lead = LEAD): RegExp {
   const paths = new Set<string>()
   for (const h of protect) for (let d = h; d !== dirname(d); d = dirname(d)) paths.add(fold(d))
   const alts = ['~', String.raw`\$home`, String.raw`\$\{home\}`, ...[...paths].map(escape)]
-  return new RegExp(`${LEAD}(?:${alts.join('|')})${TAIL}`)
+  return new RegExp(`${lead}(?:${alts.join('|')})${TAIL}`)
 }
 
 // The word regex holds folded text, so it tests folded text. DELETE and API also test the original: rmSync is case-sensitive.
@@ -120,6 +123,17 @@ const test1 = (text: string, word: RegExp) => {
 const hits = (text: string, word: RegExp) => test1(text, word) || test1(join(text), word)
 // remove the JSON and TOML string escapes (a package.json script that puts \" around the home word)
 const unjson = (t: string) => t.replace(/\\(["\\/])/g, '$1')
+
+/**
+ * claude-factory-ty63u: the test for a file that a loaded text names. That file can run for no command
+ * (pwd, git status), yet a hit denies every command in the tree. So a hit needs a delete word and a
+ * home word on one line (raw or joined), or a delete word and a home API or a cd, pushd or assignment
+ * of a home word (`bind`) anywhere in the file.
+ * ponytail: a line pair with no API or bind is not seen (`D=~/x` then `rm -rf ${D%/x}`). A command-named
+ * script keeps the whole-file test. Upgrade path: a real shell parser.
+ */
+const namedFileHits = (t: string, word: RegExp, bind: RegExp) =>
+  hits(t, bind) || [t, join(t)].some(s => s.split('\n').some(l => test1(l, word)))
 
 // a run of path chars between a lead and a terminator char; ':' ends a path:line word
 const SCRIPT = /(?:^|[\s'"=(`;&|:<>])([\w./-]+)(?=$|[\s'";&|)`:<>])/g
@@ -271,7 +285,7 @@ function readerSegment(w: string[]): boolean {
  */
 function readOnly(command: string): boolean {
   let seg: string[] = []
-  for (let pos = 0; pos < command.length;) {
+  for (let pos = 0; pos < command.length; ) {
     TOKEN.lastIndex = pos
     const m = TOKEN.exec(command)
     if (!m) return false
@@ -289,13 +303,13 @@ function readOnly(command: string): boolean {
 export type LoadedText = { text: string; dir: string; alias?: true }
 
 /**
- * Test the named files of `text`. With `dir`, each path resolves against `dir`, the JSON-unescaped
- * text is tested too, and the reads count against MAX_LOADED_READS ('cap' past it).
+ * Test the named files of `text` with `check`. With `dir`, each path resolves against `dir` and the
+ * reads count against MAX_LOADED_READS ('cap' past it).
  */
 function namedHits(
   text: string,
   readFile: (path: string) => string | undefined,
-  word: RegExp,
+  check: (body: string) => boolean,
   protect: string[],
   seen: Set<string>,
   dir?: string,
@@ -314,7 +328,7 @@ function namedHits(
     const body = readFile(path)
     if (body === undefined) continue
     if (reads && ++reads.n > MAX_LOADED_READS) return 'cap'
-    if (hits(body, word) || (dir !== undefined && hits(unjson(body), word))) return true
+    if (check(body)) return true
   }
   return false
 }
@@ -326,7 +340,7 @@ function namedHits(
  * builds them). null means the loader failed: LOADED_REASON. With a
  * loader, a command or alias text that names core.hooksPath, include.path or includeIf gives
  * OVERRIDE_REASON. A loaded text is always tested, also for a
- * read-only command, and the files it names are read once (one level).
+ * read-only command, and the files it names are read once (one level) and tested by namedFileHits.
  * A read-only command (see readOnly: readers and non-runners) runs no file, so its named files are not read.
  * ponytail: one level of scripts, no follow of a script that calls another; add it if a bypass shows
  */
@@ -337,6 +351,8 @@ export function homeReason(
   loaded?: LoadedText[] | null,
 ): string | undefined {
   const word = homeWord(protect)
+  const bind = homeWord(protect, BIND)
+  const loadedCheck = (b: string) => namedFileHits(b, word, bind) || namedFileHits(unjson(b), word, bind)
   if (hits(command, word)) return HOME_REASON
   if (loaded === null) return LOADED_REASON
   if (loaded !== undefined && OVERRIDE.test(strip(command))) return OVERRIDE_REASON
@@ -346,10 +362,12 @@ export function homeReason(
     if (alias && OVERRIDE.test(strip(text))) return OVERRIDE_REASON
     if (hits(text, word) || hits(unjson(text), word)) return HOME_REASON
     if (!readFile) continue
-    const r = namedHits(text, readFile, word, protect, loadedSeen, dir, reads)
+    const r = namedHits(text, readFile, loadedCheck, protect, loadedSeen, dir, reads)
     if (r === 'cap') return LOADED_REASON
     if (r) return HOME_REASON
   }
   if (!readFile || readOnly(command)) return undefined
-  return namedHits(command, readFile, word, protect, new Set<string>()) ? HOME_REASON : undefined
+  return namedHits(command, readFile, b => hits(b, word), protect, new Set<string>())
+    ? HOME_REASON
+    : undefined
 }
