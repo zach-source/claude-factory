@@ -455,14 +455,20 @@ const TOKEN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/
 const HEADER = /^([A-Za-z0-9!#$%&'*+.^_`|~-]+):[ \t]*([^\r\n\0]*?)[ \t]*$/
 
 /**
- * Read one HTTP/1.1 request from an authorized socket and write one answer, then close.
- * The grammar is closed: no chunked body, no pipelining, no keep-alive, and a duplicate of a header that the handler reads is an error.
+ * Read one HTTP/1.1 request from a TLS socket. Write one response, then close.
+ * The parser refuses transfer encoding and repeated headers, except Accept.
+ * The optional policy checks the raw target and sets the body limit and read deadline.
+ * With that policy, the handler receives the raw method as its third argument.
  */
 export function serveSocket(
   sock: Socket,
-  handle: (req: Request, ip: string) => Promise<Response>,
+  handle: (req: Request, ip: string, method?: string) => Promise<Response>,
   idleMs: number,
-  policy?: { bodyMax: number; validTarget: (target: string) => boolean },
+  policy?: {
+    bodyMax: number
+    validTarget: (target: string) => boolean
+    onInvalid?: (status: 400 | 503) => void
+  },
 ) {
   const reply = (status: number, body: string, type = 'application/json', extra = '') => {
     sock.end(
@@ -472,8 +478,11 @@ export function serveSocket(
   const bad = (status: number, why: string) => {
     done = true
     if (deadline) clearTimeout(deadline)
-    if (policy) reply(400, JSON.stringify({ error: 'invalid_request' }))
-    else reply(status, `${JSON.stringify({ refused: why })}\n`)
+    if (policy) {
+      const code = status < 500 ? 400 : 503
+      policy.onInvalid?.(code)
+      reply(code, JSON.stringify({ error: code === 400 ? 'invalid_request' : 'unavailable' }))
+    } else reply(status, `${JSON.stringify({ refused: why })}\n`)
   }
   const deadline = policy ? setTimeout(() => sock.destroy(), idleMs) : undefined
   sock.once('close', () => {
@@ -496,11 +505,11 @@ export function serveSocket(
       sock.once('close', () => gone.abort())
       const req = new Request(`https://client.invalid${head!.target}`, {
         signal: gone.signal,
-        method: head!.method,
+        method: policy && /^(CONNECT|TRACE|TRACK)$/.test(head!.method) ? 'POST' : head!.method,
         headers: head!.headers,
         ...(head!.method !== 'GET' && head!.method !== 'HEAD' && { body }),
       })
-      const res = await handle(req, ip)
+      const res = policy ? await handle(req, ip, head!.method) : await handle(req, ip)
       if (res.headers.get('content-type')?.startsWith('text/event-stream') && res.body) {
         // close-delimited stream: no content-length, and the socket drain paces the reader
         // wait for drain or close when a write returns false; remove both paired listeners

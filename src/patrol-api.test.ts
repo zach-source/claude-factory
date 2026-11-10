@@ -212,6 +212,7 @@ describe('1ocuv AC2 closed grammar', () => {
       ` {"epoch":"${t.epoch}"}`,
       `{"epoch":"${t.epoch}","epoch":"${t.epoch}"}`,
       `{"epoch":"${t.epoch.replace('-', '\\u002d')}"}`,
+      `\uFEFF{"epoch":"${t.epoch}"}`,
     ]) {
       expect((await t.request('/v1/patrol/lease/acquire', text)).status).toBe(400)
       t.zero()
@@ -545,6 +546,7 @@ const raw = (
   headers = `Authorization: Patrol ${token}\r\n`,
   method = 'GET',
   body = '',
+  person = false,
 ) =>
   new Promise<string>((resolve, reject) => {
     const sock = connect(
@@ -554,6 +556,10 @@ const raw = (
         servername: 'localhost',
         ca: readFileSync(join(certDir, 'ca.crt')),
         minVersion: 'TLSv1.2',
+        ...(person && {
+          cert: readFileSync(join(certDir, 'person.crt')),
+          key: readFileSync(join(certDir, 'person.key')),
+        }),
       },
       () =>
         sock.write(
@@ -581,7 +587,12 @@ test('1ocuv AC1 AC2 real TLS checks raw targets and duplicate headers before app
     expect(await raw(server.port, '/v1/patrol/snapshot')).toContain('HTTP/1.1 200')
     t.clear()
     expect(await raw(server.port, '/v1/patrol/snapshot', '')).toContain('HTTP/1.1 401')
+    expect(await raw(server.port, '/v1/patrol/snapshot', '', 'GET', '', true)).toContain('HTTP/1.1 401')
     t.zero()
+    for (const method of ['CONNECT', 'TRACE', 'TRACK', 'CUSTOM']) {
+      expect(await raw(server.port, '/v1/patrol/snapshot', undefined, method)).toContain('HTTP/1.1 403')
+      t.zero()
+    }
     for (const target of [
       '/v1/patrol/../patrol/snapshot',
       '/v1/patrol/runs/%2fetc',
@@ -590,6 +601,15 @@ test('1ocuv AC1 AC2 real TLS checks raw targets and duplicate headers before app
       '/v1/patrol//snapshot',
     ]) {
       expect(await raw(server.port, target)).toContain('HTTP/1.1 400')
+      expect(t.audit.at(-1)).toEqual({
+        at: 1000,
+        epoch: t.epoch,
+        generation: null,
+        identity: null,
+        operation: 'unknown',
+        reason: 'invalid_request',
+        status: 400,
+      })
       t.zero()
     }
     for (const extra of [

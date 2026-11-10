@@ -117,7 +117,7 @@ async function body(req: Request) {
     const bytes = Buffer.concat(chunks)
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
     const parsed: unknown = JSON.parse(text)
-    return object(parsed) && JSON.stringify(parsed) === text ? parsed : null
+    return object(parsed) && Buffer.from(JSON.stringify(parsed)).equals(bytes) ? parsed : null
   } catch {
     return null
   }
@@ -146,7 +146,12 @@ export function patrolHandler(o: {
 }) {
   if (!name(o.audience)) throw new Error('invalid patrol audience')
   const now = o.now ?? Date.now
-  return async (req: Request): Promise<Response> => {
+  const emit = (event: Omit<PatrolAudit, 'at' | 'epoch'>) => {
+    try {
+      o.audit({ at: now(), epoch: o.lease.epoch, ...event })
+    } catch {}
+  }
+  const handle = async (req: Request, method = req.method): Promise<Response> => {
     let who: PatrolIdentity | null = null
     let operation: Operation = 'unknown'
     const respond = (status: number, data?: unknown, completedGeneration: string | null = null) => {
@@ -166,17 +171,7 @@ export function patrolHandler(o: {
         status === 200 && object(data) && typeof data.generation === 'string'
           ? data.generation
           : completedGeneration
-      try {
-        o.audit({
-          at: now(),
-          operation,
-          status,
-          reason,
-          identity: who?.id ?? null,
-          epoch: o.lease.epoch,
-          generation,
-        })
-      } catch {}
+      emit({ operation, status, reason, identity: who?.id ?? null, generation })
       return Response.json(status === 200 ? data : { error: reason }, { status })
     }
     const auth = () => {
@@ -194,11 +189,11 @@ export function patrolHandler(o: {
     const url = new URL(req.url)
     const target = url.pathname + url.search + (req.url.endsWith('?') ? '?' : '')
     if (!validTarget(target)) return respond(400)
-    if (req.method === 'GET' && target === '/v1/patrol/snapshot') operation = 'snapshot'
-    else if (req.method === 'GET' && /^\/v1\/patrol\/runs\/[A-Za-z0-9_-]+$/.test(target)) operation = 'run'
-    else if (req.method === 'POST' && target === '/v1/patrol/lease/acquire') operation = 'acquire'
-    else if (req.method === 'POST' && target === '/v1/patrol/lease/renew') operation = 'renew'
-    else if (req.method === 'POST' && target === '/v1/patrol/lease/complete') operation = 'complete'
+    if (method === 'GET' && target === '/v1/patrol/snapshot') operation = 'snapshot'
+    else if (method === 'GET' && /^\/v1\/patrol\/runs\/[A-Za-z0-9_-]+$/.test(target)) operation = 'run'
+    else if (method === 'POST' && target === '/v1/patrol/lease/acquire') operation = 'acquire'
+    else if (method === 'POST' && target === '/v1/patrol/lease/renew') operation = 'renew'
+    else if (method === 'POST' && target === '/v1/patrol/lease/complete') operation = 'complete'
     else return respond(403)
     if (operation === 'snapshot' || operation === 'run') {
       if (req.body || (req.headers.has('content-length') && req.headers.get('content-length') !== '0'))
@@ -248,13 +243,23 @@ export function patrolHandler(o: {
       result.status === 200 && operation === 'complete' ? (parsed.generation as string) : null,
     )
   }
+  return Object.assign(handle, {
+    invalid: (status: 400 | 503) =>
+      emit({
+        operation: 'unknown',
+        status,
+        reason: status === 400 ? 'invalid_request' : 'unavailable',
+        identity: null,
+        generation: null,
+      }),
+  })
 }
 
 export function patrolListener(o: {
   port: number
   cert: string
   key: string
-  handle: (req: Request) => Promise<Response>
+  handle: ReturnType<typeof patrolHandler>
 }) {
   const open = new Set<Socket>()
   const server = createServer(
@@ -262,7 +267,11 @@ export function patrolListener(o: {
     sock => {
       open.add(sock)
       sock.once('close', () => open.delete(sock))
-      serveSocket(sock, o.handle, 30_000, { bodyMax: 4096, validTarget })
+      serveSocket(sock, (req, _ip, method) => o.handle(req, method), 30_000, {
+        bodyMax: 4096,
+        validTarget,
+        onInvalid: o.handle.invalid,
+      })
     },
   )
   server.on('tlsClientError', () => {})
