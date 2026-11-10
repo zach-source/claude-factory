@@ -8,7 +8,16 @@
 // spawns that process. The cadence tests follow src/watch.test.ts's kickWatch tests
 // (claude-factory-960.7).
 import { afterEach, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
@@ -37,18 +46,44 @@ const DEF: Factory = {
 }
 const DAY = 24 * 3_600_000
 
-/** a done run, 10 days old, that a gc pass has something real to prune: its own prompts/ dir.
- * Removing that dir is the test's proof that a spawned gc pass actually ran to completion. */
+/** a done run, 10 days old, with a clean git worktree. A gc pass reaps the whole run dir.
+ * The missing run dir is the test's proof that a spawned gc pass ran to completion. */
 function doneRun(id: string): string {
-  const wt = join(dir, id)
-  mkdirSync(wt, { recursive: true })
+  const repo = join(dir, 'repo')
+  const g = (...args: string[]) => {
+    const p = Bun.spawnSync(['git', '-C', repo, ...args], {
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'f',
+        GIT_AUTHOR_EMAIL: 'f@localhost',
+        GIT_COMMITTER_NAME: 'f',
+        GIT_COMMITTER_EMAIL: 'f@localhost',
+      },
+    })
+    if (p.exitCode !== 0) throw new Error(p.stderr.toString())
+  }
+  if (!existsSync(join(repo, '.git'))) {
+    mkdirSync(repo, { recursive: true })
+    g('init', '-q', '-b', 'main')
+    g('commit', '-q', '--allow-empty', '-m', 'root')
+  }
+  const wt = join(home, 'worktrees', id)
+  g('worktree', 'add', '-q', '-b', `factory/${id}`, wt)
   const d = join(home, 'runs', id)
   mkdirSync(d, { recursive: true })
   const factoryFile = join(d, 'factory.ts')
   writeFileSync(factoryFile, `export default ${JSON.stringify(DEF)}`)
   writeFileSync(
     join(d, 'run.json'),
-    JSON.stringify({ id, factory: factoryFile, repo: wt, goal: 'g', ws: 'w1', worktree: wt, branch: 'b' }),
+    JSON.stringify({
+      id,
+      factory: factoryFile,
+      repo,
+      goal: 'g',
+      ws: 'w1',
+      worktree: wt,
+      branch: `factory/${id}`,
+    }),
   )
   const actor = createActor(compile(DEF)).start()
   actor.send({ type: 'TICK', at: 0 })
@@ -84,8 +119,10 @@ test('tick spawns one gc pass, then none while still inside that pass’s hour (
   expect(existsSync(join(home, 'gc.stamp'))).toBe(false)
   factory(['tick'])
   await waitForGcStamp()
-  await new Promise(resolve => setTimeout(resolve, 1200)) // well over the ~500ms a spawned pass takes to land
-  expect(existsSync(join(d, 'prompts'))).toBe(false) // the spawned pass actually ran, not just stamped
+  for (let i = 0; i < 1500 && existsSync(d); i++) await new Promise(resolve => setTimeout(resolve, 10)) // bounded wait
+  expect(existsSync(d)).toBe(false) // the spawned pass actually ran, not just stamped
+  const rec = JSON.parse(readFileSync(join(home, 'metrics.jsonl'), 'utf8').trim().split('\n')[0]!)
+  expect(rec).toMatchObject({ id: 'r1', node: 'done' }) // the hourly pass archived the run
   const firstMtime = statSync(join(home, 'gc.stamp')).mtimeMs
   factory(['tick']) // immediately after: well inside the same hour, so this must spawn nothing
   await new Promise(resolve => setTimeout(resolve, 1200))
@@ -100,7 +137,7 @@ test('tick spawns no gc pass while another one still holds gc.lock (claude-facto
   factory(['tick'])
   await new Promise(resolve => setTimeout(resolve, 1200)) // well over the ~500ms a spawned pass takes to land
   expect(existsSync(join(home, 'gc.stamp'))).toBe(false)
-  expect(existsSync(join(d, 'prompts'))).toBe(true) // the lock held: no pass ran
+  expect(existsSync(d)).toBe(true) // the lock held: no pass ran
 })
 
 test('FACTORY_GC=0: tick spawns no gc pass at all (claude-factory-503.1.4)', async () => {
@@ -109,7 +146,7 @@ test('FACTORY_GC=0: tick spawns no gc pass at all (claude-factory-503.1.4)', asy
   factory(['tick'], { FACTORY_GC: '0' })
   await new Promise(resolve => setTimeout(resolve, 1200)) // well over the ~500ms a spawned pass takes to land
   expect(existsSync(join(home, 'gc.stamp'))).toBe(false)
-  expect(existsSync(join(d, 'prompts'))).toBe(true)
+  expect(existsSync(d)).toBe(true)
 })
 
 test('a direct "factory gc" run (not through tick) still writes gc.stamp and prunes (sanity check)', () => {
@@ -118,8 +155,16 @@ test('a direct "factory gc" run (not through tick) still writes gc.stamp and pru
   const out = factory(['gc', '--days', '1'])
   expect(out.code).toBe(0)
   expect(existsSync(join(home, 'gc.stamp'))).toBe(true)
-  expect(existsSync(join(d, 'prompts'))).toBe(false)
-  expect(readdirSync(d)).toContain('run.json') // the keep set still stands
+  expect(existsSync(d)).toBe(false)
+})
+
+test('FACTORY_GC=0 stops the hourly kick only: a direct "factory gc" still reaps and archives (lt4u.7)', () => {
+  reset()
+  const d = doneRun('r1')
+  expect(factory(['gc', '--days', '1'], { FACTORY_GC: '0' }).code).toBe(0)
+  expect(existsSync(d)).toBe(false)
+  const rec = JSON.parse(readFileSync(join(home, 'metrics.jsonl'), 'utf8').trim().split('\n')[0]!)
+  expect(rec.id).toBe('r1')
 })
 
 // Tests for `factory tick` spawning `factory gc --worktrees` (claude-factory-l38.4).

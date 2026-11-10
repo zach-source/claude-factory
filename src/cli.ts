@@ -7016,7 +7016,8 @@ function runFact(id: string): gc.RunFact {
     const { bytes, files } = st.isDirectory() ? dirSize(join(dir, name)) : { bytes: st.size, files: 1 }
     return { name, isDir: st.isDirectory(), bytes, files }
   })
-  const { value, c } = current(id)
+  const { run, value, c } = current(id)
+  if (run.id !== id) throw new Error('run.json names run "' + run.id + '", not "' + id + '"')
   return { id, node: where(value)[0], finishedAt: c.log.at(-1)?.at ?? createdAt(id), entries }
 }
 function launchFacts(): gc.LaunchFact[] {
@@ -7030,20 +7031,61 @@ function launchFacts(): gc.LaunchFact[] {
     })
 }
 /**
- * Removes the reproducible files of a done or aborted run older than `days`. It also removes a
- * dead launch script. It follows the rules in gc.gcPlan().
+ * Removes one done or aborted run, for `factory rm` and for the gc reap pass. It removes the worktree first.
+ * It then appends the run's record to metrics.jsonl and deletes the run directory last. The branch stays.
+ * A step that throws stops the next one, so the run directory stays. It throws when the run is not finished,
+ * or when git refuses the worktree because it holds work.
+ */
+function removeRun(id: string): Run {
+  const { run, value } = current(id)
+  if (run.id !== id) fail(id + ': run.json names run "' + run.id + '": removed nothing')
+  if (!['done', 'aborted'].includes(where(value)[0])) fail(`${run.id} is still running: abort it first`)
+  for (const k of ['id', 'worktree', 'repo'] as const) {
+    const v: unknown = run[k]
+    if (typeof v !== 'string' || v === '') fail(`${id}: run.json has no ${k}: removed nothing`)
+  }
+  // no --force except for a clean submodule worktree: herdr and git refuse uncommitted work; the branch always stays.
+  // A reaped workspace is gone (and its id may be another's now): git removes the worktree then
+  const lock = () => rmSync(join(run.worktree, '.beads.gate.lock'), { force: true })
+  if (herdrPanes().some(p => isIn(p, run))) {
+    makeWritable(run.worktree)
+    lock() // bd leaves its lock in every worktree it ran in: not work, and it would make the worktree look dirty
+    herdr('worktree', 'remove', '--workspace', run.ws)
+  } else if (existsSync(run.worktree)) {
+    const reg = registeredWorktrees(run.repo)
+    if (reg && isRegistered(reg, run.worktree)) {
+      makeWritable(run.worktree)
+      lock()
+      // git refuses a worktree with a submodule: force only when it and each submodule hold nothing to lose
+      const force =
+        submoduleState(run.worktree) === 'clean' &&
+        git(run.worktree, 'status', '--porcelain', '--ignore-submodules=none') === ''
+      git(run.repo, 'worktree', 'remove', ...(force ? ['--force'] : []), run.worktree)
+    } else rmUnregisteredWorktree(run.worktree, run.id, run.repo) // git unregistered it, a read-only dir kept the rest
+  }
+  // its record outlives it: metrics count removed runs too
+  appendFileSync(join(HOME, 'metrics.jsonl'), JSON.stringify(record(run.id)) + '\n')
+  rmSafe(runDir(run.id), { recursive: true })
+  return run
+}
+/**
+ * Reaps every done or aborted run older than `days` with removeRun(). It also removes a dead launch script.
+ * It follows the rules in gc.gcPlan(). A run that removeRun() refuses keeps all its files. gc.log and the
+ * console name it with the reason, and the pass goes on with the next run.
  *
- * `--dry-run` only prints the bytes per kind. It deletes nothing (claude-factory-503.1).
+ * `--dry-run` prints the runs it would reap. It deletes nothing (claude-factory-503.1, claude-factory-lt4u).
  */
 function gcPass(days: number, dryRun: boolean) {
   const now = Date.now()
   // a run dir removed mid-pass, or one with no run.json/state.json, must not fail the whole pass
   // (claude-factory-503.1.6)
+  const skipped: string[] = []
   const runs = runIds().flatMap(id => {
     try {
       return [runFact(id)]
     } catch (err) {
       console.error(`gc: skipping ${id}: ${(err as Error).message}`)
+      skipped.push(`skipped ${id}: ${gc.scrubUrlUserinfo((err as Error).message)}`)
       return []
     }
   })
@@ -7070,10 +7112,30 @@ function gcPass(days: number, dryRun: boolean) {
       ...(livePanes === null ? ['herdr pane list did not answer: removed no launch script'] : []),
     ].join('\n'),
   )
-  if (dryRun) return
-  for (const r of plan.runs) {
-    appendFileSync(join(HOME, 'metrics.jsonl'), JSON.stringify(record(r.id)) + '\n')
-    for (const p of r.paths) rmSafe(join(runDir(r.id), p), { recursive: true, force: true })
+  if (dryRun) {
+    for (const id of plan.reap) console.log(`would reap ${id}`)
+    return
+  }
+  // ponytail: gc.log grows by one line per reaped run and is never rotated; rotate it when it matters
+  // a gc.log write error must not change a removal result or stop the pass
+  const say = (line: string) => {
+    console.log(line)
+    try {
+      appendFileSync(join(HOME, 'gc.log'), `${new Date(now).toISOString()} ${line}\n`)
+    } catch (err) {
+      console.error(`gc: cannot write gc.log: ${(err as Error).message}`)
+    }
+  }
+  for (const line of skipped) say(line)
+  for (const id of plan.reap) {
+    let line: string
+    try {
+      removeRun(id)
+      line = `reaped ${id}`
+    } catch (err) {
+      line = `refused ${id}: ${gc.scrubUrlUserinfo((err as Error).message)}`
+    }
+    say(line)
   }
   for (const pane of plan.launch) rmSync(join(launchDir(), `${pane}.sh`), { force: true })
 }
@@ -7480,6 +7542,7 @@ function allRunRefs(): GcRunRef[] {
     try {
       const run = loadRun(id)
       const { value, c } = current(id)
+      if (run.id !== id) throw new Error('run.json id differs from its directory')
       const finishedAt = c.log.at(-1)?.at ?? createdAt(id)
       return { id, node: where(value)[0], finishedAt, worktree: run.worktree, bead: run.bead, repo: run.repo }
     } catch {
@@ -11714,7 +11777,7 @@ async function rigListLines(print: Print) {
     if (r.mergeAuthority === true)
       print(`  merge authority: ship release station, ${mergeAuthority(r) ?? 'no origin: off'}`)
     if (r.mcp) print(`  mcp: ${safe.mcp}`)
-    for (const [k, v] of Object.entries(safe.params ?? {})) print(`  param ${k}: ${v}`)
+    for (const k of Object.keys(safe.params ?? {})) print(`  param ${k}: <hidden>`)
     if (safe.linear) {
       const extra = [
         safe.linear.projects?.length ? `projects ${safe.linear.projects.join('|')}` : '',
@@ -13220,8 +13283,9 @@ const usage = `factory — herdr software factories on xstate
   fork <run> <station> '[note...]'   new run from <run>'s branch and state, restarted at <station>
   rm <run>                           finished run: drop its worktree and state, keep its branch
   gc [--days N] [--dry-run]          done or aborted runs older than N days (default 7, FACTORY_GC_DAYS):
-                                     drop prompts, briefs and stray backups, and a dead launch script;
-                                     --dry-run only prints bytes per kind, deleting nothing (each tick
+                                     remove the whole run as rm does (worktree, state; the branch stays,
+                                     its record goes to metrics.jsonl; refusals go to gc.log) and a dead
+                                     launch script; --dry-run prints the runs it would reap, deleting nothing (each tick
                                      starts one, at most hourly, FACTORY_GC_MS; FACTORY_GC=0 turns it off)
   gc --worktrees [--dry-run] [--rig NAME]   finished runs: drop a worktree, and its factory/* branch
                                      once it is merged, or its PR is closed and its bead is closed;
@@ -14934,30 +14998,7 @@ if (import.meta.main && !outboxCmd)
       }
       case 'rm': {
         refuseWorker('rm')
-        const { run, value } = current(args[0])
-        if (!['done', 'aborted'].includes(where(value)[0])) fail(`${run.id} is still running: abort it first`)
-        // no --force except for a clean submodule worktree: herdr and git refuse uncommitted work; the branch always stays.
-        // A reaped workspace is gone (and its id may be another's now): git removes the worktree then
-        const lock = () => rmSync(join(run.worktree, '.beads.gate.lock'), { force: true })
-        if (herdrPanes().some(p => isIn(p, run))) {
-          makeWritable(run.worktree)
-          lock() // bd leaves its lock in every worktree it ran in: not work, and it would make the worktree look dirty
-          herdr('worktree', 'remove', '--workspace', run.ws)
-        } else if (existsSync(run.worktree)) {
-          const reg = registeredWorktrees(run.repo)
-          if (reg && isRegistered(reg, run.worktree)) {
-            makeWritable(run.worktree)
-            lock()
-            // git refuses a worktree with a submodule: force only when it and each submodule hold nothing to lose
-            const force =
-              submoduleState(run.worktree) === 'clean' &&
-              git(run.worktree, 'status', '--porcelain', '--ignore-submodules=none') === ''
-            git(run.repo, 'worktree', 'remove', ...(force ? ['--force'] : []), run.worktree)
-          } else rmUnregisteredWorktree(run.worktree, run.id, run.repo) // git unregistered it, a read-only dir kept the rest
-        }
-        // its record outlives it: metrics count removed runs too
-        appendFileSync(join(HOME, 'metrics.jsonl'), JSON.stringify(record(run.id)) + '\n')
-        rmSafe(runDir(run.id), { recursive: true })
+        const run = removeRun(args[0]!)
         console.log(`removed ${run.id}; its work stays on branch ${run.branch}`)
         break
       }
