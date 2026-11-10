@@ -5,7 +5,7 @@
 Bead: `claude-factory-pnhpp`. Plan base: `51f342a3`.
 The full VM suite reported a 120000 ms timeout in `src/homebackup.test.ts:63`.
 The second backup returned no `changed` value at line 82. This result does not identify the failed operation.
-The first backup checks `error`; the second backup discards the result before it checks `changed`.
+At the plan base, the first backup checked `error`; the second backup discarded the result before its `changed` check.
 The test creates two files above 60 MiB and verifies compression, repeat backup, and restore.
 
 The docs head is `d6067de983993ea6070c21a502a12362e98096e3`, from merged PR #810.
@@ -129,6 +129,14 @@ This observation identifies the largest measured cost, not the cause of the earl
 The failure did not recur in these focused runs. No production change follows from this evidence.
 The next experiment must capture phase status during a full-suite recurrence on the same VM.
 It must also compare the focused test immediately afterward, with host CPU quota data if available.
+
+The test change retains the second result and checks its error before its exact Boolean `changed` result.
+It checks nonempty string SHAs for both backups and requires the same SHA.
+It checks the remote tip before and after the second backup.
+All original size, blob, byte-equality, small-file, and cleanup checks remain.
+Production backup and secret code stay unchanged.
+The paired focused evidence does not include a full-suite comparison.
+The station report records the final gate and independent mutation results.
 
 ### Rejected alternatives
 
