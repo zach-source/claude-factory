@@ -114,7 +114,7 @@ test('n69b2 AC1 gc route has no GET mutation or CLI bridge', async () => {
     h(
       new Request('http://x/v1/gc', {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'idempotency-key': 'gc-repeat-1234' },
+        headers: { 'content-type': 'application/json', 'idempotency-key': 'aaaaaaaaaaaa' },
         body: '{"dryRun":true}',
       }),
       'ip',
