@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { connect } from 'node:net'
 import { join } from 'node:path'
 import type { ModelCall, ModelResult } from '../once'
 import { CLI, conversationFile, guardHook, queue, send, show } from './chat'
@@ -363,6 +364,27 @@ test('approve: three hook processes at once run the command one time', async () 
   await send(ctxOf(m.chatModel), { id: 'c', text: 'yes', front: 'web', approve: 't2' })
   expect(codes.filter(x => x === 0)).toHaveLength(1)
   expect(codes.filter(x => x === 2)).toHaveLength(2)
+})
+
+test('approve: a wrong hash on the socket does not use up the approval', async () => {
+  seed('c', [mgr('s-1', askRow('t2', ASK))])
+  const seen: number[] = []
+  const m = fakeModel(async c => {
+    const a = hookArgs(c)
+    const bad = await new Promise<string>(res => {
+      let out = ''
+      const s = connect(a[1]!)
+      s.setEncoding('utf8')
+      s.on('data', d => (out += d))
+      s.on('close', () => res(out))
+      s.write(sha('other'))
+    })
+    expect(bad).toBe('no')
+    seen.push((await hook(ASK, a)).code)
+    return ok()
+  })
+  await send(ctxOf(m.chatModel), { id: 'c', text: 'yes', front: 'web', approve: 't2' })
+  expect(seen).toEqual([0])
 })
 
 test('approve: the socket is gone after the turn', async () => {
