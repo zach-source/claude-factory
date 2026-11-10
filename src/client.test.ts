@@ -505,13 +505,14 @@ test('spawn: local mode makes no request (AC1, AC9)', async () => {
 
 test('spawn: mail --text-file reads the file in server mode (AC9)', async () => {
   hits.length = 0
-  const th = textHome('mail2.txt', 'long text')
+  const th = textHome('mail2.txt', '--wake')
   const m = await cli(['mail', 'r1', 'plan', '--text-file', th.file], {
     FACTORY_SERVER: url(),
     FACTORY_HOME: th.home,
   })
   expect(m.code).toBe(0)
-  expect(JSON.parse(hits[0]!.body).text).toBe('long text')
+  expect(JSON.parse(hits[0]!.body).text).toBe('--wake')
+  expect(JSON.parse(hits[0]!.body).wake).not.toBe(true)
 })
 
 test('spawn: AC7 patrol refusal for decide, resume and tick', async () => {
