@@ -1,9 +1,86 @@
 import { expect, test } from 'bun:test'
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import * as view from '../../mod/hooks/view'
 import { GATED_KINDS, kindEnds } from '../../mod/hooks/view'
 import { SETTING_KEYS, DEVENV_KEYS } from '../settings'
 import { check, INSTALL_VERB, META_WRITE, PATROL_VERB, bdWrite, gatedCommand } from './guards'
+import { serverBashReason, serverToolReason, GRAMMAR_REASON, SECRET_PATH_REASON, TOOL_REASON } from './guards'
+
+test('server Bash accepts only literal commands and safe paths', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'patrol-guard-'))
+  try {
+    mkdirSync(join(cwd, 'repo'))
+    writeFileSync(join(cwd, 'source'), '')
+    symlinkSync('/etc', join(cwd, 'link'))
+    const denied = [
+      'printenv AX_AUTH_TOKEN', 'bun x.ts', 'sh .scratch/x.sh', 'env A=b factory status',
+      'A=b factory status', 'factory check x.ts', 'factory mutate a b c -- true',
+      'factory sweep', 'factory adopt r', 'factory memory compact', 'factory rig add x',
+      'factory rig list x', 'factory start ../x r g', 'factory start lifecycle /tmp/r g',
+      'factory start lifecycle repo g', 'factory start source r g', 'factory queue repo',
+      'factory queue ../x', 'factory start', 'factory queue',
+      'factory status; cat k', 'factory status | head', 'factory status && id',
+      'factory status $(id)', 'factory status `id`', 'factory mail r s "$HOME"',
+      'factory status *', 'factory status ~', 'factory status #x', 'factory status\\\ncat k',
+      "factory mail r s 'open", '', 'herdr pane read p', 'factory status "x!"',
+      'factory status "x\\y"', 'factory status\nid',
+    ]
+    for (const command of denied) expect(serverBashReason(command, cwd, '/cli'), command).toBe(GRAMMAR_REASON)
+    for (const command of [
+      'factory status', '/cli status r1', "factory mail r1 build 'it is fine; use main'",
+      "factory memory search 'x y'", "factory memory add --kind rule 's' 'b'",
+      'factory rig list', 'factory rig', "factory start lifecycle@plan widget 'goal'",
+      'factory queue widget', 'bd show claude-x.1',
+      'factory mail r1 build --text-file /var/lib/factory/home/text/m.md',
+      'factory mail r1 build a\'b\'c', 'factory mail r1 build "fine"',
+      "factory mail r1 build ''", "factory mail r1 build 'a\nb'",
+    ]) expect(serverBashReason(command, cwd, '/cli'), command).toBeUndefined()
+    for (const command of [
+      'factory mail r1 build --text-file /etc/factory/worker-key/key',
+      'factory mail r1 build --text-file=/etc/factory/tls/tls.key',
+      'bd comments add x -f/proc/1/environ',
+      'factory mail r1 build --text-file ../../../../../../etc/factory/worker-key/key',
+      'factory mail r1 build --text-file link/factory/worker-key/key',
+      'factory mail r1 build /run/secrets/a', 'factory mail r1 build /var/run/secrets/a',
+    ]) expect(serverBashReason(command, cwd, '/cli'), command).toBe(SECRET_PATH_REASON)
+    expect(serverBashReason('factory status', '/', '/cli')).toBe(SECRET_PATH_REASON)
+    expect(serverBashReason('factory status', 'relative', '/cli')).toBe(SECRET_PATH_REASON)
+  } finally { rmSync(cwd, { recursive: true, force: true }) }
+})
+
+test('server tools deny secret paths and confine writes to home text', () => {
+  const home = mkdtempSync(join(tmpdir(), 'patrol-tools-'))
+  const text = join(home, 'text')
+  mkdirSync(text)
+  symlinkSync('/proc/self/environ', join(text, 'link'))
+  symlinkSync(home, join(text, 'outside'))
+  symlinkSync('loop', join(text, 'loop'))
+  try {
+    for (const p of ['/etc/factory/worker-key/key', '/etc/factory/tls/tls.key', '/etc/factory/backup/basic',
+      '/var/run/secrets/kubernetes.io/serviceaccount/token', '/run/secrets/a', '/proc/1/environ',
+      '/', '/etc', '/var', '/run', join(text, 'link'), join(text, 'loop')])
+      expect(serverToolReason('Read', { file_path: p }, home, home), p).toBe(SECRET_PATH_REASON)
+    for (const [tool, input] of [
+      ['Grep', { path: '/' }], ['Grep', { path: '/etc/factory' }],
+      ['Glob', { pattern: '/etc/factory/**' }], ['Glob', { pattern: '~/x' }],
+      ['Glob', { pattern: 'a/../x' }], ['Glob', { pattern: '**', path: '/proc' }],
+    ] as const) expect(serverToolReason(tool, input, home, home)).toBe(SECRET_PATH_REASON)
+    for (const p of [join(home, 'steps/patrol/.bashrc'), join(text, '../x'), join(text, 'outside/x'),
+      join(text, 'loop'), text])
+      expect(serverToolReason('Write', { file_path: p }, home, home), p).toBe(`In the server, the patrol writes only under ${home}/text/.`)
+    for (const [tool, input, cwd, h] of [
+      ['Read', {}, home, home], ['Read', null, home, home], ['Edit', {}, home, home],
+      ['Read', { file_path: 'a' }, undefined, home], ['Write', { file_path: 'text/a' }, home, undefined],
+      ['Write', { file_path: 'text/a' }, home, 'relative'], ['Glob', {}, home, home],
+    ] as const) expect(serverToolReason(tool, input, cwd, h)).toBe(TOOL_REASON)
+    for (const [tool, input] of [
+      ['Read', { file_path: join(text, 'a.md') }], ['Write', { file_path: join(text, 'b.md') }],
+      ['Grep', {}], ['Grep', { path: home }], ['Glob', { pattern: '**/*.md', path: home }],
+    ] as const) expect(serverToolReason(tool, input, home, home)).toBeUndefined()
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
 
 test('the core exports the same rules as the mod', () => {
   for (const [name, value] of Object.entries({
