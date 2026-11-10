@@ -1,3 +1,4 @@
+import { stripLiveRunVars } from './worker-hook-test-env'
 import { afterAll, expect, spyOn, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import * as fsNs from 'node:fs'
@@ -59,14 +60,7 @@ import {
   XARGS_REASON,
 } from './worker-hook'
 
-// claude-factory-twu4: a hook child that inherits these vars appends fake deny rows to the live
-// run denials.jsonl. Strip them for this file and restore them after it.
-const LIVE_RUN_VARS = ['FACTORY_HOME', 'FACTORY_RUN', 'FACTORY_OUTBOX', 'FACTORY_DENY_LOG']
-const SAVED_RUN_VARS = LIVE_RUN_VARS.map(k => [k, process.env[k]] as const)
-for (const k of LIVE_RUN_VARS) delete process.env[k]
-afterAll(() => {
-  for (const [k, v] of SAVED_RUN_VARS) if (v !== undefined) process.env[k] = v
-})
+stripLiveRunVars()
 
 // claude-factory-qn8a.9 instance index. This class bead replaced 17 one-off beads. Each line gives the test or the known gap.
 // - sibp (and qn8a.38): 'a payload that makes a guard throw prints one HOOK_ERROR_REASON deny'.
