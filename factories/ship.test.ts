@@ -794,7 +794,7 @@ test('3w8o AC4 only soak carries the deadline rule', () => {
   for (const [id, node] of Object.entries(lifecycle.nodes))
     expect((node as { prompt?: string }).prompt ?? '', id).not.toContain('verify:live')
   for (const [id, node] of Object.entries(release.nodes))
-    expect((node as { prompt?: string }).prompt ?? '', id).not.toContain('verify:live')
+    if (id !== 'soak') expect((node as { prompt?: string }).prompt ?? '', id).not.toContain('verify:live')
 })
 
 test('3w8o AC5 four unsure soaks then healthy need no machine change', () => {
@@ -840,6 +840,7 @@ test('geo6 AC2 risk exceptions', () => {
 
 test('geo6 AC3 health gate', () => {
   for (const sentence of [
+    'Healthy requires own output on the live system unless every deadline exception requirement below holds.',
     'Actual regression always reports regressed to rollback before any deadline exception.',
     'Observed own output retains the normal health path against the baseline.',
     'Deadline-based healthy requires complete rollout in all target environments.',
@@ -851,6 +852,7 @@ test('geo6 AC3 health gate', () => {
     'Absent baseline, unreadable checks, or denied reads prevent healthy; never infer clean health.',
     'At the deadline, incomplete or unknown health reports blocked with evidence and a `Question:` line.',
     'The deadline grants no live access or owner approval.',
+    'At the deadline, report healthy with unseen output only after all risk, health, and durable follow-up requirements hold.',
   ])
     expect(release.nodes.soak.prompt).toContain(sentence)
 })
