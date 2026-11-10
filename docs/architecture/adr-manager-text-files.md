@@ -201,5 +201,9 @@ The worker brief also uses files for memory summaries and queries.
 The sibling audit found no affected examples in the other manager step files.
 Both decision verbs retain their confirm dialog and inline escape rule.
 The real-shell test proves denial makes zero calls and approval delivers one literal note.
+Independent mutation probes cover confinement, argv conflicts, replay refusal, each file consumer, and owner authority.
+The focused tests detect all 25 valid mutations. Each mutant passed TypeScript before its test.
+One initial minimum-text mutation survived. A missing-summary test detects it now.
+One initial field mutation did not build. A valid field mutation replaced it and the test detected it.
 
 No changelog entry, version change, dependency, factory-definition change, or production action is part of this implementation.

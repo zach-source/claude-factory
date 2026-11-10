@@ -158,7 +158,7 @@ export const OUTBOX_USAGE = {
   report: "usage: factory report <run> <seq> <outcome> '<summary...>'|--summary-file path",
   mail: "usage: factory mail <run> <node|manager> '<text...>'|--text-file path",
   memory:
-    "usage: factory memory add [--rig r] [--from run/station] --kind fact|rule|recipe [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] '<summary>' ('[body...]'|--body-file path)",
+    "usage: factory memory add [--rig r] [--from run/station] --kind fact|rule|recipe [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] ('<summary>'|--summary-file path) ('[body...]'|--body-file path)",
   helped: 'usage: factory memory helped --from run/station <note path...>',
 }
 

@@ -278,6 +278,29 @@ test('0s5e file fields preserve text: rig goals and skill reasons are literal', 
     expect(r.code, r.err).toBe(0)
     expect(JSON.parse(readFileSync(rigs, 'utf8'))[0].goal).toBe(TEXT.trimEnd())
   }
+  const repeated = factory([
+    'rig',
+    'add',
+    'acme',
+    wt,
+    '--goal-file',
+    path,
+    '--runner',
+    'ax',
+    '--max',
+    '2',
+    '--egress',
+    'one.example',
+    '--egress',
+    'two.example',
+  ])
+  expect(repeated.code, repeated.err).toBe(0)
+  expect(JSON.parse(readFileSync(rigs, 'utf8'))[0]).toMatchObject({
+    goal: TEXT.trimEnd(),
+    runner: 'ax',
+    maxRuns: 2,
+    egress: [{ hosts: ['one.example'] }, { hosts: ['two.example'] }],
+  })
   const proposal = join(home, 'memory', '.manager', 'skills', 'acme')
   mkdirSync(proposal, { recursive: true })
   writeFileSync(join(proposal, 'SKILL.md'), '# Acme\n')
@@ -431,7 +454,12 @@ test('0s5e remote text is data: start parses owned before file content', async (
       expect(bodies.at(-1)?.owned).toBe(owned ? true : undefined)
     }
     const p = Bun.spawn([CLI, 'start', 'lifecycle', 'acme', '--goal-file', path, '--unknown', 'value'], {
-      env: { PATH: process.env.PATH, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_SERVER: server.url.origin },
+      env: {
+        PATH: process.env.PATH,
+        FACTORY_HOME: home,
+        FACTORY_SELF_UPDATE: '0',
+        FACTORY_SERVER: server.url.origin,
+      },
     })
     expect(await p.exited).not.toBe(0)
     expect(bodies).toHaveLength(2)
@@ -445,7 +473,8 @@ test('0s5e remote text is data: file caps do not replace the total outbox cap', 
   const b = txt('body-cap.md', 'b'.repeat(60 * 1024))
   const outbox = join(dir, 'outbox.jsonl')
   const r = factory([...ADD, '--summary-file', s, '--body-file', b], {
-    FACTORY_OUTBOX: outbox, FACTORY_FROM: 'implement',
+    FACTORY_OUTBOX: outbox,
+    FACTORY_FROM: 'implement',
   })
   expect(r.code).not.toBe(0)
   expect(r.err).toContain('100 KiB')
