@@ -96,7 +96,7 @@ test('the settings usage line names the devenv keys', () => {
   expect(line).toContain('devenv.builder')
 })
 
-test('docs/server.md names each owner step, both modes and the way back; README links it', () => {
+test('docs/server.md names worker routes, each owner step, both modes and the way back; README links it', () => {
   const text = readFileSync(join(root, 'docs/server.md'), 'utf8')
   for (const s of [
     'S2',
@@ -112,5 +112,8 @@ test('docs/server.md names each owner step, both modes and the way back; README 
     'The way back',
   ])
     expect(text).toContain(s)
+  expect(text).toContain('report, mail and progress')
+  expect(text).toContain('--worker-port 8443 --worker-key <path>')
+  expect(text).not.toContain('no worker API route today')
   expect(readFileSync(join(root, 'README.md'), 'utf8')).toContain('docs/server.md')
 })
