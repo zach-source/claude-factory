@@ -136,11 +136,11 @@ test('a remote mod never ticks, never patrols and takes no lease', () => {
   const now = 10_000_000
   const jobs = (cfg: unknown, state = {}) =>
     herdr.beatJobs(cfg, state, {}, now).map((j: { name: string }) => j.name)
-  expect(jobs(remote)).toEqual(['board', 'decisions'])
-  expect(jobs(remote, { halt: { state: 'stopping' } })).toEqual(['board', 'decisions'])
+  expect(jobs(remote)).toEqual(['snapshot'])
+  expect(jobs(remote, { halt: { state: 'stopping' } })).toEqual(['snapshot'])
   const words = herdr.beatJobs(remote, {}, {}, now).flatMap((j: { words: string[] }) => j.words)
-  for (const w of ['tick', 'patrol', 'brief', 'review', 'pm']) expect(words.includes(w)).toBe(w === 'tick')
-  expect(herdr.beatJobs(remote, {}, {}, now)[0].words).toEqual(['tick', '--board'])
+  for (const w of ['tick', 'patrol', 'brief', 'review', 'pm']) expect(words.includes(w)).toBe(false)
+  expect(herdr.beatJobs(remote, {}, {}, now)[0].words).toEqual(['snapshot', '--views', 'board,decisions'])
   expect(jobs(local)).toEqual(['tick', 'patrol', 'brief', 'review', 'pm', 'decisions'])
   expect(jobs(local, { readOnly: 'x' })).toEqual(['tick'])
   expect(
@@ -239,4 +239,116 @@ test('interviewItems counts the beads of `factory decisions` once each, plus the
   expect(herdr.interviewItems(runs, decisions).length - 3).toBe(
     runs.filter((r: { gate?: unknown }) => r.gate).length,
   )
+})
+
+test('parseSnapshot splits one snapshot into the board result and the decisions (claude-factory-hpmc.23)', () => {
+  const out = JSON.stringify({ views: { board: { runs: [], manager: [] }, decisions: { rigs: [] } } })
+  expect(herdr.parseSnapshot(0, out, '')).toEqual({
+    tick: { runs: [], manager: [], rigs: [], halt: undefined, readOnly: undefined },
+    decisions: { rigs: [] },
+  })
+  const bad = JSON.stringify({ views: { board: { error: 'no tick yet' }, decisions: { error: 'x' } } })
+  expect(herdr.parseSnapshot(0, bad, '')).toEqual({ tick: { error: 'no tick yet' }, decisions: undefined })
+  expect(herdr.parseSnapshot(1, '', 'boom').tick.error).toBe('boom')
+})
+
+// claude-factory-hpmc.26: the Flow tab draws flows.show (the pure layout).
+const graph = {
+  factory: 'f',
+  since: 0,
+  now: 100_000,
+  nodes: [
+    {
+      id: 'plan',
+      gate: false,
+      legacy: false,
+      rank: 0,
+      order: 0,
+      counts: { working: 2 },
+      dwell: { p50: 1000, p90: 4000 },
+      runs: ['a', 'b', 'c', 'd', 'e', 'f'],
+    },
+    {
+      id: 'build',
+      gate: false,
+      legacy: false,
+      rank: 1,
+      order: 1,
+      counts: {},
+      dwell: { p50: 500, p90: 1000 },
+      runs: [],
+    },
+    {
+      id: 'gate',
+      gate: true,
+      legacy: false,
+      rank: 1,
+      order: 2,
+      counts: { waiting: 1 },
+      dwell: null,
+      runs: ['g'],
+    },
+  ],
+  edges: [
+    { from: 'plan', outcome: 'done', to: 'build', back: false, timed: false, traversals: 7 },
+    { from: 'build', outcome: 'fail', to: 'plan', back: true, timed: false, traversals: 0 },
+  ],
+  exits: [{ from: 'gate', outcome: 'ok', to: 'ship' }],
+  moves: [{ run: 'a', from: 'plan', outcome: 'done', to: 'build', at: 99_000 }],
+}
+
+test('flowLayout puts a rank in a column and an order in a row', () => {
+  const l = herdr.flowLayout(graph, 'live')
+  const at = (id: string) => l.nodes.find((n: any) => n.id === id)
+  expect(at('plan').x).toBeLessThan(at('build').x)
+  expect(at('build').x).toBe(at('gate').x)
+  expect(at('build').y).toBeLessThan(at('gate').y)
+  expect(at('gate').gate).toBe(true)
+  expect(l.width).toBeGreaterThan(at('build').x + at('build').w)
+})
+
+test('flowLayout shows at most 4 run dots and a +N chip', () => {
+  const n = herdr.flowLayout(graph, 'live').nodes.find((x: any) => x.id === 'plan')
+  expect(n.dots.map((d: any) => d.run)).toEqual(['a', 'b', 'c', 'd'])
+  expect(n.chip).toBe('+2')
+})
+
+test('the Flow lens sizes an edge by log traversals; a back edge is dashed and goes below', () => {
+  const l = herdr.flowLayout(graph, 'flow')
+  const fwd = l.edges.find((e: any) => !e.back)
+  const back = l.edges.find((e: any) => e.back)
+  expect(fwd.width).toBeGreaterThan(back.width)
+  expect(fwd.label).toBe('done 7')
+  expect(back.dashed).toBe(true)
+  expect(fwd.dashed).toBe(false)
+  expect(herdr.flowLayout(graph, 'live').edges[0].width).toBe(herdr.flowLayout(graph, 'live').edges[1].width)
+})
+
+test('the Time lens heats a node by its p90 dwell against the slowest', () => {
+  const l = herdr.flowLayout(graph, 'time')
+  const heat = (id: string) => l.nodes.find((n: any) => n.id === id).heat
+  expect(heat('plan')).toBe(1)
+  expect(heat('build')).toBe(0.25)
+  expect(heat('gate')).toBe(0)
+  expect(herdr.flowLayout(graph, 'live').nodes[0].heat).toBe(0)
+})
+
+test('an exit to the ship queue names the workflow to open', () => {
+  const l = herdr.flowLayout(graph, 'live')
+  expect(l.exits).toEqual([{ from: 'gate', outcome: 'ok', to: 'ship', opens: 'ship' }])
+})
+
+test('recent moves mark the runs that pulse', () => {
+  expect(herdr.recentMovers(graph, 5000)).toEqual(['a'])
+  expect(herdr.recentMovers(graph, 500)).toEqual([])
+})
+
+test('parseFlows gives the graph or the reason', () => {
+  expect(herdr.parseFlows(0, JSON.stringify(graph), '').graph.factory).toBe('f')
+  expect(herdr.parseFlows(1, '', 'no factory "x"').error).toBe('no factory "x"')
+  expect(herdr.parseFlows(0, 'nope', '').error).toContain('no JSON')
+})
+
+test('flowJobWords asks for JSON for one factory and one window', () => {
+  expect(herdr.flowJobWords('ship', '7d')).toEqual(['flows', '--json', '--factory', 'ship', '--since', '7d'])
 })

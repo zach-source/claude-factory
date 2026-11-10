@@ -66,6 +66,23 @@ test('AC2: the gap file holds the four seed gaps and the Herdr mod tab gaps (hpm
       reason: `the Herdr app mod has no ${tab} tab`,
     })),
     row('web', 'claude-factory-hpmc.11'),
+    ...(['claude-mod', 'web'] as const).map(frontEnd => ({
+      op: 'snapshot.show',
+      frontEnd,
+      bead: 'claude-factory-hpmc.30',
+      reason: expect.any(String),
+    })),
+    ...(
+      [
+        ['web', 28, 'the web UI has no Flow view'],
+        ['claude-mod', 29, 'the Claude mod has no Flow view'],
+      ] as const
+    ).map(([frontEnd, n, reason]) => ({
+      op: 'flows.show',
+      frontEnd,
+      bead: `claude-factory-hpmc.${n}`,
+      reason,
+    })),
   ])
 })
 

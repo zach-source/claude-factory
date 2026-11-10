@@ -6,6 +6,8 @@ import {
   makeCatalog,
   readBody,
   readQuery,
+  slimBoard,
+  snapshot,
   type Field,
   type Op,
 } from './catalog'
@@ -145,9 +147,9 @@ describe('readQuery and readBody', () => {
 })
 
 describe('CATALOG', () => {
-  test('has 27 operations: 18 GET and 9 POST', () => {
-    expect(CATALOG.length).toBe(27)
-    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(18)
+  test('has 29 operations: 20 GET and 9 POST', () => {
+    expect(CATALOG.length).toBe(29)
+    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(20)
     expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(9)
     expect(CATALOG.filter(o => o.route.method === 'POST' && !o.mutates).map(o => o.name)).toEqual([
       'guard.check',
@@ -206,6 +208,7 @@ describe('CATALOG', () => {
       'decisions.answer POST /v1/decisions/:rig/:bead/answer',
       'decisions.list GET /v1/decisions',
       'factory.halt POST /v1/halt',
+      'flows.show GET /v1/flows',
       'gates.brief GET /v1/runs/:id/brief',
       'gates.decide POST /v1/runs/:id/decide',
       'guard.check POST /v1/guard/check',
@@ -223,7 +226,79 @@ describe('CATALOG', () => {
       'runs.show GET /v1/runs/:id',
       'runs.start POST /v1/start',
       'runs.status GET /v1/status',
+      'snapshot.show GET /v1/snapshot',
       'steps.reports GET /v1/steps',
     ])
+  })
+})
+
+describe('slimBoard and snapshot (claude-factory-hpmc.23)', () => {
+  const board = {
+    lease: { holder: 'h' },
+    manager: [],
+    rigs: [{ name: 'a', factory: 'lifecycle', maxRuns: 3, goal: 'long goal', sweeps: ['x'] }],
+    runs: [
+      {
+        id: 'r1',
+        node: 'build',
+        sub: 'work',
+        since: 5,
+        bead: 'a-1',
+        rig: 'a',
+        goal: 'g'.repeat(300),
+        last: 'summary text',
+        trail: [{ node: 'plan' }],
+        gate: { question: 'ok?' },
+      },
+    ],
+  }
+  test('slimBoard drops summary and trail text, cuts the goal, keeps the ids and the gate', () => {
+    const s = slimBoard(board) as typeof board
+    expect(s.runs[0]).toMatchObject({ id: 'r1', node: 'build', sub: 'work', since: 5, bead: 'a-1', rig: 'a' })
+    expect(s.runs[0]).not.toHaveProperty('last')
+    expect(s.runs[0]).not.toHaveProperty('trail')
+    expect(s.runs[0]!.goal.length).toBeLessThanOrEqual(120)
+    expect((s.runs[0] as { gate?: unknown }).gate).toEqual({ question: 'ok?' })
+    expect(s.rigs as unknown[]).toEqual([{ name: 'a', factory: 'lifecycle', maxRuns: 3 }])
+    expect(s.lease).toEqual({ holder: 'h' })
+    expect(JSON.stringify(s).length).toBeLessThan(JSON.stringify(board).length)
+  })
+  test('slimBoard returns a value that is not a board unchanged', () => {
+    expect(slimBoard(null)).toBeNull()
+    expect(slimBoard({ x: 1 })).toEqual({ x: 1 })
+  })
+  const ctx = (calls: string[]) =>
+    ({
+      home: '/h',
+      env: {},
+      port: {},
+      board: () => board,
+      cli: async (argv: string[]) => {
+        calls.push(argv.join(' '))
+        return { code: 0, out: '{"ok":1}\n', err: '' }
+      },
+    }) as never
+  test('snapshot runs the named views in one call', async () => {
+    const calls: string[] = []
+    const r = await snapshot(ctx(calls), { views: 'board,lease' })
+    expect(r.code).toBe(0)
+    const out = JSON.parse(r.out)
+    expect(Object.keys(out.views)).toEqual(['board', 'lease'])
+    expect(out.views.board.runs[0]).not.toHaveProperty('last')
+  })
+  test('snapshot refuses a view that is not a read view, and a repeated view', async () => {
+    const calls: string[] = []
+    for (const views of ['runs.abort', 'board,board', '', 'nope'])
+      expect((await snapshot(ctx(calls), { views })).code).toBe(1)
+    expect(calls).toEqual([])
+  })
+  test('snapshot reports a failing view and still returns the others', async () => {
+    const c = ctx([])
+    ;(c as { board: () => unknown }).board = () => {
+      throw new Error('no tick yet')
+    }
+    const out = JSON.parse((await snapshot(c, { views: 'board,lease' })).out)
+    expect(out.views.board).toEqual({ error: 'no tick yet' })
+    expect(out.views.lease).toBeDefined()
   })
 })
