@@ -75,6 +75,84 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
   return { home, calls, logs, h: make(), make, env: () => lastEnv, boards: () => boardCalls }
 }
 type H = ReturnType<typeof setup>['h']
+
+test('teyn1 AC3 real CLI preserves file text at the mail port', async () => {
+  const t = setup()
+  mkdirSync(join(t.home, 'text'))
+  writeFileSync(join(t.home, 'rigs.json'), '[]')
+  const file = join(t.home, 'text', 'literal.txt')
+  writeFileSync(file, '--wake')
+  const server = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: req => t.h(req, '127.0.0.1') })
+  const env = { ...process.env }
+  for (const key of [
+    'FACTORY_OUTBOX',
+    'FACTORY_FROM',
+    'FACTORY_RUN',
+    'FACTORY_DEF_NAME',
+    'BEADS_ACTOR',
+    'FACTORY_PATROL',
+    'FACTORY_SERVER',
+    'FACTORY_MAIN_CHAT',
+  ])
+    delete env[key]
+  try {
+    for (const wake of [false, true, false]) {
+      const worker = t.calls.length > 0 && !wake
+      if (worker) {
+        mkdirSync(join(t.home, 'runs', 'r1'), { recursive: true })
+        writeFileSync(
+          join(t.home, 'runs', 'r1', 'run.json'),
+          JSON.stringify({ worktree: process.cwd(), repo: '/other' }),
+        )
+      }
+      t.calls.length = 0
+      const p = Bun.spawn(
+        [
+          'bun',
+          join(import.meta.dir, 'cli.ts'),
+          'mail',
+          'r1',
+          'manager',
+          ...(wake ? ['--wake'] : []),
+          '--text-file',
+          file,
+        ],
+        {
+          env: {
+            ...env,
+            FACTORY_HOME: t.home,
+            HOME: t.home,
+            FACTORY_SELF_UPDATE: '0',
+            FACTORY_SERVER: `http://127.0.0.1:${server.port}`,
+          },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        },
+      )
+      const timer = setTimeout(() => p.kill(), 15000)
+      try {
+        const [, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()])
+        expect(await p.exited).toBe(worker ? 1 : 0)
+        if (worker) {
+          expect(err).toContain('403')
+          expect(t.calls).toEqual([])
+        } else
+          expect(t.calls).toEqual([
+            {
+              port: 'mail',
+              args: [{ id: 'r1', to: 'manager', text: '--wake', wake }, { cwd: process.cwd() }],
+            },
+          ])
+      } finally {
+        clearTimeout(timer)
+        p.kill()
+        await p.exited
+      }
+    }
+  } finally {
+    await server.stop(true)
+  }
+})
 const get = (h: H, path: string, headers: Record<string, string> = {}) =>
   h(new Request(`http://x${path}`, { headers }), '1.2.3.4')
 const post = (

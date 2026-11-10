@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { main, route, serverMode, serverUrl, tlsFor } from './client'
@@ -446,7 +446,7 @@ beforeAll(() => {
 })
 afterAll(() => server.stop(true))
 
-async function cli(args: string[], extra: Record<string, string> = {}) {
+async function cli(args: string[], extra: Record<string, string> = {}, cwd = process.cwd()) {
   const {
     FACTORY_OUTBOX,
     FACTORY_FROM,
@@ -455,11 +455,13 @@ async function cli(args: string[], extra: Record<string, string> = {}) {
     BEADS_ACTOR,
     FACTORY_PATROL,
     FACTORY_SERVER,
+    FACTORY_MAIN_CHAT,
     ...base
   } = process.env
   const home = tmp(`home-${Math.random().toString(36).slice(2)}`)
   writeFileSync(join(home, 'rigs.json'), '[]')
   const p = Bun.spawn(['bun', CLI, ...args], {
+    cwd,
     stdout: 'pipe',
     stderr: 'pipe',
     env: {
@@ -470,8 +472,15 @@ async function cli(args: string[], extra: Record<string, string> = {}) {
       ...extra,
     },
   })
-  const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()])
-  return { code: await p.exited, out, err, home }
+  const timer = setTimeout(() => p.kill(), 15000)
+  try {
+    const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()])
+    return { code: await p.exited, out, err, home }
+  } finally {
+    clearTimeout(timer)
+    p.kill()
+    await p.exited
+  }
 }
 const url = () => `http://127.0.0.1:${server.port}`
 
@@ -512,6 +521,131 @@ test('spawn: mail --text-file reads the file in server mode (AC9)', async () => 
   })
   expect(m.code).toBe(0)
   expect(JSON.parse(hits[0]!.body).text).toBe('long text')
+})
+
+test('teyn1 AC1 file text stays literal through the real CLI', async () => {
+  for (const text of [
+    '--wake',
+    '--text-file',
+    '--from',
+    '--unknown',
+    'ordinary text',
+    '  "quote" $x; `x`\nnext\n  ',
+  ]) {
+    for (const wake of [false, true]) {
+      hits.length = 0
+      const th = textHome('literal.txt', text)
+      const m = await cli(['mail', 'r1', 'manager', ...(wake ? ['--wake'] : []), '--text-file', th.file], {
+        FACTORY_SERVER: url(),
+        FACTORY_HOME: th.home,
+      })
+      expect(m.code).toBe(0)
+      expect(hits).toHaveLength(1)
+      expect(hits[0]!.path).toBe('/v1/runs/r1/mail')
+      expect(hits[0]!.method).toBe('POST')
+      expect(hits[0]!.key).toBeTruthy()
+      expect(JSON.parse(hits[0]!.body)).toEqual({
+        to: 'manager',
+        text: text.trimEnd(),
+        from: 'manager',
+        cwd: process.cwd(),
+        ...(wake && { wake: true }),
+      })
+    }
+  }
+})
+
+test('teyn1 AC2 invalid file forms fail before transport', async () => {
+  const th = textHome('valid.txt', 'valid')
+  const rows = [
+    ['r1', 'manager', '--text-file'],
+    ['r1', 'manager', '--text-file', th.file, 'extra'],
+    ['r1', 'manager', '--text-file', th.file, '--text-file', th.file],
+    ['r1', 'manager', 'extra', '--text-file', th.file],
+    ['../r1', 'manager', '--text-file', th.file],
+    ['r1', '../manager', '--text-file', th.file],
+    ['r1', 'manager'],
+    ['r1', 'manager', '--wake'],
+  ]
+  for (const args of rows) {
+    hits.length = 0
+    const m = await cli(['mail', ...args], { FACTORY_SERVER: url(), FACTORY_HOME: th.home })
+    expect(m.code).toBe(1)
+    expect(m.err).toMatch(/usage|text-file/)
+    expect(hits).toHaveLength(0)
+  }
+  expect(typeof route('mail', ['r1', 'manager', '--text-file', th.file])).toBe('string')
+})
+
+test('teyn1 AC2 file roots and file checks survive the client route', async () => {
+  const th = textHome('valid.txt', 'valid')
+  const dir = join(th.home, 'text')
+  writeFileSync(join(dir, 'empty'), '')
+  writeFileSync(join(dir, 'blank'), ' \n\t')
+  writeFileSync(join(dir, 'large'), 'x'.repeat(102401))
+  const outside = join(th.home, 'outside')
+  writeFileSync(outside, 'outside')
+  symlinkSync(outside, join(dir, 'escape'))
+  for (const [file, error] of [
+    [join(dir, 'missing'), 'not a readable file'],
+    [dir, 'outside'],
+    [join(dir, 'empty'), 'empty'],
+    [join(dir, 'blank'), 'empty'],
+    [join(dir, 'large'), '100 KiB'],
+    [outside, 'outside'],
+    [join(dir, 'escape'), 'outside'],
+  ]) {
+    hits.length = 0
+    const m = await cli(['mail', 'r1', 'manager', '--text-file', file!], {
+      FACTORY_SERVER: url(),
+      FACTORY_HOME: th.home,
+    })
+    expect(m.code).toBe(1)
+    expect(m.err).toContain(error!)
+    expect(hits).toHaveLength(0)
+  }
+  const wt = tmp('teyn1-worktree')
+  expect(Bun.spawnSync(['git', 'init', wt]).exitCode).toBe(0)
+  mkdirSync(join(wt, '.scratch'))
+  writeFileSync(join(wt, '.scratch', 'text'), 'scratch')
+  for (const file of ['.scratch/text', join(wt, '.scratch', 'text')]) {
+    hits.length = 0
+    expect(
+      (
+        await cli(
+          ['mail', 'r1', 'manager', '--text-file', file],
+          { FACTORY_SERVER: url(), FACTORY_HOME: th.home },
+          wt,
+        )
+      ).code,
+    ).toBe(0)
+    expect(JSON.parse(hits[0]!.body).text).toBe('scratch')
+  }
+  const linked = tmp('teyn1-linked-worktree')
+  expect(Bun.spawnSync(['git', 'init', linked]).exitCode).toBe(0)
+  symlinkSync(join(wt, '.scratch'), join(linked, '.scratch'))
+  hits.length = 0
+  const m = await cli(
+    ['mail', 'r1', 'manager', '--text-file', '.scratch/text'],
+    { FACTORY_SERVER: url(), FACTORY_HOME: th.home },
+    linked,
+  )
+  expect(m.code).toBe(1)
+  expect(m.err).toContain('outside')
+  expect(hits).toHaveLength(0)
+})
+
+test('teyn1 AC2 inline mail retains its grammar', () => {
+  for (const text of ['hello world', '--unknown', '--from']) {
+    for (const wake of [false, true]) {
+      const req = route('mail', ['r1', 'manager', ...(wake ? ['--wake'] : []), ...text.split(' ')])
+      expect(req).toEqual({
+        method: 'POST',
+        path: '/v1/runs/r1/mail',
+        body: { to: 'manager', text, from: 'manager', cwd: process.cwd(), ...(wake && { wake: true }) },
+      })
+    }
+  }
 })
 
 test('spawn: AC7 patrol refusal for decide, resume and tick', async () => {
