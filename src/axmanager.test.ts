@@ -103,6 +103,8 @@ test('managerEgress: an https AX server gets the AX_AUTH key, a Dolt remote its 
     { hosts: ['ax.example.svc'], port: 8443, key: 'AX_AUTH', header: 'Authorization', prefix: 'Bearer ' },
     { hosts: ['dolt.example.com'], key: 'DOLT_BASIC', header: 'Authorization', prefix: 'Basic ', port: 443 },
     { hosts: ['api.linear.app'], key: 'LINEAR', header: 'Authorization', prefix: '' },
+    ax.OPENAI_RULE,
+    ax.CODEX_CHATGPT_RULE,
   ])
 })
 
@@ -358,4 +360,12 @@ test('gitNetworkEnv reads the env at call time: the host sets the gateway CA aft
     if (saved === undefined) delete process.env.GIT_SSL_CAINFO
     else process.env.GIT_SSL_CAINFO = saved
   }
+})
+
+test('managerEgress gives the manager the OpenAI and Codex ChatGPT rules, as names with no value', () => {
+  const rules = ax.managerEgress({})
+  expect(rules).toContainEqual(ax.OPENAI_RULE)
+  expect(rules).toContainEqual(ax.CODEX_CHATGPT_RULE)
+  expect(ax.CODEX_CHATGPT_RULE.pathPrefixes).toEqual(['/backend-api/codex/'])
+  expect(JSON.stringify(rules)).not.toMatch(/sk-|eyJ/)
 })

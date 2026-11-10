@@ -234,7 +234,7 @@ test('interviewItems counts the beads of `factory decisions` once each, plus the
 test('parseSnapshot splits one snapshot into the board result and the decisions (claude-factory-hpmc.23)', () => {
   const out = JSON.stringify({ views: { board: { runs: [], manager: [] }, decisions: { rigs: [] } } })
   expect(herdr.parseSnapshot(0, out, '')).toEqual({
-    tick: { runs: [], manager: [], rigs: [], halt: undefined, readOnly: undefined },
+    tick: { runs: [], manager: [], rigs: [], halt: undefined, readOnly: undefined, managerLimited: null },
     decisions: { rigs: [] },
   })
   const bad = JSON.stringify({ views: { board: { error: 'no tick yet' }, decisions: { error: 'x' } } })
@@ -341,4 +341,32 @@ test('parseFlows gives the graph or the reason', () => {
 
 test('flowJobWords asks for JSON for one factory and one window', () => {
   expect(herdr.flowJobWords('ship', '7d')).toEqual(['flows', '--json', '--factory', 'ship', '--since', '7d'])
+})
+
+test('the board header names a limited manager, and parseTick carries the field', () => {
+  const until = new Date(2026, 10, 10, 14, 5).getTime()
+  expect(herdr.managerLimitText({ kind: 'seven_day', until })).toBe('manager: Claude limited until 14:05')
+  expect(herdr.managerLimitText(null)).toBe('')
+  const res = herdr.parseTick(
+    0,
+    JSON.stringify({ runs: [], manager: [], managerLimited: { kind: 'x', until } }),
+    '',
+  )
+  expect(res.managerLimited).toEqual({ kind: 'x', until })
+})
+
+test('chatArgv picks a codex chat on the machine while the manager is limited', () => {
+  const cfg = { cli: '/c/factory', home: '/h', machine: 'f-manager' }
+  expect(herdr.chatArgv(cfg, { kind: 'x', until: 1 })).toEqual([
+    'sh',
+    '-c',
+    expect.stringContaining('manager chat --codex'),
+    'f-manager',
+    '/h',
+    '/c/factory',
+  ])
+  expect(herdr.chatArgv(cfg, null)).toEqual(['hc', 'attach', 'f-manager/manager'])
+  expect(herdr.chatArgv({ cli: 'x', home: '/h' }, { kind: 'x', until: 1 })).toBeNull()
+  expect(herdr.chatLabel({ kind: 'x', until: 1 })).toBe('Manager chat (codex)')
+  expect(herdr.chatLabel(null)).toBe('Manager chat')
 })

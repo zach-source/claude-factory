@@ -206,6 +206,7 @@ import {
 } from './wiki'
 import type { Page } from './wiki'
 import * as ax from './ax'
+import { codexChatLaunch } from './manager-codex'
 import type { Egress } from './ax'
 import {
   type ConnectCache,
@@ -622,7 +623,14 @@ async function readOnlyBoard(holder: leases.Lease) {
       runs.push({ id, error: (err as Error).message })
     }
   }
-  return { readOnly: leases.leaseLine(holder, Date.now()), lease: holder, runs, manager: [], rigs: rigs() }
+  return {
+    readOnly: leases.leaseLine(holder, Date.now()),
+    lease: holder,
+    runs,
+    manager: [],
+    managerLimited: managerLimited() ?? null,
+    rigs: rigs(),
+  }
 }
 const fail = (msg: string): never => {
   throw new Error(msg)
@@ -2336,17 +2344,7 @@ export const codexAuth = (egress: Egress[] = []): 'apikey' | 'chatgpt' =>
 export const codexEgress = (egress: Egress[] = []) =>
   codexAuth(egress) === 'apikey' || egress.some(e => e.hosts.includes('chatgpt.com'))
     ? egress
-    : [
-        ...egress,
-        {
-          hosts: ['chatgpt.com'],
-          pathPrefixes: ['/backend-api/codex/'],
-          headers: [
-            { header: 'Authorization', prefix: 'Bearer ', key: 'CODEX_CHATGPT' },
-            { header: 'ChatGPT-Account-ID', prefix: '', key: 'CODEX_CHATGPT_ACCOUNT' },
-          ],
-        },
-      ]
+    : [...egress, ax.CODEX_CHATGPT_RULE]
 
 /** FACTORY_GH_REVIEWER comes only from launchTask's reviewer flag, never from FACTORY_AX_ENV or a rig's env */
 const noReviewerFlag = (e: Record<string, string> = {}) => {
@@ -2891,6 +2889,18 @@ export function recordHarnessLimit(runner: string, h: Harness, until: number, ho
   } catch {} // none yet
   writeJson(file, { ...m, [h]: until })
 }
+/** drop one harness entry of harness-limit-<runner>.json, as unhold does after a token swap */
+export function clearHarnessLimit(runner: string, h: Harness, home = HOME) {
+  const file = harnessLimitFile(runner, home)
+  let m: Record<string, number>
+  try {
+    m = readJson(file)
+  } catch {
+    return // none yet
+  }
+  delete m[h]
+  writeJson(file, m)
+}
 
 /**
  * the worker command: the rig's own (one harness for all its stations) over the split's, the station's and the
@@ -3130,6 +3140,26 @@ export function clearLimit(at: number) {
   delete s.limits[active]
   delete s.hitAt?.[active]
   writeJson(LIMITS, s)
+}
+
+/** <home>/manager-limit.json: the manager's Claude is refused and no account is free (claude-factory-y3f8w.3) */
+const managerLimitFile = (home = HOME) => join(home, 'manager-limit.json')
+const MANAGER_LIMIT_UNKNOWN_MS = 30 * 60_000 // a limit with no known reset counts for this long
+export function recordManagerLimit(hit: { at: number; kind: string; resetsAt: number }, home = HOME) {
+  writeJson(managerLimitFile(home), hit)
+}
+export function clearManagerLimit(home = HOME) {
+  rmSync(managerLimitFile(home), { force: true })
+}
+/** the manager's limit while it holds: its kind and when it lifts (ms), else null */
+export function managerLimited(now = Date.now(), home = HOME) {
+  try {
+    const h = readJson<{ at: number; kind: string; resetsAt: number }>(managerLimitFile(home))
+    const until = h.resetsAt > 0 ? h.resetsAt : h.at + MANAGER_LIMIT_UNKNOWN_MS
+    return until > now && until <= now + LIMIT_RESET_MAX_MS ? { kind: h.kind, until } : null
+  } catch {
+    return null
+  }
 }
 
 function swapAccount(hit: { at: number; resetsAt: number }, now: number): number {
@@ -4152,10 +4182,16 @@ async function superviseManager(args: string[]) {
     const watch = setInterval(() => {
       const tail = tailOf(process.cwd(), session)
       const hit = limitHit(tail)
-      if (!hit) clearLimit(servedAt(tail))
-      if (hit && hit.at > startedAt && swapAccount(hit, Date.now()) === 0) {
-        isSwapped = true
-        child.kill()
+      if (!hit) {
+        clearLimit(servedAt(tail))
+        if (servedAt(tail)) clearManagerLimit()
+      }
+      if (hit && hit.at > startedAt) {
+        const wait = swapAccount(hit, Date.now())
+        if (wait === 0) {
+          isSwapped = true
+          child.kill()
+        } else recordManagerLimit({ ...hit, resetsAt: wait || hit.resetsAt })
       }
     }, 60_000)
     const code = await child.exited
@@ -7992,6 +8028,8 @@ async function tick(isPatrol = false) {
     const out = {
       runs: [] as Row[],
       manager: [] as (Mail & { run: string })[],
+      // set while the manager's Claude is refused and every account is drained (claude-factory-y3f8w.3)
+      managerLimited: managerLimited() ?? null,
       // the manager's patrol works toward their goals; each opted-in rig carries its last Linear pull
       rigs: rigs().map(r => (linearState[r.name] ? { ...r, linearSync: linearState[r.name] } : r)),
       // each pending skill and proposal with no verdict yet, for the mod's reviewer (claude-factory-ag2)
@@ -13363,6 +13401,7 @@ const usage = `factory — herdr software factories on xstate
   status [run]                       runs at a glance, or one run's full log
   waiting                            everything that waits on the person, by rig, and how to answer each
   digest                             per rig: beads by state, the owner queue, recent repairs, PRs to merge in order
+  manager chat --codex               a Codex chat here, for when the manager's Claude is limited
   manager [claude args...]           start this factory's manager here, lean: Bash and file tools, no MCP servers
   attach [--follow]                  the AX manager's pane, read over ax ssh; --follow redraws every 3 s
                                      (no keyboard: ax ssh has no stdin or TTY; docs/remote-runner.md)
@@ -13767,6 +13806,15 @@ if (import.meta.main && !outboxCmd)
         if (args[0] === '--ax') {
           await launchAxManager(args.slice(1))
           break
+        }
+        if (args[0] === 'chat') {
+          // the manager's chat on Codex, for when every Claude slot is at its limit (claude-factory-y3f8w.4)
+          if (args.length !== 2 || args[1] !== '--codex') fail('usage: factory manager chat --codex')
+          const l = codexChatLaunch({ cli: CLI, home: HOME, env: process.env })
+          process.exit(
+            await Bun.spawn(l.argv, { cwd: l.cwd, env: l.env, stdio: ['inherit', 'inherit', 'inherit'] })
+              .exited,
+          )
         }
         lease()
         // ponytail: blocks until the manager exits; run it where it should live (a herdr pane)
@@ -14755,6 +14803,7 @@ if (import.meta.main && !outboxCmd)
         if (!r || r.local !== false || args.length > (codex ? 2 : 1))
           fail('usage: factory unhold <runner> [--codex]; the runner is a remote one, such as ax')
         writeUnhold(r!.name, codex, Date.now(), Date.now())
+        clearHarnessLimit(r!.name, codex ? 'codex' : 'claude')
         console.log(
           `marked: the next tick wakes the ${r!.name} stations held by a ${codex ? 'Codex' : 'Claude'} limit, as far as slots are free`,
         )
