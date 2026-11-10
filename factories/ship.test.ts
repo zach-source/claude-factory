@@ -752,8 +752,8 @@ test('3w8o AC1 soak has a deadline rule for unseen own output', () => {
   const cnt = soakSentence('Soak deadline: count')
   for (const t of [
     'did not see the output',
-    '(unsure and blocked reports in the journal)',
-    "read the deploy time from deploy's report",
+    'prior unsure and blocked reports since deploy',
+    'plus this soak once',
   ])
     expect(cnt, t).toContain(t)
   const ok = soakSentence('At the deadline, if the rollout')
@@ -771,7 +771,7 @@ test('3w8o AC1 soak has a deadline rule for unseen own output', () => {
 
 test('3w8o AC1b past the deadline an unclean rollout reports blocked with a Question', () => {
   const s = soakSentence('If the deadline has passed')
-  for (const t of ['not complete or the logs are not clean', 'report blocked', 'its trigger', '`Question:`'])
+  for (const t of ['not complete, or the logs are not clean', 'report blocked', 'its trigger', '`Question:`'])
     expect(s, t).toContain(t)
 })
 
@@ -784,7 +784,7 @@ test('3w8o AC2 soak files one verify:live follow-up bead before healthy', () => 
     'ACn: not checked (not fired yet: filed <id>)',
   ])
     expect(p, t).toContain(t)
-  expect(soakSentence('First run'), 'reuse').toContain('use an open bead that names this release')
+  expect(soakSentence('Reuse only'), 'reuse').toContain('the same release')
   expect(soakSentence('Write `ACn'), 'id').toContain('and name the id in the close reason')
   const s = soakSentence('-l verify:live --deps')
   expect(s).toContain('no factory label')
