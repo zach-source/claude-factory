@@ -136,11 +136,11 @@ test('a remote mod never ticks, never patrols and takes no lease', () => {
   const now = 10_000_000
   const jobs = (cfg: unknown, state = {}) =>
     herdr.beatJobs(cfg, state, {}, now).map((j: { name: string }) => j.name)
-  expect(jobs(remote)).toEqual(['board', 'decisions'])
-  expect(jobs(remote, { halt: { state: 'stopping' } })).toEqual(['board', 'decisions'])
+  expect(jobs(remote)).toEqual(['snapshot'])
+  expect(jobs(remote, { halt: { state: 'stopping' } })).toEqual(['snapshot'])
   const words = herdr.beatJobs(remote, {}, {}, now).flatMap((j: { words: string[] }) => j.words)
-  for (const w of ['tick', 'patrol', 'brief', 'review', 'pm']) expect(words.includes(w)).toBe(w === 'tick')
-  expect(herdr.beatJobs(remote, {}, {}, now)[0].words).toEqual(['tick', '--board'])
+  for (const w of ['tick', 'patrol', 'brief', 'review', 'pm']) expect(words.includes(w)).toBe(false)
+  expect(herdr.beatJobs(remote, {}, {}, now)[0].words).toEqual(['snapshot', '--views', 'board,decisions'])
   expect(jobs(local)).toEqual(['tick', 'patrol', 'brief', 'review', 'pm', 'decisions'])
   expect(jobs(local, { readOnly: 'x' })).toEqual(['tick'])
   expect(
@@ -220,4 +220,34 @@ test('a remote job runs direct in the foreground: no detached shell that hc exec
     'env',
     ['FACTORY_HOME=/w/home', 'factory', 'tick', '--board'],
   ])
+})
+
+test('interviewItems counts the beads of `factory decisions` once each, plus the live gates (claude-factory-hpmc.22)', () => {
+  const decisions = {
+    rigs: [
+      {
+        rig: 'a',
+        beads: [
+          { id: 'a-1', title: 't', kind: 'bead' },
+          { id: 'a-2', title: 't', kind: 'owned' },
+        ],
+      },
+      { rig: 'b', beads: [{ id: 'b-1', title: 't', kind: 'owned' }] },
+    ],
+  }
+  expect(herdr.interviewItems([], decisions)).toHaveLength(3)
+  expect(herdr.interviewItems(runs, decisions).length - 3).toBe(
+    runs.filter((r: { gate?: unknown }) => r.gate).length,
+  )
+})
+
+test('parseSnapshot splits one snapshot into the board result and the decisions (claude-factory-hpmc.23)', () => {
+  const out = JSON.stringify({ views: { board: { runs: [], manager: [] }, decisions: { rigs: [] } } })
+  expect(herdr.parseSnapshot(0, out, '')).toEqual({
+    tick: { runs: [], manager: [], rigs: [], halt: undefined, readOnly: undefined },
+    decisions: { rigs: [] },
+  })
+  const bad = JSON.stringify({ views: { board: { error: 'no tick yet' }, decisions: { error: 'x' } } })
+  expect(herdr.parseSnapshot(0, bad, '')).toEqual({ tick: { error: 'no tick yet' }, decisions: undefined })
+  expect(herdr.parseSnapshot(1, '', 'boom').tick.error).toBe('boom')
 })

@@ -29,6 +29,7 @@ import {
   answerArgs,
   board,
   interviewItems,
+  parseSnapshot,
   line,
   newlyBlocked,
   parseConfig,
@@ -149,7 +150,13 @@ export default class Factory extends View {
 
   beat(cx) {
     cx.spawn(async cx => {
-      const tick = await this.finished(this.cfg.machine ? 'board' : 'tick')
+      const snap = this.cfg.machine ? await this.finished('snapshot') : null
+      if (snap) {
+        const s = parseSnapshot(snap.code, snap.out, snap.err)
+        this.onTick(s.tick)
+        if (s.decisions) setShared('factory.decisions', s.decisions)
+      }
+      const tick = this.cfg.machine ? null : await this.finished('tick')
       if (tick) this.onTick(parseTick(tick.code, tick.out, tick.err))
       const dec = await this.finished('decisions')
       if (dec && dec.code === 0) {
@@ -296,50 +303,58 @@ export default class Factory extends View {
         ),
       ),
     ])
-    return v_flex()
-      .id('root')
-      .size_full()
-      .p(10)
-      .gap(6)
-      .bg(t.surface)
-      .text_size(12)
-      .child(
-        h_flex()
-          .gap(8)
-          .items_center()
-          .child(div().text_size(14).font_semibold().text_color(t.foreground).child('Factory'))
-          .child(
-            div()
-              .flex_1()
-              .min_w(0)
-              .truncate()
-              .text_color(state.readOnly || state.error ? t.blocked : t.muted)
-              .child(head),
-          )
-          .child(button('interview', `Interview (${items.length})`, () => this.openInterview()))
-          .children(this.cfg.machine ? this.controls(button) : []),
-      )
-      .child(
-        v_flex()
-          .flex_1()
-          .min_h(0)
-          .overflow_y_scrollbar()
-          .children(rows.length ? rows : [div().text_color(t.dim).child('Nothing runs.')]),
-      )
-      .when(!!this.selected, el =>
-        el.child(
-          div()
-            .h(220)
-            .p(8)
-            .rounded(6)
-            .bg(t.background)
+    return (
+      v_flex()
+        .id('root')
+        .size_full()
+        .p(10)
+        .gap(6)
+        .bg(t.surface)
+        .text_size(12)
+        .child(
+          h_flex()
+            .gap(8)
+            .items_center()
+            .child(div().text_size(14).font_semibold().text_color(t.foreground).child('Factory'))
+            .child(
+              div()
+                .flex_1()
+                .min_w(0)
+                .truncate()
+                .text_color(state.readOnly || state.error ? t.blocked : t.muted)
+                .child(head),
+            ),
+        )
+        // the buttons wrap to a new line when the panel is narrow, so none is cut off
+        .child(
+          h_flex()
+            .gap(6)
+            .flex_wrap()
+            .child(button('interview', `Interview (${items.length})`, () => this.openInterview()))
+            .children(this.cfg.machine ? this.controls(button) : []),
+        )
+        .child(
+          v_flex()
+            .flex_1()
+            .min_h(0)
             .overflow_y_scrollbar()
-            .font_family(settings().font_family ?? 'JetBrains Mono')
-            .text_size(11)
-            .text_color(t.foreground)
-            .child(this.screen || 'reading the worker screen…'),
-        ),
-      )
+            .children(rows.length ? rows : [div().text_color(t.dim).child('Nothing runs.')]),
+        )
+        .when(!!this.selected, el =>
+          el.child(
+            div()
+              .h(220)
+              .p(8)
+              .rounded(6)
+              .bg(t.background)
+              .overflow_y_scrollbar()
+              .font_family(settings().font_family ?? 'JetBrains Mono')
+              .text_size(11)
+              .text_color(t.foreground)
+              .child(this.screen || 'reading the worker screen…'),
+          ),
+        )
+    )
   }
 
   /** runs one factory command on the machine of a remote config and toasts the result */

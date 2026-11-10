@@ -87,7 +87,7 @@ export function send(ctx: Ctx, a: { id: string; text: string; front: Front }): P
           maxTurns: 40,
           settings: { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } },
           baseEnv: ctx.env,
-          env: { FACTORY_HOME: ctx.home },
+          env: { FACTORY_HOME: ctx.home, FACTORY_MAIN_CHAT: '1' },
           cwd: ctx.home,
           timeoutMs: 15 * 60_000,
           persist: true,

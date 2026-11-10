@@ -378,6 +378,7 @@ const DENIED = [
   'metrics',
   'flows',
   'backlog',
+  'snapshot',
   'prs',
   'decisions',
   'plan',

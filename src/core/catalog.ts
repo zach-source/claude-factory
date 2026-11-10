@@ -300,7 +300,69 @@ export function boardView(b: unknown): unknown {
   return { ...b, rigs: view }
 }
 
-/** The 28 operations cover the client port, board, catalog and parity fixture. */
+const HEAD = 120
+const head = (v: unknown) => (typeof v === 'string' && v.length > HEAD ? v.slice(0, HEAD - 1) + '…' : v)
+
+/**
+ * The slim board (claude-factory-hpmc.23): the runs without summary and trail text, the goal and error cut
+ * to a head, and each rig reduced to its name, factory and cap. A value that is not a board stays as is.
+ */
+export function slimBoard(b: unknown): unknown {
+  if (!b || typeof b !== 'object' || !Array.isArray((b as { runs?: unknown }).runs)) return b
+  const o = b as { runs: Record<string, unknown>[]; rigs?: Record<string, unknown>[] }
+  const runs = o.runs.map(({ last: _l, trail: _t, summary: _s, ...r }) => ({
+    ...r,
+    ...(r.goal !== undefined ? { goal: head(r.goal) } : {}),
+    ...(r.error !== undefined ? { error: head(r.error) } : {}),
+  }))
+  const rigs = Array.isArray(o.rigs)
+    ? o.rigs.map(r => ({ name: r.name, factory: r.factory, maxRuns: r.maxRuns }))
+    : o.rigs
+  return { ...o, runs, ...(rigs ? { rigs } : {}) }
+}
+
+/** the view names of `snapshot`: the group of each read op that has no required input */
+const viewOp = (view: string): Op | undefined =>
+  CATALOG.find(
+    o =>
+      o.name.split('.')[0] === view &&
+      o.name !== 'snapshot.show' &&
+      o.route.method === 'GET' &&
+      o.rights === 'read' &&
+      !o.route.path.includes(':') &&
+      !o.inputs.some(i => i.required),
+  )
+
+/** `factory snapshot --views a,b`: several read views in one call, so a front end polls once (hpmc.23) */
+export async function snapshot(ctx: Ctx, i: Input): Promise<RunResult> {
+  const names = String(i.views ?? '')
+    .split(',')
+    .map(v => v.trim())
+  const ops = names.map(viewOp)
+  const bad = names.find((n, k) => !n || !ops[k] || names.indexOf(n) !== k)
+  if (bad !== undefined || !names.length)
+    return { code: 1, out: '', err: `factory: snapshot: not a view: ${bad || '(none)'}\n` }
+  const views: Record<string, unknown> = {}
+  for (const [k, o] of ops.entries()) {
+    try {
+      const r = await o!.run(ctx, o!.name === 'board.show' ? { slim: true } : {})
+      const text = r.out.trim()
+      views[names[k]!] = r.code !== 0 ? { error: r.err.trim() || `exit ${r.code}` } : parseOr(text)
+    } catch (e) {
+      views[names[k]!] = { error: (e as Error).message }
+    }
+  }
+  return { code: 0, out: JSON.stringify({ views }) + '\n', err: '' }
+}
+const parseOr = (t: string): unknown => {
+  try {
+    return JSON.parse(t)
+  } catch {
+    return t
+  }
+}
+
+/** The 29 operations cover the client port, board, catalog and parity fixture. */
 export const CATALOG: Op[] = makeCatalog([
   {
     ...local(
@@ -336,13 +398,26 @@ export const CATALOG: Op[] = makeCatalog([
       summary: 'Show the board of the last tick: runs, rigs, halt and mail.',
       method: 'GET',
       path: '/v1/board',
+      inputs: [f('slim', 'flag', false, 'the slim board: no summary or trail text')],
     },
     'json',
-    async ctx => {
+    async (ctx, i) => {
       const b = ctx.board()
       if (b === null || b === undefined) throw new OpError(503, 'no tick yet')
-      return { code: 0, out: JSON.stringify(boardView(b)) + '\n', err: '' }
+      const v = boardView(b)
+      return { code: 0, out: JSON.stringify(i.slim ? slimBoard(v) : v) + '\n', err: '' }
     },
+  ),
+  local(
+    {
+      name: 'snapshot.show',
+      summary: 'Show several read views in one call, for example board,decisions.',
+      method: 'GET',
+      path: '/v1/snapshot',
+      inputs: [f('views', 'text', true, 'the views, comma separated, for example board,decisions')],
+    },
+    'json',
+    (c, i) => snapshot(c, i),
   ),
   local(
     { name: 'catalog.show', summary: 'Show the catalog of operations.', method: 'GET', path: '/v1/catalog' },

@@ -66,11 +66,12 @@ const NAMES = [
   'runs.show',
   'runs.start',
   'runs.status',
+  'snapshot.show',
   'steps.reports',
 ]
 
 describe('GET /v1/catalog', () => {
-  test('serves the envelope with the 28 operations', async () => {
+  test('serves the envelope with the 29 operations', async () => {
     const { h, calls } = setup()
     const r = await get(h, '/v1/catalog')
     expect(r.status).toBe(200)
@@ -195,7 +196,8 @@ describe('catalog.echo', () => {
 describe('input checks', () => {
   for (const p of [
     '/v1/board?x=1',
-    '/v1/board?&',
+    '/v1/board?slim=x',
+    '/v1/board?slim=1&slim=1',
     '/v1/prs?&',
     '/v1/prs?toString=x',
     '/v1/status?__proto__=x',
@@ -556,4 +558,24 @@ describe('rig endpoints: refusals and controls', () => {
         expect(t.n.run).toBe(0)
         expect(t.logs.join('')).not.toContain('zqsecret')
       })
+})
+
+describe('board slim and snapshot (claude-factory-hpmc.23)', () => {
+  const board = () => ({ runs: [{ id: 'r1', trail: [{ node: 'plan' }], last: 'text' }], rigs: [] })
+  test('GET /v1/board?slim=1 gives a board with no trail', async () => {
+    const { h } = setup(board)
+    const res = await get(h, '/v1/board?slim=1')
+    expect(res.status).toBe(200)
+    expect(JSON.stringify(await res.json())).not.toContain('"trail"')
+  })
+  test('GET /v1/snapshot needs views', async () => {
+    const { h } = setup(board)
+    expect((await get(h, '/v1/snapshot')).status).toBe(400)
+  })
+  test('GET /v1/snapshot?views=board gives the slim board', async () => {
+    const { h } = setup(board)
+    const res = await get(h, '/v1/snapshot?views=board')
+    expect(res.status).toBe(200)
+    expect(JSON.stringify(await res.json())).not.toContain('"trail"')
+  })
 })
