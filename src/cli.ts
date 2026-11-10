@@ -104,7 +104,14 @@ import {
   type Bead,
 } from './beads'
 import { clusterKey } from './filing-guard'
-import { routeLine, SECURITY_REASON, securityRoute, type SecurityRoute } from './security-route'
+import {
+  rigPaths,
+  routeLine,
+  SECURITY_REASON,
+  securityRoute,
+  SENSITIVE_ENTRY,
+  type SecurityRoute,
+} from './security-route'
 import { applyRigChange, editRigs, redactRig, snapshots } from './rigs-edit'
 import { hideParseText, hideSecret } from './secrets'
 import * as plan from './plan'
@@ -7081,7 +7088,8 @@ function runFact(id: string): gc.RunFact {
     const { bytes, files } = st.isDirectory() ? dirSize(join(dir, name)) : { bytes: st.size, files: 1 }
     return { name, isDir: st.isDirectory(), bytes, files }
   })
-  const { value, c } = current(id)
+  const { run, value, c } = current(id)
+  if (run.id !== id) throw new Error('run.json names run "' + run.id + '", not "' + id + '"')
   return { id, node: where(value)[0], finishedAt: c.log.at(-1)?.at ?? createdAt(id), entries }
 }
 function launchFacts(): gc.LaunchFact[] {
@@ -7095,20 +7103,61 @@ function launchFacts(): gc.LaunchFact[] {
     })
 }
 /**
- * Removes the reproducible files of a done or aborted run older than `days`. It also removes a
- * dead launch script. It follows the rules in gc.gcPlan().
+ * Removes one done or aborted run, for `factory rm` and for the gc reap pass. It removes the worktree first.
+ * It then appends the run's record to metrics.jsonl and deletes the run directory last. The branch stays.
+ * A step that throws stops the next one, so the run directory stays. It throws when the run is not finished,
+ * or when git refuses the worktree because it holds work.
+ */
+function removeRun(id: string): Run {
+  const { run, value } = current(id)
+  if (run.id !== id) fail(id + ': run.json names run "' + run.id + '": removed nothing')
+  if (!['done', 'aborted'].includes(where(value)[0])) fail(`${run.id} is still running: abort it first`)
+  for (const k of ['id', 'worktree', 'repo'] as const) {
+    const v: unknown = run[k]
+    if (typeof v !== 'string' || v === '') fail(`${id}: run.json has no ${k}: removed nothing`)
+  }
+  // no --force except for a clean submodule worktree: herdr and git refuse uncommitted work; the branch always stays.
+  // A reaped workspace is gone (and its id may be another's now): git removes the worktree then
+  const lock = () => rmSync(join(run.worktree, '.beads.gate.lock'), { force: true })
+  if (herdrPanes().some(p => isIn(p, run))) {
+    makeWritable(run.worktree)
+    lock() // bd leaves its lock in every worktree it ran in: not work, and it would make the worktree look dirty
+    herdr('worktree', 'remove', '--workspace', run.ws)
+  } else if (existsSync(run.worktree)) {
+    const reg = registeredWorktrees(run.repo)
+    if (reg && isRegistered(reg, run.worktree)) {
+      makeWritable(run.worktree)
+      lock()
+      // git refuses a worktree with a submodule: force only when it and each submodule hold nothing to lose
+      const force =
+        submoduleState(run.worktree) === 'clean' &&
+        git(run.worktree, 'status', '--porcelain', '--ignore-submodules=none') === ''
+      git(run.repo, 'worktree', 'remove', ...(force ? ['--force'] : []), run.worktree)
+    } else rmUnregisteredWorktree(run.worktree, run.id, run.repo) // git unregistered it, a read-only dir kept the rest
+  }
+  // its record outlives it: metrics count removed runs too
+  appendFileSync(join(HOME, 'metrics.jsonl'), JSON.stringify(record(run.id)) + '\n')
+  rmSafe(runDir(run.id), { recursive: true })
+  return run
+}
+/**
+ * Reaps every done or aborted run older than `days` with removeRun(). It also removes a dead launch script.
+ * It follows the rules in gc.gcPlan(). A run that removeRun() refuses keeps all its files. gc.log and the
+ * console name it with the reason, and the pass goes on with the next run.
  *
- * `--dry-run` only prints the bytes per kind. It deletes nothing (claude-factory-503.1).
+ * `--dry-run` prints the runs it would reap. It deletes nothing (claude-factory-503.1, claude-factory-lt4u).
  */
 function gcPass(days: number, dryRun: boolean) {
   const now = Date.now()
   // a run dir removed mid-pass, or one with no run.json/state.json, must not fail the whole pass
   // (claude-factory-503.1.6)
+  const skipped: string[] = []
   const runs = runIds().flatMap(id => {
     try {
       return [runFact(id)]
     } catch (err) {
       console.error(`gc: skipping ${id}: ${(err as Error).message}`)
+      skipped.push(`skipped ${id}: ${gc.scrubUrlUserinfo((err as Error).message)}`)
       return []
     }
   })
@@ -7135,10 +7184,30 @@ function gcPass(days: number, dryRun: boolean) {
       ...(livePanes === null ? ['herdr pane list did not answer: removed no launch script'] : []),
     ].join('\n'),
   )
-  if (dryRun) return
-  for (const r of plan.runs) {
-    appendFileSync(join(HOME, 'metrics.jsonl'), JSON.stringify(record(r.id)) + '\n')
-    for (const p of r.paths) rmSafe(join(runDir(r.id), p), { recursive: true, force: true })
+  if (dryRun) {
+    for (const id of plan.reap) console.log(`would reap ${id}`)
+    return
+  }
+  // ponytail: gc.log grows by one line per reaped run and is never rotated; rotate it when it matters
+  // a gc.log write error must not change a removal result or stop the pass
+  const say = (line: string) => {
+    console.log(line)
+    try {
+      appendFileSync(join(HOME, 'gc.log'), `${new Date(now).toISOString()} ${line}\n`)
+    } catch (err) {
+      console.error(`gc: cannot write gc.log: ${(err as Error).message}`)
+    }
+  }
+  for (const line of skipped) say(line)
+  for (const id of plan.reap) {
+    let line: string
+    try {
+      removeRun(id)
+      line = `reaped ${id}`
+    } catch (err) {
+      line = `refused ${id}: ${gc.scrubUrlUserinfo((err as Error).message)}`
+    }
+    say(line)
   }
   for (const pane of plan.launch) rmSync(join(launchDir(), `${pane}.sh`), { force: true })
 }
@@ -7545,6 +7614,7 @@ function allRunRefs(): GcRunRef[] {
     try {
       const run = loadRun(id)
       const { value, c } = current(id)
+      if (run.id !== id) throw new Error('run.json id differs from its directory')
       const finishedAt = c.log.at(-1)?.at ?? createdAt(id)
       return { id, node: where(value)[0], finishedAt, worktree: run.worktree, bead: run.bead, repo: run.repo }
     } catch {
@@ -8170,7 +8240,7 @@ export function changedPaths(repo: string, base: string, branch: string): string
 
 const routeFile = (run: Run) => join(runDir(run.id), 'security-route.json')
 
-/** The runner's security route for this run: changed paths, the plan's line and the bead's labels. */
+/** The runner's security route for this run: changed paths, the rig's sensitivePaths, the plan's line and the bead's labels. */
 function securityRouteOf(run: Run, def: Factory, c: Ctx): SecurityRoute {
   let labels: string[] | null = []
   const ref = run.shipBranch ?? run.branch
@@ -8185,10 +8255,12 @@ function securityRouteOf(run: Run, def: Factory, c: Ctx): SecurityRoute {
     }
   }
   const plan = c.log.findLast(e => e.node === 'plan' && e.outcome === 'ready')?.summary
+  const rig = rigOf(run.repo)
   return securityRoute({
-    paths: changedPaths(run.repo, baseBranchOf(def, rigOf(run.repo), run.repo), ref),
+    paths: changedPaths(run.repo, baseBranchOf(def, rig, run.repo), ref),
     plan,
     labels,
+    rigPaths: rigPaths(rig?.sensitivePaths),
   })
 }
 
@@ -9087,6 +9159,8 @@ export type Rig = {
   runner?: string
   /** Rules before each push, one paragraph each; `{base_branch}` expands. Set with `factory rig set --push-rule text|none` (repeatable). */
   pushRules?: string[]
+  /** Extra repo paths the security route treats as sensitive (claude-factory-rtk0w); set with `factory rig set --sensitive-path`. */
+  sensitivePaths?: string[]
   /** Skills for all workers in this rig, on top of the factory and station lists. Names come from harness.ts VM_PLUGINS. Use `factory rig set --skills a,b|none`. */
   skills?: string[]
   /** The literal false turns off tool details in the OTel export (src/otel.ts). Use `factory rig set --otel-content on|off`. */
@@ -11775,7 +11849,7 @@ async function rigListLines(print: Print) {
     if (r.mergeAuthority === true)
       print(`  merge authority: ship release station, ${mergeAuthority(r) ?? 'no origin: off'}`)
     if (r.mcp) print(`  mcp: ${safe.mcp}`)
-    for (const [k, v] of Object.entries(safe.params ?? {})) print(`  param ${k}: ${v}`)
+    for (const k of Object.keys(safe.params ?? {})) print(`  param ${k}: <hidden>`)
     if (safe.linear) {
       const extra = [
         safe.linear.projects?.length ? `projects ${safe.linear.projects.join('|')}` : '',
@@ -13183,7 +13257,7 @@ const usage = `factory — herdr software factories on xstate
                                      FACTORY_HOME, else the platform data dir: XDG_DATA_HOME/claude-factory,
                                      else ~/Library/Application Support/claude-factory on macOS, else
                                      ~/.local/share/claude-factory)
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm] | env set|unset <name|repo> KEY[=VALUE] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] [--path-prefix /path/]... | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--sensitive-path path|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm] | env set|unset <name|repo> KEY[=VALUE] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] [--path-prefix /path/]... | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex, cursor, grok or pi), --mcp gives its workers
@@ -13281,8 +13355,9 @@ const usage = `factory — herdr software factories on xstate
   fork <run> <station> '[note...]'   new run from <run>'s branch and state, restarted at <station>
   rm <run>                           finished run: drop its worktree and state, keep its branch
   gc [--days N] [--dry-run]          done or aborted runs older than N days (default 7, FACTORY_GC_DAYS):
-                                     drop prompts, briefs and stray backups, and a dead launch script;
-                                     --dry-run only prints bytes per kind, deleting nothing (each tick
+                                     remove the whole run as rm does (worktree, state; the branch stays,
+                                     its record goes to metrics.jsonl; refusals go to gc.log) and a dead
+                                     launch script; --dry-run prints the runs it would reap, deleting nothing (each tick
                                      starts one, at most hourly, FACTORY_GC_MS; FACTORY_GC=0 turns it off)
   gc --worktrees [--dry-run] [--rig NAME]   finished runs: drop a worktree, and its factory/* branch
                                      once it is merged, or its PR is closed and its bead is closed;
@@ -14704,12 +14779,14 @@ if (import.meta.main && !outboxCmd)
           console.log(JSON.stringify(redactRig(found!), null, 2))
         } else if (sub === 'set') {
           const usage =
-            "usage: factory rig set <rig|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner name] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm]"
+            "usage: factory rig set <rig|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner name] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--sensitive-path path|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm]"
           const val = (f: string) => (args.includes(f) ? (opt(f) ?? '') : undefined)
           const clusterRuns = val('--cluster-runs')
           const autoQueue = val('--auto-queue')
           const pushRules: string[] = []
           while (args.includes('--push-rule')) pushRules.push(opt('--push-rule') ?? '')
+          const sensitivePaths: string[] = []
+          while (args.includes('--sensitive-path')) sensitivePaths.push(opt('--sensitive-path') ?? '')
           const skills = val('--skills')
           const otelContent = val('--otel-content')
           const sandboxClass = val('--sandbox-class')
@@ -14751,6 +14828,16 @@ if (import.meta.main && !outboxCmd)
               fail('--push-rule is a non-empty rule text, or one --push-rule none alone')
             if (pushRules[0] === 'none') unset.push('pushRules')
             else set.pushRules = pushRules
+          }
+          if (sensitivePaths.length) {
+            const none = sensitivePaths.includes('none') && sensitivePaths.length !== 1
+            const bad = none ? 'none' : sensitivePaths.find(v => v !== 'none' && !SENSITIVE_ENTRY.test(v))
+            if (bad !== undefined)
+              fail(
+                `--sensitive-path is a repo path or directory (segments of letters, digits, . _ - joined by /; no . or .. segment; no glob), or one --sensitive-path none alone (not ${JSON.stringify(bad)})`,
+              )
+            if (sensitivePaths[0] === 'none') unset.push('sensitivePaths')
+            else set.sensitivePaths = sensitivePaths
           }
           if (skills !== undefined) {
             if (skills === 'none') unset.push('skills')
@@ -14983,30 +15070,7 @@ if (import.meta.main && !outboxCmd)
       }
       case 'rm': {
         refuseWorker('rm')
-        const { run, value } = current(args[0])
-        if (!['done', 'aborted'].includes(where(value)[0])) fail(`${run.id} is still running: abort it first`)
-        // no --force except for a clean submodule worktree: herdr and git refuse uncommitted work; the branch always stays.
-        // A reaped workspace is gone (and its id may be another's now): git removes the worktree then
-        const lock = () => rmSync(join(run.worktree, '.beads.gate.lock'), { force: true })
-        if (herdrPanes().some(p => isIn(p, run))) {
-          makeWritable(run.worktree)
-          lock() // bd leaves its lock in every worktree it ran in: not work, and it would make the worktree look dirty
-          herdr('worktree', 'remove', '--workspace', run.ws)
-        } else if (existsSync(run.worktree)) {
-          const reg = registeredWorktrees(run.repo)
-          if (reg && isRegistered(reg, run.worktree)) {
-            makeWritable(run.worktree)
-            lock()
-            // git refuses a worktree with a submodule: force only when it and each submodule hold nothing to lose
-            const force =
-              submoduleState(run.worktree) === 'clean' &&
-              git(run.worktree, 'status', '--porcelain', '--ignore-submodules=none') === ''
-            git(run.repo, 'worktree', 'remove', ...(force ? ['--force'] : []), run.worktree)
-          } else rmUnregisteredWorktree(run.worktree, run.id, run.repo) // git unregistered it, a read-only dir kept the rest
-        }
-        // its record outlives it: metrics count removed runs too
-        appendFileSync(join(HOME, 'metrics.jsonl'), JSON.stringify(record(run.id)) + '\n')
-        rmSafe(runDir(run.id), { recursive: true })
+        const run = removeRun(args[0]!)
         console.log(`removed ${run.id}; its work stays on branch ${run.branch}`)
         break
       }
