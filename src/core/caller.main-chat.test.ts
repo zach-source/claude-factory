@@ -42,7 +42,7 @@ test('mainChatRefusal rows (AC4)', () => {
   const M = { FACTORY_MAIN_CHAT: '1' }
   expect(r({})).toBeUndefined()
   expect(r(M)).toContain(DENIED)
-  for (const bad of ['../x', 'a/b', '']) {
+  for (const bad of ['../x', 'a/b', '', '../allow/x']) {
     put(home, 'x.json', ok())
     expect(r({ ...M, FACTORY_ALLOW: bad })).toContain(DENIED)
     expect(existsSync(join(home, 'allow', 'x.json'))).toBe(true)
