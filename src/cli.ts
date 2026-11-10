@@ -5220,10 +5220,11 @@ export const shipStarts = (repos: string[], queued: (repo: string) => number, li
 const liveShipRuns = () =>
   runIds().flatMap(id => {
     try {
-      const { run, value, c } = current(id)
-      const ended = ['done', 'aborted'].includes(where(value)[0])
+      const run = loadRun(id)
       if (!run.ship) return []
       const saved = readJson<Saved>(join(runDir(id), 'state.json'))
+      const { value, context: c } = saved.snapshot
+      const ended = ['done', 'aborted'].includes(where(value)[0])
       const revival = ended
         ? inboxLines(id)
             .slice(saved.cursor)
