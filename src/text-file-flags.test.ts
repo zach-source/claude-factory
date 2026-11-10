@@ -500,9 +500,10 @@ test('0s5e file mode requires IDs first and refuses a flag as a path', () => {
   for (const argv of consumers(ok)) {
     const at = argv.findIndex(w => w.endsWith('-file'))
     const flag = argv[at]!
-    const reordered = [flag, ok, ...argv.slice(0, at), ...argv.slice(at + 2)]
+    const reordered = [argv[0]!, flag, ok, ...argv.slice(1, at), ...argv.slice(at + 2)]
     const badId = factory(reordered, {}, scratch)
     expect(badId.code).not.toBe(0)
+    if (argv[0] === 'poke') expect(badId.err).toContain('the IDs must come first')
     const badPath = factory([...argv.slice(0, at + 1), '--unknown'], {}, scratch)
     expect(badPath.code).not.toBe(0)
   }
