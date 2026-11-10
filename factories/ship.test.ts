@@ -802,3 +802,113 @@ test('3w8o AC5 four unsure soaks then healthy need no machine change', () => {
   const { visited } = walk(ship, ['ready', 'ready', 'deployed', 'unsure', 'unsure', 'unsure', 'healthy'])
   expect(visited.slice(3)).toEqual(['soak', 'soak', 'soak', 'soak', 'queue'])
 })
+
+test('geo6 AC1 deadline evidence', () => {
+  for (const sentence of [
+    'Put the version, rollout UTC time or its absence, current-inclusive count, and unseen outputs first in every soak report.',
+    'For this version since its latest rollout, count prior unsure and blocked soak reports with unseen output, plus this soak once.',
+    'Do not count other versions, pre-rollout reports, worker launches, or retries without reports.',
+    'The deadline is the fourth such soak or 24 hours after rollout, whichever comes first.',
+    'Count 3 before 24 hours stays unsure; count 4 qualifies; exactly 24 hours qualifies at count 1.',
+    "Use the rollout report's UTC completion time for this version across all target environments.",
+    'Never use cut, merge, or restart time.',
+    'Absent, future, or invalid time disables only the time arm; count 4 still qualifies with complete count evidence.',
+    'Unknown count cannot satisfy the count arm.',
+    'Briefs retain 25 entries and clip summaries to 1500 characters.',
+    'Read full history or source bead comments when the brief lacks required evidence.',
+  ])
+    expect(release.nodes.soak.prompt).toContain(sentence)
+})
+
+test('geo6 AC2 risk exceptions', () => {
+  for (const sentence of [
+    'Classify the whole release from all constituent plans, beads, and review comments.',
+    'Only known ordinary risk permits the deadline exception.',
+    'Any exceptional constituent denies the exception for the whole release.',
+    'A security-sensitive plan or bead makes the release must-see-live.',
+    'A data migration makes the release must-see-live.',
+    'A schema migration makes the release must-see-live.',
+    'An explicit must-see-live AC makes the release must-see-live.',
+    'Unknown risk makes the release must-see-live.',
+    'A bead comment with a review#<n> security:, check#<n> security:, or security#<n> prefix makes the release must-see-live.',
+    'For must-see-live releases, the deadline never applies, even at count 4 or age 24 hours.',
+    'After two consecutive unsure soaks with unseen output, including this soak, report blocked with the output, trigger, and a `Question:` line.',
+    'For ordinary releases with unseen output, report unsure before the deadline.',
+  ])
+    expect(release.nodes.soak.prompt).toContain(sentence)
+})
+
+test('geo6 AC3 health gate', () => {
+  for (const sentence of [
+    'Actual regression always reports regressed to rollback before any deadline exception.',
+    'Observed own output retains the normal health path against the baseline.',
+    'Deadline-based healthy requires complete rollout in all target environments.',
+    'Deadline-based healthy requires the expected version in all target environments.',
+    'Deadline-based healthy requires ready targets.',
+    'Deadline-based healthy requires no restarts.',
+    'Deadline-based healthy requires clean logs.',
+    'Deadline-based healthy requires no regression against the baseline.',
+    'Absent baseline, unreadable checks, or denied reads prevent healthy; never infer clean health.',
+    'At the deadline, incomplete or unknown health reports blocked with evidence and a `Question:` line.',
+    'The deadline grants no live access or owner approval.',
+  ])
+    expect(release.nodes.soak.prompt).toContain(sentence)
+})
+
+test('geo6 AC4 durable follow-up', () => {
+  for (const sentence of [
+    'Before deadline-based healthy, search `bd list -l verify:live --status open,in_progress,blocked` and read candidate bodies.',
+    'Reuse one active bead only when the source release bead matches.',
+    'Reuse requires the same release version.',
+    'Reuse requires all unseen outputs.',
+    'Reuse requires all their triggers.',
+    'Reuse requires all target environments.',
+    'Closed beads, another source with the same version, or absent outputs do not qualify.',
+    "If no match exists, run `bd create 'verify live release output' -t task -p 2 -l verify:live --deps discovered-from:<source bead> --body-file <path>`.",
+    'Add no factory or dispatch labels.',
+    'The body lists the source bead, version, all unseen outputs, triggers, environments, and deferred checks.',
+    'Use --body-file and a plain-word, shell-safe single-quoted title; never interpolate untrusted text into commands.',
+    'Confirm the saved bead with `bd show <id>`.',
+    'Failed search blocks healthy.',
+    'Failed read blocks healthy.',
+    'Failed create blocks healthy.',
+    'Failed comment blocks healthy.',
+    'Absent source bead blocks healthy with a question for the manager.',
+    'Before healthy, record the confirmed follow-up ID in the source bead comment.',
+    'Before healthy, record the confirmed follow-up ID in the soak summary.',
+    'Both records must also name version, rollout time or absence, current-inclusive count, deadline arm, risk, health, outputs, and triggers.',
+    'Each deferred check says `not checked (not fired yet: filed <id>)`, never passed.',
+    'On retry, inspect this evidence and reuse the qualifying follow-up.',
+  ])
+    expect(release.nodes.soak.prompt).toContain(sentence)
+  expect(release.nodes.soak.prompt).not.toContain('AC ledger')
+  expect(release.nodes.soak.prompt).not.toContain('bd close')
+})
+
+test('geo6 AC5 scope and routes', () => {
+  expect(() => compile(validate(release))).not.toThrow()
+  expect(release.nodes.rollout.prompt).toContain(
+    'For deployed and unsure reports, the time must be the UTC rollout completion time for this version across all target environments.',
+  )
+  for (const [id, node] of Object.entries(release.nodes)) {
+    if (id !== 'soak') {
+      expect(node.prompt, id).not.toContain('verify:live')
+      expect(node.prompt, id).not.toContain('deadline exception')
+    }
+  }
+  expect(release.nodes.soak.next).toEqual({
+    healthy: 'done',
+    unsure: { to: 'soak', delayMin: 15 },
+    regressed: 'rollback',
+  })
+  expect(walk(release, ['unsure', 'unsure', 'unsure', 'healthy'], 'soak').visited).toEqual([
+    'soak',
+    'soak',
+    'soak',
+    'soak',
+    'done',
+  ])
+  expect(walk(release, ['regressed'], 'soak').visited).toEqual(['soak', 'rollback'])
+  expect(release.nodes.soak.runner).toBe('herdr')
+  expect(release.nodes.soak.timeoutMin).toBe(30)
+})
