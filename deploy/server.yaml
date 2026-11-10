@@ -124,6 +124,10 @@ spec:
             - /etc/factory/tls/tls.key
             - '--person-ca'
             - /etc/factory/person-ca/ca.crt
+            - '--worker-port'
+            - '8443'
+            - '--worker-key'
+            - /etc/factory/worker-key/key
           env:
             - name: FACTORY_HOME
               value: /var/lib/factory/home
