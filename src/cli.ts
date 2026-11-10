@@ -2877,6 +2877,18 @@ export function recordHarnessLimit(runner: string, h: Harness, until: number, ho
   } catch {} // none yet
   writeJson(file, { ...m, [h]: until })
 }
+/** drop one harness entry of harness-limit-<runner>.json, as unhold does after a token swap */
+export function clearHarnessLimit(runner: string, h: Harness, home = HOME) {
+  const file = harnessLimitFile(runner, home)
+  let m: Record<string, number>
+  try {
+    m = readJson(file)
+  } catch {
+    return // none yet
+  }
+  delete m[h]
+  writeJson(file, m)
+}
 
 /**
  * the worker command: the rig's own (one harness for all its stations) over the split's, the station's and the
@@ -14739,6 +14751,7 @@ if (import.meta.main && !outboxCmd)
         if (!r || r.local !== false || args.length > (codex ? 2 : 1))
           fail('usage: factory unhold <runner> [--codex]; the runner is a remote one, such as ax')
         writeUnhold(r!.name, codex, Date.now(), Date.now())
+        clearHarnessLimit(r!.name, codex ? 'codex' : 'claude')
         console.log(
           `marked: the next tick wakes the ${r!.name} stations held by a ${codex ? 'Codex' : 'Claude'} limit, as far as slots are free`,
         )
