@@ -1,9 +1,11 @@
 // The factory manager for the Herdr app (claude-factory-s01d.3), a second local UI beside the Claude mod.
 // The panel copy ticks and patrols, and holds the local manager lease.
+// With "machine" in config.json (claude-factory-hpmc.14) the manager runs there, such as the AX task f-manager.
+// Then every exec and file read passes on: machine. The mod never ticks, patrols or takes the lease.
 //
 // Props { band: true } draw a status band of one line.
 // Props { dialog: "interview" } draw the Interview dialog.
-// `factory herdr install` writes config.json next to this file: { cli, home }.
+// `factory herdr install` writes config.json next to this file: { cli, home, machine? }.
 
 import { View, div } from 'gpui-kit'
 import { v_flex, h_flex } from 'gpui-base'
@@ -15,6 +17,7 @@ import {
   notify,
   openOverlay,
   props,
+  run,
   readTextFile,
   setShared,
   settings,
@@ -28,14 +31,17 @@ import {
   interviewItems,
   line,
   newlyBlocked,
+  parseConfig,
   parseTick,
   shortId,
   statusText,
+  actionWords,
+  beatJobs,
+  chatArgv,
+  onOf,
 } from './view.js'
 
 const TICK_MS = 5_000
-/** each step and how often it runs. A step that is due and finds no work makes no model call. */
-const STEPS = { patrol: 60_000, brief: 120_000, review: 300_000, pm: 3_600_000, decisions: 300_000 }
 /** a job with no answer for this long is free again */
 const JOB_LIMIT_MS = 20 * 60_000
 
@@ -70,9 +76,9 @@ export default class Factory extends View {
       this.holder = `herdr:${Math.random().toString(36).slice(2, 10)}`
     }
     cx.spawn(async cx => {
-      const text = await readTextFile(configPath())
+      const text = await readTextFile(configPath()) // the config is on this machine
       try {
-        this.cfg = text ? JSON.parse(text) : null
+        this.cfg = parseConfig(text)
       } catch {
         this.cfg = null
       }
@@ -101,7 +107,11 @@ export default class Factory extends View {
     const seq = String(++this.seq)
     this.jobs[name] = { seq, at: Date.now() }
     this.ran[name] = Date.now()
-    exec('sh', ['-c', JOB, 'sh', this.cfg.cli, this.cfg.home, this.holder, name, seq, ...words]).catch(() => {
+    exec(
+      'sh',
+      ['-c', JOB, 'sh', this.cfg.cli, this.cfg.home, this.holder, name, seq, ...words],
+      onOf(this.cfg),
+    ).catch(() => {
       delete this.jobs[name]
     })
   }
@@ -111,19 +121,20 @@ export default class Factory extends View {
     const job = this.jobs[name]
     if (!job) return null
     const dir = `${this.cfg.home}/herdr`
-    const done = ((await readTextFile(`${dir}/${name}.done`)) ?? '').trim().split(' ')
+    const at = onOf(this.cfg)
+    const done = ((await readTextFile(`${dir}/${name}.done`, at)) ?? '').trim().split(' ')
     if (done[0] !== job.seq) return null
     delete this.jobs[name]
     return {
       code: Number(done[1]),
-      out: (await readTextFile(`${dir}/${name}.out`)) ?? '',
-      err: (await readTextFile(`${dir}/${name}.err`)) ?? '',
+      out: (await readTextFile(`${dir}/${name}.out`, at)) ?? '',
+      err: (await readTextFile(`${dir}/${name}.err`, at)) ?? '',
     }
   }
 
   beat(cx) {
     cx.spawn(async cx => {
-      const tick = await this.finished('tick')
+      const tick = await this.finished(this.cfg.machine ? 'board' : 'tick')
       if (tick) this.onTick(parseTick(tick.code, tick.out, tick.err))
       const dec = await this.finished('decisions')
       if (dec && dec.code === 0) {
@@ -138,22 +149,8 @@ export default class Factory extends View {
         else if (r && name === 'patrol' && r.out.trim() && r.out.trim() !== 'nothing due')
           notify({ title: 'factory patrol', body: line(r.out.split('\n')[0], 200), level: 'info' })
       }
-      this.start('tick', ['tick', '--keep-mail'])
-      const state = shared('factory') ?? {}
-      // a manager without the lease only shows the board (claude-factory-s01d.2)
-      if (!state.readOnly && !state.halt) {
-        const now = Date.now()
-        for (const [name, every] of Object.entries(STEPS))
-          if (now - (this.ran[name] ?? 0) >= every)
-            this.start(
-              name,
-              name === 'decisions'
-                ? ['decisions']
-                : name === 'review'
-                  ? ['review', '--once']
-                  : [name, '--once'],
-            )
-      }
+      for (const j of beatJobs(this.cfg, shared('factory') ?? {}, this.ran, Date.now()))
+        this.start(j.name, j.words)
       cx.notify()
     })
   }
@@ -188,6 +185,10 @@ export default class Factory extends View {
     this.screen = ''
     cx.notify()
     if (!r.pane) return
+    if (this.cfg?.machine) {
+      this.screen = 'worker screens are not in remote mode yet (claude-factory-hpmc.10)'
+      return
+    }
     cx.spawn(async cx => {
       const p = await exec('herdr', [
         'pane',
@@ -300,7 +301,8 @@ export default class Factory extends View {
               .text_color(state.readOnly || state.error ? t.blocked : t.muted)
               .child(head),
           )
-          .child(button('interview', `Interview (${items.length})`, () => this.openInterview())),
+          .child(button('interview', `Interview (${items.length})`, () => this.openInterview()))
+          .children(this.cfg.machine ? this.controls(button) : []),
       )
       .child(
         v_flex()
@@ -325,6 +327,30 @@ export default class Factory extends View {
       )
   }
 
+  /** runs one factory command on the machine of a remote config and toasts the result */
+  act(action, arg) {
+    exec('env', [`FACTORY_HOME=${this.cfg.home}`, this.cfg.cli, ...actionWords(action, arg)], onOf(this.cfg))
+      .then(r =>
+        notify({
+          title: `factory ${action}`,
+          body: line(r.stdout || r.stderr, 200),
+          level: r.code === 0 ? 'info' : 'warning',
+        }),
+      )
+      .catch(e => notify({ title: `factory ${action}`, body: String(e), level: 'warning' }))
+  }
+
+  /** the buttons of a remote config: chat, stop, resume, abort of the selected run, unhold of ax */
+  controls(button) {
+    return [
+      button('chat', 'Manager chat', () => run('terminal.open', { argv: chatArgv(this.cfg), place: 'tab' })),
+      button('stop', 'Stop', () => this.act('stop')),
+      button('resume', 'Resume', () => this.act('resume')),
+      button('unhold', 'Unhold ax', () => this.act('unhold', 'ax')),
+      ...(this.selected ? [button('abort', 'Abort run', () => this.act('abort', this.selected))] : []),
+    ]
+  }
+
   /** the Interview dialog: gates and decisions, one button for each answer */
   interview() {
     const t = theme()
@@ -332,16 +358,18 @@ export default class Factory extends View {
     const items = interviewItems(state.runs ?? [], shared('factory.decisions'))
     const answer = (item, option, cx) =>
       cx.spawn(async cx => {
-        const cfg = JSON.parse((await readTextFile(configPath())) ?? 'null')
+        const cfg = parseConfig((await readTextFile(configPath())) ?? '')
         if (!cfg) return
         // the person clicks the answer: this click is the confirm step
-        const r = await exec('env', [`FACTORY_HOME=${cfg.home}`, cfg.cli, ...answerArgs(item, option)]).catch(
-          e => ({
-            code: 1,
-            stdout: '',
-            stderr: String(e),
-          }),
-        )
+        const r = await exec(
+          'env',
+          [`FACTORY_HOME=${cfg.home}`, cfg.cli, ...answerArgs(item, option)],
+          onOf(cfg),
+        ).catch(e => ({
+          code: 1,
+          stdout: '',
+          stderr: String(e),
+        }))
         notify({
           title: r.code === 0 ? `answered ${item.key}` : `could not answer ${item.key}`,
           body: line(r.code === 0 ? option : r.stderr || r.stdout, 200),

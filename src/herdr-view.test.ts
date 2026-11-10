@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as claude from '../mod/hooks/view'
 import * as herdrView from '../herdr/mods/factory/view.js'
+import * as herdrInstall from './herdr-install'
 
 // the mod is plain JS: its inferred types are loose
 const herdr: any = herdrView
@@ -110,4 +111,105 @@ test('factory herdr install copies the mod and layout and names the cli and home
   expect(existsSync(join(app, 'layouts', 'factory.json'))).toBe(true)
   const cfg = JSON.parse(readFileSync(join(app, 'mods', 'factory', 'config.json'), 'utf8'))
   expect(cfg).toEqual({ cli: join(import.meta.dir, '..', 'bin', 'factory'), home })
+})
+
+// claude-factory-hpmc.14: remote mode, for a manager in another machine (AX task f-manager)
+test('parseConfig reads a local and a remote config and refuses bad text', () => {
+  expect(herdr.parseConfig('{"cli":"/x/factory","home":"/h"}')).toEqual({ cli: '/x/factory', home: '/h' })
+  expect(herdr.parseConfig('{"cli":"factory","home":"/w/home","machine":"f-manager"}')).toEqual({
+    cli: 'factory',
+    home: '/w/home',
+    machine: 'f-manager',
+  })
+  for (const bad of [null, '', '{', '[]', '{"cli":"x"}', '{"cli":"x","home":"/h","machine":3}'])
+    expect(herdr.parseConfig(bad)).toBeNull()
+})
+
+test('every exec and file read of a remote config passes on: machine', () => {
+  expect(herdr.onOf({ cli: 'x', home: '/h', machine: 'f-manager' })).toEqual({ on: 'f-manager' })
+  expect(herdr.onOf({ cli: 'x', home: '/h' })).toBeUndefined()
+})
+
+test('a remote mod never ticks, never patrols and takes no lease', () => {
+  const remote = { cli: 'factory', home: '/w/home', machine: 'f-manager' }
+  const local = { cli: 'x', home: '/h' }
+  const now = 10_000_000
+  const jobs = (cfg: unknown, state = {}) =>
+    herdr.beatJobs(cfg, state, {}, now).map((j: { name: string }) => j.name)
+  expect(jobs(remote)).toEqual(['board', 'decisions'])
+  expect(jobs(remote, { halt: { state: 'stopping' } })).toEqual(['board', 'decisions'])
+  const words = herdr.beatJobs(remote, {}, {}, now).flatMap((j: { words: string[] }) => j.words)
+  for (const w of ['tick', 'patrol', 'brief', 'review', 'pm']) expect(words.includes(w)).toBe(w === 'tick')
+  expect(herdr.beatJobs(remote, {}, {}, now)[0].words).toEqual(['tick', '--board'])
+  expect(jobs(local)).toEqual(['tick', 'patrol', 'brief', 'review', 'pm', 'decisions'])
+  expect(jobs(local, { readOnly: 'x' })).toEqual(['tick'])
+  expect(
+    herdr.beatJobs(local, {}, { patrol: now - 1 }, now).some((j: { name: string }) => j.name === 'patrol'),
+  ).toBe(false)
+})
+
+test('a remote action calls the factory CLI; the chat opens the hc terminal of the manager', () => {
+  expect(herdr.actionWords('stop')).toEqual(['stop'])
+  expect(herdr.actionWords('resume')).toEqual(['resume'])
+  expect(herdr.actionWords('abort', 'lifecycle-aaaa1111')).toEqual(['abort', 'lifecycle-aaaa1111'])
+  expect(herdr.actionWords('unhold', 'ax')).toEqual(['unhold', 'ax'])
+  expect(herdr.actionWords('say', 'hello there')).toEqual(['say', 'hello there'])
+  expect(() => herdr.actionWords('tick')).toThrow()
+  expect(herdr.chatArgv({ cli: 'x', home: '/h', machine: 'f-manager' })).toEqual([
+    'hc',
+    'attach',
+    'f-manager/manager',
+  ])
+  expect(herdr.chatArgv({ cli: 'x', home: '/h' })).toBeNull()
+})
+
+test('factory herdr install --machine writes a remote config', () => {
+  const app = join(dir, 'app')
+  const p = Bun.spawnSync(
+    [
+      join(import.meta.dir, '..', 'bin', 'factory'),
+      'herdr',
+      'install',
+      '--app-home',
+      app,
+      '--machine',
+      'f-manager',
+    ],
+    { env: { ...process.env, FACTORY_HOME: join(dir, 'home'), FACTORY_SELF_UPDATE: '0' } },
+  )
+  expect(p.exitCode).toBe(0)
+  expect(JSON.parse(readFileSync(join(app, 'mods', 'factory', 'config.json'), 'utf8'))).toEqual({
+    cli: 'factory',
+    home: '/workspace/w/home',
+    machine: 'f-manager',
+  })
+  const q = Bun.spawnSync(
+    [
+      join(import.meta.dir, '..', 'bin', 'factory'),
+      'herdr',
+      'install',
+      '--app-home',
+      app,
+      '--machine',
+      'a b',
+      '--home',
+      '/h',
+    ],
+    { env: { ...process.env, FACTORY_SELF_UPDATE: '0' } },
+  )
+  expect(q.exitCode).not.toBe(0)
+})
+
+test('a local install refuses a home whose manager runs in AX', () => {
+  const now = 1_000_000
+  const live = { holder: 'ax:f-manager', kind: 'ax', at: now - 1000 }
+  expect(herdrInstall.localRefusal('/h', undefined, undefined, now)).toBeUndefined()
+  expect(
+    herdrInstall.localRefusal('/h', 'the factory manager runs in AX task f-manager', undefined, now),
+  ).toMatch(/AX/)
+  expect(herdrInstall.localRefusal('/h', undefined, live, now)).toMatch(/AX/)
+  expect(herdrInstall.localRefusal('/h', undefined, { ...live, at: now - 120_000 }, now)).toBeUndefined()
+  expect(
+    herdrInstall.localRefusal('/h', undefined, { holder: 'p', kind: 'herdr', at: now }, now),
+  ).toBeUndefined()
 })
