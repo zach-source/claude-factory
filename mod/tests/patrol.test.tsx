@@ -10,6 +10,272 @@ const SLOW = { timeoutMs: 30_000 }
 const RUN = { id: 'r1', rig: 'api', node: 'implement', sub: 'waiting', goal: 'g' }
 const mail = (at: number) => ({ run: 'r1', from: 'implement', text: 'blocked: which DB?', at })
 
+const OUTSIDE_TEXT = [
+  '/fixture/home/other/a',
+  '/fixture/home/text-other/a',
+  '/fixture/home/text/../a',
+  '/fixture/home/text',
+  '/fixture/home/text/',
+  '',
+  undefined,
+  null,
+  42,
+  [],
+  {},
+  '/fixture/home/text/a\0b',
+  'text/a',
+  '../text/a',
+  '~/text/a',
+  'file:///fixture/home/text/a',
+  'C:\\text\\a',
+  '\\\\host\\text\\a',
+]
+const INSIDE_TEXT = [
+  '/fixture/home/text/a',
+  '/fixture/home/text/sub/a',
+  '/fixture/home/text//a',
+  '/fixture/home/text/sub/../a',
+  '/fixture/home/text/space 雪',
+  '/fixture/home/text/$literal;`name`',
+  '/fixture/home/text/back\\slash',
+  // This stub never follows links. Lexical confinement permits this path through a mock link.
+  '/fixture/home/text/mock-link/a',
+]
+
+for (const home of ['/fixture/home', '', undefined, 'relative', '/fixture/\0home']) {
+  test(`oxib AC1 path grammar with home ${JSON.stringify(home)}`, SLOW, async ($, on) => {
+    const clock = mock.clock(on)
+    const files = new Map<string, string>()
+    homeMocks(
+      on,
+      () => [],
+      () => {},
+      home as string,
+      files,
+    )
+    agentListMock(on, ['oxib-fresh'])
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('ui.toast', () => ({ value: undefined }) as never)
+    let downstream = 0
+    let dialogs = 0
+    on('tool.call', { tool: 'Write' }, () => {
+      downstream++
+      return { result: 'unexpected write' } as never
+    })
+    on('tool.call', { tool: 'AskUserQuestion' }, () => {
+      dialogs++
+      return { deny: 'unexpected dialog' }
+    })
+    if (home !== undefined) {
+      await $.command.run({ command: 'factory', args: 'status' } as never)
+      await clock.settle()
+    }
+    const before = [...files]
+    for (const file_path of home === '/fixture/home' ? OUTSIDE_TEXT : [INSIDE_TEXT[0]]) {
+      const result = await $.tool.call({
+        tool: 'Write',
+        agentId: 'oxib-fresh',
+        file_path,
+        content: 'private content',
+      } as never)
+      expect(result.deny).toContain('text/')
+      expect(result.deny).not.toContain('private content')
+      expect(downstream).toBe(0)
+      expect(dialogs).toBe(0)
+      expect([...files]).toEqual(before)
+    }
+  })
+}
+
+for (const home of ['/fixture/home', '/fixture/home/', '/fixture/home space']) {
+  test(`oxib AC2 allowed paths with home ${home}`, SLOW, async ($, on) => {
+    const clock = mock.clock(on)
+    const files = new Map<string, string>()
+    homeMocks(
+      on,
+      () => [],
+      () => {},
+      home,
+      files,
+    )
+    agentListMock(on, ['oxib-fresh'])
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('ui.toast', () => ({ value: undefined }) as never)
+    const seen: unknown[] = []
+    on('tool.call', { tool: 'Write' }, (_$, e) => {
+      seen.push(e)
+      files.set(e.file_path, e.content)
+      return { result: 'written' } as never
+    })
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    for (const path of INSIDE_TEXT) {
+      const file_path = path.replace('/fixture/home', home.replace(/\/$/, ''))
+      for (const content of ['new file', 'replace file']) {
+        const event = { tool: 'Write', tool_use_id: 'oxib-write', agentId: 'oxib-fresh', file_path, content }
+        const count = seen.length
+        const result = await $.tool.call(event as never)
+        expect(result.deny).toBeUndefined()
+        expect(seen.length).toBe(count + 1)
+        expect(seen.at(-1)).toEqual(event)
+        expect(files.get(file_path)).toBe(content)
+      }
+    }
+  })
+}
+
+test(
+  'oxib AC3 patrol identity retains current and old IDs without lifecycle changes',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    const files = new Map<string, string>()
+    let queued: readonly unknown[] = [mail(1)]
+    homeMocks(
+      on,
+      () => queued,
+      () => (queued = []),
+      '/fixture/home',
+      files,
+    )
+    let listFails = false
+    on('agent.list', () => {
+      if (listFails) throw new Error('agent list unavailable')
+      return {
+        value: ['oxib-old', 'oxib-current', 'oxib-fresh'].map(id => ({
+          id,
+          type: 'factory:patrol',
+          status: 'running',
+        })),
+      } as never
+    })
+    let spawns = 0
+    on('agent.spawn', () => {
+      spawns++
+      return { model: 'sonnet' } as never
+    })
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('ui.toast', () => ({ value: undefined }) as never)
+    on('turn.complete', (_$, e) => ({ text: e.answer }) as never)
+    on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: '', stderr: '', interrupted: false } }))
+    const seen: unknown[] = []
+    on('tool.call', { tool: 'Write' }, (_$, e) => {
+      seen.push(e)
+      return { result: 'stub' } as never
+    })
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.tool.call({ tool: 'Bash', command: 'factory status', agentId: 'oxib-old' } as never)
+    await clock.advance(16 * 60_000)
+    queued = [mail(2)]
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    await $.tool.call({ tool: 'Bash', command: 'factory status', agentId: 'oxib-current' } as never)
+    for (const inactive of [false, true]) {
+      if (inactive) {
+        await $.turn.complete({
+          answer: 'current done',
+          durationMs: 1,
+          isAborted: false,
+          reason: 'answer',
+          turnId: 'oxib',
+          agentId: 'oxib-current',
+        } as never)
+        await clock.settle()
+        expect(files.get('/fixture/home/patrol-log.jsonl')).toContain('current done')
+      }
+      for (const failure of [false, true]) {
+        listFails = failure
+        for (const agentId of failure
+          ? ['oxib-old', 'oxib-current']
+          : ['oxib-old', 'oxib-current', 'oxib-fresh']) {
+          for (const file_path of [...OUTSIDE_TEXT, ...INSIDE_TEXT]) {
+            const count = seen.length
+            const event = { tool: 'Write', tool_use_id: 'oxib-write', agentId, file_path, content: 'stub' }
+            const result = await $.tool.call(event as never)
+            if (INSIDE_TEXT.includes(file_path as string)) {
+              expect(result.deny).toBeUndefined()
+              expect(seen.length).toBe(count + 1)
+              expect(seen.at(-1)).toEqual(event)
+            } else {
+              expect(result.deny).toContain('text/')
+              expect(seen.length).toBe(count)
+            }
+          }
+        }
+      }
+    }
+    expect(spawns).toBe(2)
+  },
+)
+
+test('oxib AC3 unconfirmed identities retain the next handler', SLOW, async ($, on) => {
+  let listFails = false
+  on('agent.list', () => {
+    if (listFails) throw new Error('agent list unavailable')
+    return { value: [{ id: 'unrelated', type: 'other' }] } as never
+  })
+  const seen: unknown[] = []
+  on('tool.call', { tool: 'Write' }, (_$, e) => {
+    seen.push(e)
+    return { result: 'stub' } as never
+  })
+  for (const failure of [false, true]) {
+    listFails = failure
+    for (const agentId of [undefined, 'unrelated', 'unconfirmed']) {
+      const event = {
+        tool: 'Write',
+        tool_use_id: 'oxib-write',
+        agentId,
+        file_path: '/outside/a',
+        content: 'stub',
+      }
+      const count = seen.length
+      expect((await $.tool.call(event as never)).deny).toBeUndefined()
+      expect(seen.length).toBe(count + 1)
+      expect(seen.at(-1)).toEqual(event)
+    }
+  }
+})
+
+test(
+  'oxib AC4 hook composition preserves downstream deny and forbids patrol dialogs',
+  SLOW,
+  async ($, on) => {
+    const clock = mock.clock(on)
+    homeMocks(
+      on,
+      () => [],
+      () => {},
+      '/fixture/home',
+      new Map(),
+    )
+    agentListMock(on, ['oxib-fresh'])
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('ui.toast', () => ({ value: undefined }) as never)
+    let downstream = 0
+    let dialogs = 0
+    on('tool.call', { tool: 'AskUserQuestion' }, () => {
+      dialogs++
+      return { deny: 'unexpected dialog' }
+    })
+    on('tool.call', { tool: 'Write' }, () => {
+      downstream++
+      return { deny: 'downstream policy' }
+    })
+    await $.command.run({ command: 'factory', args: 'status' } as never)
+    await clock.settle()
+    const event = { tool: 'Write', agentId: 'oxib-fresh', content: 'stub' }
+    expect((await $.tool.call({ ...event, file_path: INSIDE_TEXT[0] } as never)).deny).toBe(
+      'downstream policy',
+    )
+    expect(downstream).toBe(1)
+    expect((await $.tool.call({ ...event, file_path: OUTSIDE_TEXT[0] } as never)).deny).toContain('text/')
+    expect(downstream).toBe(1)
+    expect(dialogs).toBe(0)
+  },
+)
+
 /** Answers `$.agent.list()` with one running `factory:patrol` agent for each id in `patrolIds`.
  * This lets the tool.call hook's `isPatrolAgent` check (claude-factory-72v.9) confirm a Bash
  * call's `agentId` is really the patrol, the way a real session's `$.agent.list()` would. */
