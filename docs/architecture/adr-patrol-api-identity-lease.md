@@ -330,6 +330,58 @@ The scanner, home guard, token guard, model module, package manifest, and lockfi
 An equal source tree supplies no machine-speed diagnosis.
 No patrol source or test changed, so the prior patrol mutations remain applicable.
 
+### AC6 complete local result, 2026-11-10
+
+Source head: `2834a2ed`. Fetched main: `42254bcd`.
+The main merge retains both AX environment tests. The complete AX file passes all 144 tests.
+No patrol source or test changed in this pass.
+
+| Check | Result |
+| --- | --- |
+| AC1 through AC5 compatibility command with lease tests | 551 pass, zero failures; 7103 assertions |
+| Full local `bun run test` | Exit 1; 18098 pass, two skips, 30 failures; 238 files, 754.79 seconds |
+| Root types within `bun run typecheck` | Pass |
+| Mod types within `bun run typecheck` | Exit 1; generated mod config absent, TS5057 |
+| Separate `claude plugin test mod` | 253 pass, zero failures |
+| `bun run format:check` | Pass; Prettier 3.9.9 |
+| `bun audit` | Pass; 73 packages, zero vulnerabilities |
+| `gitleaks detect --log-opts=origin/main..HEAD` | Pass; 19 commits, no leaks |
+| `nix build .#factory` | Exit 1 twice; build environment cannot initialize before compilation; input/output error |
+
+The full gate uses Bun 1.4.4 and the Nix tool wrapper specified above.
+It exports `PKGGATE_E2E_REQUIRE=1` and `PG_SCRATCH_REQUIRE=1` before `bun run test`.
+The test phase fails, so the package script does not reach its plugin phase.
+The separate plugin command supplies the local plugin result.
+
+All 30 failures concern memory operations that need the model. The log contains ECONNRESET errors.
+Some child-process assertions expose only exit 1 or absent search results.
+The existing model-input bead is `claude-factory-d7qpg`.
+
+| Test file | Failed tests |
+| --- | --- |
+| `src/memory-links.test.ts` | 1 |
+| `src/text-file-flags.test.ts` | 1 |
+| `src/cli.test.ts` | 12 |
+| `src/memory-proposals.test.ts` | 1 |
+| `src/memory-snapshot.test.ts` | 3 |
+| `src/memory-eval-self.test.ts` | 2 |
+| `src/memory-add-dup-from.test.ts` | 1 |
+| `src/memory.test.ts` | 6 |
+| `src/remote.test.ts` | 3 |
+
+These tests, their implementations, `package.json`, and `bun.lock` equal fetched main.
+The scanner and home-guard inputs also equal main. This full run has no time-limit assertion failure.
+No model skip, fake mod type, network workaround, or build configuration change was added.
+The local Nix environment error differs from the dependency-download case in the evidence table.
+The manager has the exact error and a request to clarify that evidence boundary.
+Do not claim a local Nix build or smoke-test pass.
+
+All five CI jobs pass on source head `2834a2ed`, run `42876556304`.
+The evidence commit needs its own five successful CI jobs before task `.6` can close.
+The activation diff remains empty. Only tests call `patrolListener`.
+The owner listener still calls `serveSocket` without the patrol policy.
+Prior patrol mutations remain applicable because no patrol source or test changed.
+
 ## Test plan and tasks
 
 Write tests before implementation. Use temporary homes and fake credentials only.
