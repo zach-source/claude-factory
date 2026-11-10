@@ -139,6 +139,12 @@ test('the container args start the client API on 8444 from the mounted TLS and p
   expect(mounts).toContain('/etc/factory/person-ca')
 })
 
+test('the container args start the worker API on 8443 from the mounted worker key', () => {
+  const c = find(load(), 'Deployment').spec.template.spec.containers[0]
+  expect(parseFlags(c.args).worker).toEqual({ port: 8443, key: '/etc/factory/worker-key/key' })
+  expect(c.volumeMounts.map((m: Obj) => m.mountPath)).toContain('/etc/factory/worker-key')
+})
+
 test('the Service exposes only the worker and client ports', () => {
   const docs = load()
   expect(servicePorts(docs)).toEqual([
