@@ -198,6 +198,22 @@ test('05sap AC3: worker and patrol callers still refuse the server', async () =>
 })
 const M = { FACTORY_MAIN_CHAT: '1' }
 
+test('0s5e a goal file cannot supply consent for explicit start --owned', () => {
+  const { home, run } = setup()
+  mkdirSync(join(home, 'text'))
+  const path = join(home, 'text', 'goal.md')
+  writeFileSync(path, '--owned')
+  const args = ['start', 'lifecycle', 'acme', '--goal-file', path]
+  expect(run([...args, '--owned'], M)).toContain(REFUSED)
+  expect(run(args, M)).not.toContain(REFUSED)
+  writeFileSync(
+    join(home, 'allow', `${U}.json`),
+    JSON.stringify({ kinds: ['owned'], exp: Date.now() + 60_000 }),
+  )
+  expect(run([...args, '--owned'], { ...M, FACTORY_ALLOW: U })).not.toContain(REFUSED)
+  expect(existsSync(join(home, 'runs'))).toBe(false)
+})
+
 test('a symlink to the CLI is refused under the marker; a token permits one call (AC5)', () => {
   const { home, run } = setup()
   expect(run(['decide', 'r1', 'ship'], M)).toContain(REFUSED)

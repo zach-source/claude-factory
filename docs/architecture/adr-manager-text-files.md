@@ -9,11 +9,11 @@ Manager text can quote a bead or worker report.
 An apostrophe can end a shell argument and expose a second command.
 Single quotes without an escape rule do not protect this text.
 
-`src/cli.ts:905` already confines text files through `textFileArg`.
+`src/cli.ts` already confines text files through `textFileArg`.
 Mail and memory bodies already use this helper.
-`src/cli.ts:13455` expands remote worker files before the outbox write.
-`src/cli.ts:13520` expands mail before the server client call.
-`mod/hooks/register.tsx:1557` asks the person about the command, without a file-content preview.
+`src/cli.ts` expands remote worker files before the outbox write.
+It expands mail before the server client call.
+`mod/hooks/register.tsx` asks the person about the command, without a file-content preview.
 Thus, a file note for `decide` would hide part of the decision.
 
 ## Decision and scope
@@ -70,7 +70,7 @@ Extend `mod/tests/quote-checks.ts` and `mod/tests/quote-untrusted.test.tsx` for 
 Use the existing CLI, gate, start, and rig test fixtures where necessary.
 Do not change `.factory/`, worker guards, live settings, or the permission model.
 
-Reject inline text everywhere: repeated manual escapes leave the original failure mode in unattended commands.
+Do not use inline text in manager examples. Preserve legacy inline CLI calls.
 Reject file inputs for decisions: the current confirmation displays the command, not an immutable payload.
 Reject a new shell grammar: this change removes payloads from shell text instead.
 
@@ -156,7 +156,7 @@ All tasks ship in one pull request; no intermediate test failure ships alone.
 2. `claude-factory-0s5e.2`: Add the CLI file forms and remote normalization. Preserve the input contract and all permission checks.
    Commit when AC1-AC3 pass. Use the existing helpers rather than a new framework.
 3. `claude-factory-0s5e.3`: Update the manager prompts, skills, and help. Keep the decision exceptions explicit.
-   Commit when AC4-AC5 pass. Add one Unreleased changelog bullet at the end.
+   Commit when AC4-AC5 pass. Leave the changelog to the release step, as the implement brief requires.
 4. `claude-factory-0s5e.4`: Prove the guards and complete AC6. Commit only necessary final corrections and evidence in this ADR.
    After the fix commit, use `factory mutate` for independent confinement, conflict, and replay checks.
    Each mutant must build and fail its focused test. Restore the committed source after each probe.
@@ -188,3 +188,18 @@ Add no payload logs, metrics, or live access requirement.
 The ship soak can check the deployed CLI version and loaded prompt revision through its authorized release checks.
 Local isolated fixtures prove the literal-data contract without a production write.
 No AC is must-see-live. Production reads are not a pre-merge condition.
+
+## Implementation evidence
+
+The regression commit is `716473ba`. The CLI fix is `a31fdfcb`. The prompt commit is `cbce75f8`.
+The baseline tests exposed absent flags, unsafe prompt examples, and unresolved summary files on replay.
+The CLI and client parse options before file text enters an operation.
+Mail uses `--` before flag-like payloads on the worker and client paths.
+The client also uses `--` to keep a start goal separate from explicit `--owned` authority.
+Memory file text that starts with `--` retains the existing domain refusal.
+The worker brief also uses files for memory summaries and queries.
+The sibling audit found no affected examples in the other manager step files.
+Both decision verbs retain their confirm dialog and inline escape rule.
+The real-shell test proves denial makes zero calls and approval delivers one literal note.
+
+No changelog entry, version change, dependency, factory-definition change, or production action is part of this implementation.

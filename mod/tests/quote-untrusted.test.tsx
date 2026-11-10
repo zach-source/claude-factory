@@ -25,8 +25,10 @@ test('no cli command span in the manual holds a double-quoted placeholder', () =
   for (const s of spans) expect(s).not.toContain('"<')
 })
 
-test('memory search and --goal placeholders are single-quoted', () => {
+test('memory search and rig goals use file placeholders', () => {
   expect(manual('factory')).not.toMatch(/memory search <|--goal <|memory search "/)
+  expect(manual('factory')).toContain('memory search --query-file <path>')
+  expect(manual('factory')).toContain('--goal-file <path>')
 })
 
 test('every non-ID placeholder in a factory command span is single-quoted', () => {

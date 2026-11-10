@@ -430,9 +430,26 @@ test('0s5e remote text is data: start parses owned before file content', async (
       expect(bodies.at(-1)).toMatchObject({ factory: 'lifecycle', rig: 'acme', goal: '--owned' })
       expect(bodies.at(-1)?.owned).toBe(owned ? true : undefined)
     }
+    const p = Bun.spawn([CLI, 'start', 'lifecycle', 'acme', '--goal-file', path, '--unknown', 'value'], {
+      env: { PATH: process.env.PATH, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_SERVER: server.url.origin },
+    })
+    expect(await p.exited).not.toBe(0)
+    expect(bodies).toHaveLength(2)
   } finally {
     server.stop(true)
   }
+})
+
+test('0s5e remote text is data: file caps do not replace the total outbox cap', () => {
+  const s = txt('summary-cap.md', 'a'.repeat(60 * 1024))
+  const b = txt('body-cap.md', 'b'.repeat(60 * 1024))
+  const outbox = join(dir, 'outbox.jsonl')
+  const r = factory([...ADD, '--summary-file', s, '--body-file', b], {
+    FACTORY_OUTBOX: outbox, FACTORY_FROM: 'implement',
+  })
+  expect(r.code).not.toBe(0)
+  expect(r.err).toContain('100 KiB')
+  expect(existsSync(outbox)).toBe(false)
 })
 
 test('0s5e file mode fails closed before operations for every consumer', () => {
@@ -486,6 +503,8 @@ test('0s5e file mode fails closed on malformed argv and memory option payloads',
     ).toBe(2)
     expect(existsSync(outbox)).toBe(false)
   }
+  const missingSummary = factory([...ADD, '--body-file', path])
+  expect(missingSummary.code).toBe(2)
   expect(events()).toEqual([])
   expect(notes()).toEqual([])
 })
