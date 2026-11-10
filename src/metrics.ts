@@ -395,6 +395,8 @@ export type Usage = {
   peak: number
   /** what an API-billed harness (grok) charged, in millionths of a dollar */
   costMicro?: number
+  /** stored at a factory stop's close of an AX task; a resume keeps the seq, so this row does not end the seq's usage */
+  halt?: true
 }
 
 /**
@@ -762,3 +764,129 @@ export function renderTokens(rows: StoredUsage[], shipped: Set<string>, manager:
   }
   return lines.join('\n')
 }
+
+/** the worker's start record (src/worker.ts serveTurns, claude-factory-ad6r), after the laptop checked it */
+export type StartRecord = {
+  serveAt: number
+  turnAt: number
+  cloneMs: number
+  beadsMs: number
+  devenvMs: number
+  servicesMs: number
+  devenv: 'loaded' | 'failed' | 'none'
+  resumed: boolean
+}
+
+const START_KEYS = ['serveAt', 'turnAt', 'cloneMs', 'beadsMs', 'devenvMs', 'servicesMs', 'devenv', 'resumed']
+const STEP_KEYS = ['cloneMs', 'beadsMs', 'devenvMs', 'servicesMs'] as const
+
+/**
+ * The start record from a VM, or null. The VM's agent can write it, so this is one closed grammar: a plain object
+ * with exactly the 8 keys; serveAt and turnAt are integers from 1e12 to 1e14 with turnAt >= serveAt; each step is
+ * an integer from 0 to 86_400_000 ms; devenv is one of three words; resumed is a boolean. A new field needs a change here.
+ */
+export function validStart(raw: unknown): StartRecord | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const r = raw as Record<string, unknown>
+  const keys = Object.keys(r).sort()
+  if (keys.join() !== [...START_KEYS].sort().join()) return null
+  const int = (v: unknown, lo: number, hi: number) =>
+    typeof v === 'number' && Number.isInteger(v) && v >= lo && v <= hi
+  if (
+    !int(r.serveAt, 1e12, 1e14) ||
+    !int(r.turnAt, 1e12, 1e14) ||
+    (r.turnAt as number) < (r.serveAt as number)
+  )
+    return null
+  if (!STEP_KEYS.every(k => int(r[k], 0, 86_400_000))) return null
+  if (r.devenv !== 'loaded' && r.devenv !== 'failed' && r.devenv !== 'none') return null
+  if (typeof r.resumed !== 'boolean') return null
+  return r as unknown as StartRecord
+}
+
+/** one line of HOME/starts.jsonl: a start record with the run, rig, sandbox, node and seq the laptop set */
+export type StartLine = StartRecord & {
+  at: number
+  run: string
+  rig: string
+  sandbox: string
+  node: string
+  seq: number
+}
+
+/** reads HOME/starts.jsonl: this drops a malformed line, one with a bad record and one with a wrong field type */
+export const parseStartLines = (text: string) =>
+  (parsePrecheckLines(text) as unknown as StartLine[]).filter(
+    l =>
+      typeof l?.at === 'number' &&
+      [l.run, l.rig, l.sandbox, l.node].every(v => typeof v === 'string') &&
+      Number.isInteger(l.seq) &&
+      validStart(Object.fromEntries(START_KEYS.map(k => [k, (l as unknown as Record<string, unknown>)[k]]))),
+  )
+
+type StartStat = {
+  n: number
+  resumed: number
+  launchMs: number | null
+  bootMs: number | null
+  cloneMs: number | null
+  beadsMs: number | null
+  devenvMs: number | null
+  servicesMs: number | null
+  loaded: number
+  failed: number
+  none: number
+}
+
+/**
+ * start times per rig, from first starts only (a resumed line counts only in `resumed`). The launch of a line is the
+ * last one of launches.jsonl with its run, node and seq at or before serveAt. With none, the line gives no launchMs and bootMs.
+ */
+export function startStats(launches: LaunchLine[], starts: StartLine[]) {
+  const last = new Map<string, LaunchLine[]>()
+  for (const l of launches) {
+    const k = `${l.run}\0${l.node}\0${l.seq}`
+    last.set(k, [...(last.get(k) ?? []), l])
+  }
+  const by: Record<string, StartLine[]> = {}
+  for (const s of starts) (by[s.rig] ??= []).push(s)
+  const out: Record<string, StartStat> = {}
+  for (const [rig, lines] of Object.entries(by)) {
+    const first = lines.filter(s => !s.resumed)
+    const pairs = first.map(s => ({
+      s,
+      launch: (last.get(`${s.run}\0${s.node}\0${s.seq}`) ?? []).filter(l => l.at <= s.serveAt).at(-1),
+    }))
+    const med = (f: (p: (typeof pairs)[number]) => number | undefined) =>
+      median(pairs.flatMap(p => f(p) ?? []))
+    out[rig] = {
+      n: first.length,
+      resumed: lines.length - first.length,
+      launchMs: med(p => p.launch && p.s.turnAt - p.launch.at),
+      bootMs: med(p => p.launch && p.s.serveAt - p.launch.at),
+      cloneMs: med(p => p.s.cloneMs),
+      beadsMs: med(p => p.s.beadsMs),
+      devenvMs: med(p => p.s.devenvMs),
+      servicesMs: med(p => p.s.servicesMs),
+      loaded: first.filter(s => s.devenv === 'loaded').length,
+      failed: first.filter(s => s.devenv === 'failed').length,
+      none: first.filter(s => s.devenv === 'none').length,
+    }
+  }
+  return out
+}
+
+/** one line a rig, rigs by name, in whole seconds; - for no value */
+export const renderStarts = (stats: ReturnType<typeof startStats>) =>
+  Object.keys(stats)
+    .sort()
+    .map(rig => {
+      const s = stats[rig]!
+      const sec = (ms: number | null) => (ms === null ? '-' : `${Math.round(ms / 1000)} s`)
+      return (
+        `${rig}: n ${s.n}, launch to first turn ${sec(s.launchMs)}, boot ${sec(s.bootMs)}, clone ${sec(s.cloneMs)}, ` +
+        `beads ${sec(s.beadsMs)}, devenv ${sec(s.devenvMs)}, services ${sec(s.servicesMs)}; ` +
+        `devenv loaded ${s.loaded}, failed ${s.failed}, none ${s.none}; resumed ${s.resumed}.`
+      )
+    })
+    .join('\n')
