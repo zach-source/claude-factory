@@ -1775,6 +1775,8 @@ echo '{"type":"system","subtype":"init","session_id":"sess-g"}'
   }
 })
 
+const CODEX_CMD = ['/usr/local/bin/node', '/usr/local/bin/codex']
+
 test("a turn is the headless command of the rig's agent, resuming by that agent's own session; the prompt never sits on its argv (claude-factory-kcg.1)", () => {
   for (const k of ['FACTORY_CLAUDE', 'FACTORY_CODEX', 'FACTORY_PI']) delete process.env[k] // an earlier test's fakes
   const pi = { piDir: '/o/pi', plugins: [] }
@@ -1782,12 +1784,12 @@ test("a turn is the headless command of the rig's agent, resuming by that agent'
   // stdin, never argv, since a prompt over Linux's MAX_ARG_STRLEN (131072 bytes) made posix_spawn fail with
   // ENAMETOOLONG (claude-factory-kcg)
   expect(worker.turnArgv('codex', { model: 'o3' })).toEqual([
-    ...['codex', ...CODEX_GUARD_FLAGS, 'exec', '--json', '--dangerously-bypass-approvals-and-sandbox'],
+    ...[...CODEX_CMD, ...CODEX_GUARD_FLAGS, 'exec', '--json', '--dangerously-bypass-approvals-and-sandbox'],
     ...['--skip-git-repo-check', '-m', 'o3', '--', '-'],
   ])
   expect(worker.turnArgv('codex', { session: 'th-1' })).toEqual([
     ...[
-      'codex',
+      ...CODEX_CMD,
       ...CODEX_GUARD_FLAGS,
       'exec',
       'resume',
@@ -1796,6 +1798,13 @@ test("a turn is the headless command of the rig's agent, resuming by that agent'
     ],
     ...['--skip-git-repo-check', '--', 'th-1', '-'],
   ])
+  process.env.FACTORY_CODEX = '/x/fake'
+  try {
+    expect(worker.turnArgv('codex')[0]).toBe('/x/fake')
+    expect(worker.turnArgv('codex')).not.toContain('/usr/local/bin/node')
+  } finally {
+    delete process.env.FACTORY_CODEX
+  }
   expect(worker.turnArgv('pi', { ...pi, session: 'u-1', provider: 'anthropic', model: 'm' })).toEqual([
     ...['pi', '-p', '--session-dir', '/o/pi', '--session-id', 'u-1'],
     // claude-factory-hg9o: the worker rules, with no plugins in this fixture
@@ -3041,6 +3050,39 @@ test('serve writes a codex worker home and fails closed when the guard is off (c
     process.env.FACTORY_HARNESS = 'claude'
     expect(() => worker.codexHome(join(tmp, 'none'))).not.toThrow()
     expect(existsSync(join(tmp, 'none'))).toBe(false)
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]
+    Object.assign(process.env, keep)
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('serve starts codex by absolute path, never by PATH (claude-factory-kiy42)', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'vm-codex-path-'))
+  const bin = join(tmp, 'bin')
+  mkdirSync(bin)
+  mkdirSync(join(tmp, 'repo'))
+  const on =
+    'hooks stable true\nunified_exec stable false\nshell_snapshot stable false\nmulti_agent stable false\ncode_mode stable false\n'
+  for (const n of ['codex', 'node'])
+    writeFileSync(join(bin, n), `#!/bin/sh\n: > '${join(tmp, 'ran-' + n)}'\nprintf '%s' '${on}'\n`, {
+      mode: 0o755,
+    })
+  const keep = { ...process.env }
+  delete process.env.FACTORY_CODEX
+  Object.assign(process.env, {
+    PATH: `${bin}:${keep.PATH}`,
+    FACTORY_WORKER_REPO: join(tmp, 'repo'),
+    FACTORY_HARNESS: 'codex',
+    FACTORY_CODEX_HOME_FILES: '{}',
+  })
+  try {
+    try {
+      worker.codexHome(join(tmp, 'codex'), 10_000, [])
+    } catch {} // no real codex on this host: the probe fails closed
+    expect(existsSync(join(tmp, 'ran-codex'))).toBe(false)
+    expect(existsSync(join(tmp, 'ran-node'))).toBe(false)
+    expect(worker.turnArgv('codex').slice(0, 2)).toEqual(CODEX_CMD)
   } finally {
     for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]
     Object.assign(process.env, keep)
