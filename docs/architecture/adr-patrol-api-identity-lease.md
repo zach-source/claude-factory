@@ -289,6 +289,47 @@ The final report must list local failures even when the acceptance evidence come
 This split adds no production risk or new dependency on the separate repair beads.
 No existing bug becomes more frequent, wider, or longer: the patrol listener remains dormant.
 
+### AC6 implementation evidence, 2026-11-10
+
+Local checks use source head `55a87654` and fetched main `8d6a84ed`.
+`git merge origin/main` reports `Already up to date.`
+The evidence commit changes only this ADR. No source or test changes invalidate these local results.
+
+| AC | Local evidence |
+| --- | --- |
+| AC1, AC2, AC3 | The exact API command passes: 144 tests, zero failures |
+| AC4 | The exact combined API and lease command passes: 165 tests, zero failures |
+| AC5 | The exact eight-file compatibility command passes: 530 tests, zero failures |
+| AC1 through AC5 | The compatibility command with the lease file also passes: 551 tests, zero failures |
+| AC6 audit | The API command includes fixed-field audit and transport-error rows |
+| AC6 full local gate | The Nix tool-setup command with `bun run test` reaches its 3600-second command limit; exit 124, no final test count |
+| AC6 root types | `bun x tsc --noEmit -p .` exits 0 |
+| AC6 mod types | `bun run typecheck` exits 1 after root types pass; mod config is absent, TS5057 |
+| AC6 plugin | The separate repeat of `claude plugin test mod` passes: 239 tests, zero failures, 97.93 seconds |
+| AC6 format | `bun run format:check` exits 0 with Prettier 3.9.9 |
+| AC6 audit dependencies | `bun audit` exits 0; 73 packages, zero vulnerabilities |
+| AC6 secrets | `gitleaks detect --log-opts=origin/main..HEAD` exits 0; 18 commits, no leaks |
+| AC6 local Nix | `nix build .#factory` reaches the 180-second tool cap during a dependency fetch, before compilation |
+
+The first compatibility command lacked `xstate`. `bun install --frozen-lockfile` resolved that input gap.
+The first separate plugin attempt had 238 passes and one failure. Its repeat passed all 239 tests.
+The full-gate wrapper exports `PKGGATE_E2E_REQUIRE=1` and `PG_SCRATCH_REQUIRE=1`.
+Its command is `nix-shell -p zsh go uv zip python3Packages.pip procps git postgresql --run 'bash .scratch/ac6-gate.sh'`.
+The wrapper calls `bun run test` and saves its output in `.scratch/ac6-full.log`.
+The command ends at its tool limit without the wrapper's final count or exit summary.
+Intermediate output includes model-download failures with ECONNRESET. It supplies no complete failure inventory.
+The output also includes Nix dependency fetches. No complete local gate result follows.
+This incomplete result does not satisfy the closed evidence table. Task `.6` remains open.
+Do not treat the earlier green CI run on `55a87654` as proof of this evidence commit.
+The Nix result supplies no local build or smoke-test proof.
+Generated mod types remain unverified. No fake types or model skips were added.
+
+The activation diff is empty for `deploy`, `src/server.ts`, `src/cli.ts`, `src/once.ts`, and `src/lease.ts`.
+The caller search finds patrol constructors only in tests.
+The scanner, home guard, token guard, model module, package manifest, and lockfile equal fetched main.
+An equal source tree supplies no machine-speed diagnosis.
+No patrol source or test changed, so the prior patrol mutations remain applicable.
+
 ## Test plan and tasks
 
 Write tests before implementation. Use temporary homes and fake credentials only.
