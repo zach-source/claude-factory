@@ -29,6 +29,7 @@ import {
   answerArgs,
   board,
   interviewItems,
+  parseSnapshot,
   line,
   newlyBlocked,
   parseConfig,
@@ -149,7 +150,13 @@ export default class Factory extends View {
 
   beat(cx) {
     cx.spawn(async cx => {
-      const tick = await this.finished(this.cfg.machine ? 'board' : 'tick')
+      const snap = this.cfg.machine ? await this.finished('snapshot') : null
+      if (snap) {
+        const s = parseSnapshot(snap.code, snap.out, snap.err)
+        this.onTick(s.tick)
+        if (s.decisions) setShared('factory.decisions', s.decisions)
+      }
+      const tick = this.cfg.machine ? null : await this.finished('tick')
       if (tick) this.onTick(parseTick(tick.code, tick.out, tick.err))
       const dec = await this.finished('decisions')
       if (dec && dec.code === 0) {
