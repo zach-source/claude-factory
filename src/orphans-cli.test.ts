@@ -288,12 +288,19 @@ type MrOpts = {
   srcProject?: number
   branch?: string
   listExit?: number
+  approval?: string
+  approvalExit?: number
+  detail?: string
+  detailExit?: number
+  mergeStatus?: string
+  labels?: string[]
 }
 
 /** a fake glab: the opened MRs hold one draft on the source run's branch; every call is logged to glab.calls */
 function fakeGlab(src: string, sha: string, o: MrOpts = {}) {
   const mr = {
     iid: 7,
+    state: 'opened',
     web_url: MR_URL,
     sha,
     draft: o.draft ?? true,
@@ -302,14 +309,17 @@ function fakeGlab(src: string, sha: string, o: MrOpts = {}) {
     source_project_id: o.srcProject ?? 5,
     target_project_id: 5,
     head_pipeline: { sha: o.pipelineSha ?? sha, status: o.status ?? 'success' },
-    detailed_merge_status: 'draft_status',
+    detailed_merge_status: o.mergeStatus ?? 'draft_status',
     has_conflicts: false,
+    labels: o.labels ?? [],
   }
   script('glab', [
     `echo "$*" >> "${join(dir, 'glab.calls')}"`,
     'case "$*" in',
     `  *merge_requests?state=opened*) ${o.listExit ? `exit ${o.listExit}` : `printf '%s' '${JSON.stringify([mr])}'`};;`,
-    `  *merge_requests/7*) printf '%s' '${JSON.stringify(mr)}';;`,
+    `  "api --hostname gitlab.com projects/acme%2Fwidget/merge_requests/7/approvals") ${o.approvalExit ? `exit ${o.approvalExit}` : `printf '%s' '${o.approval ?? '{"approved":false}'}'`};;`,
+    `  "api --hostname gitlab.com projects/acme%2Fwidget/merge_requests/7") ${o.detailExit ? `exit ${o.detailExit}` : `printf '%s' '${o.detail ?? JSON.stringify(mr)}'`};;`,
+    '  "mr update"*|"mr note"*|"mr close"*) exit 0;;',
     '  *) exit 1;;',
     'esac',
   ])
@@ -336,6 +346,184 @@ test('AC5, AC9: a GitLab rig forks the green draft MR once, with glab only on it
   expect(runIds()).toHaveLength(2)
   expect(existsSync(join(dir, 'gh.marker'))).toBe(false)
 })
+
+function closedBead(status: string, reason = '') {
+  script('bd', [
+    'case "$1" in',
+    "  config) printf '%s' 'acme';;",
+    `  show) printf '%s' '${JSON.stringify([{ id: 'acme-1', title: 't', status, close_reason: reason }])}';;`,
+    "  ready|list|children|human) printf '%s' '[]';;",
+    '  *) exit 0;;',
+    'esac',
+  ])
+}
+
+const repairMr = (src: string, iid = 7) => ({
+  iid,
+  state: 'opened',
+  web_url: `https://gitlab.com/acme/sub/widget/-/merge_requests/${iid}`,
+  source_branch: `factory/${src}`,
+})
+
+function repairFixture(src: string, pages: { out: string; code?: number }[]) {
+  const repo = join(dir, 'repo')
+  expect(
+    Bun.spawnSync([
+      'git',
+      '-C',
+      repo,
+      'remote',
+      'set-url',
+      'origin',
+      'https://gitlab.com/acme/sub/widget.git',
+    ]).exitCode,
+  ).toBe(0)
+  const all = [
+    { id: 'acme-1', title: 'parent', status: 'open' },
+    { id: 'acme-1.1', title: 'child', status: 'closed', parent: 'acme-1' },
+  ]
+  script('bd', [
+    `echo "$*" >> "${join(dir, 'bd.calls')}"`,
+    'case "$*" in',
+    `  "list --all --brief --json -n 0"*) printf '%s' '${JSON.stringify(all)}';;`,
+    `  "show "*) printf '%s' '${JSON.stringify([all[0]])}';;`,
+    "  config*) printf '%s' 'acme';;",
+    "  *) printf '%s' '[]';;",
+    'esac',
+  ])
+  script('glab', [
+    `echo "$*" >> "${join(dir, 'glab.calls')}"`,
+    'case "$*" in',
+    ...pages.map(
+      (page, i) =>
+        `  "api --hostname gitlab.com projects/acme%2Fsub%2Fwidget/merge_requests?state=opened&per_page=100&page=${i + 1}") ${page.code ? `exit ${page.code}` : `printf '%s' '${page.out}'`};;`,
+    ),
+    "  *labels=*) printf '%s' '[]';;",
+    '  *) exit 1;;',
+    'esac',
+  ])
+  script('gh', [`touch "${join(dir, 'gh.marker')}"`, 'exit 1'])
+  writeFileSync(join(home(), 'orphans.stamp'), '')
+  rmSync(join(home(), 'labels.stamp'), { force: true })
+}
+
+for (const draft of [true, false])
+  test(`6r645 AC1: GitLab MR draft=${draft} on a later page holds the repair parent`, () => {
+    const src = setup('https://gitlab.com/acme/widget.git')
+    const first = Array.from({ length: 100 }, (_, i) => repairMr('unknown', i + 10))
+    repairFixture(src, [
+      { out: JSON.stringify(first) },
+      { out: JSON.stringify([{ ...repairMr(src), draft }]) },
+    ])
+    pass()
+    expect(readFileSync(join(dir, 'bd.calls'), 'utf8')).not.toContain('close acme-1')
+    const calls = readFileSync(join(dir, 'glab.calls'), 'utf8')
+    expect(calls).toContain('state=opened&per_page=100&page=1')
+    expect(calls).toContain('state=opened&per_page=100&page=2')
+    expect(calls).not.toContain('/approvals')
+    expect(existsSync(join(dir, 'gh.marker'))).toBe(false)
+  })
+
+const badLists = [
+  { out: '', code: 1 },
+  ...[
+    '{',
+    'null',
+    '{}',
+    'false',
+    '[null]',
+    ...[
+      { iid: 0 },
+      { iid: 1.5 },
+      { iid: '7' },
+      { web_url: '' },
+      { web_url: 'https://gitlab.com/other/widget/-/merge_requests/7' },
+      { web_url: 'https://other.gitlab.com/acme/sub/widget/-/merge_requests/7' },
+      { web_url: 'https://gitlab.com/acme/sub/widget/-/merge_requests/8' },
+      { source_branch: '' },
+      { source_branch: 1 },
+      { state: 'merged' },
+    ].map(over => JSON.stringify([{ ...repairMr('unknown'), ...over }])),
+  ].map(out => ({ out })),
+]
+for (const [index, bad] of badLists.entries())
+  test(`6r645 AC2: invalid GitLab list ${index} prevents repair effects`, () => {
+    const src = setup('https://gitlab.com/acme/widget.git')
+    repairFixture(src, [
+      { out: JSON.stringify(Array.from({ length: 100 }, (_, i) => repairMr('unknown', i + 10))) },
+      bad,
+    ])
+    pass()
+    expect(readFileSync(join(dir, 'bd.calls'), 'utf8')).not.toContain('close acme-1')
+    expect(existsSync(join(dir, 'gh.marker'))).toBe(false)
+  })
+
+test('6r645 AC2: a valid empty GitLab list permits the normal parent repair', () => {
+  const src = setup('https://gitlab.com/acme/widget.git')
+  repairFixture(src, [{ out: '[]' }])
+  pass()
+  expect(readFileSync(join(dir, 'bd.calls'), 'utf8')).toContain('close acme-1')
+})
+
+for (const status of ['closed', 'deferred']) {
+  for (const labels of [[], ['owner']]) {
+    test(`6r645 AC3: approved GitLab ${status} bead holds with labels ${labels}`, () => {
+      const src = setup('https://gitlab.com/acme/widget.git')
+      closedBead(status)
+      fakeGlab(src, SHA1, { approval: '{"approved":true}', mergeStatus: 'requested_changes', labels })
+      pass()
+      const calls = readFileSync(join(dir, 'glab.calls'), 'utf8')
+      expect(calls).toContain('api --hostname gitlab.com projects/acme%2Fwidget/merge_requests/7/approvals')
+      expect(calls).not.toContain('mr close')
+      expect(calls.includes('mr update 7 --label owner')).toBe(labels.length === 0)
+      expect(runIds()).toHaveLength(1)
+      expect(read('orphans.json')[0].error).toContain('held for the person: approved')
+      expect(existsSync(join(dir, 'gh.marker'))).toBe(false)
+    })
+  }
+  test(`6r645 AC3: unapproved GitLab ${status} bead permits the close`, () => {
+    const src = setup('https://gitlab.com/acme/widget.git')
+    closedBead(status)
+    fakeGlab(src, SHA1)
+    pass()
+    expect(readFileSync(join(dir, 'glab.calls'), 'utf8')).toContain('mr close 7')
+    expect(runIds()).toHaveLength(1)
+  })
+}
+
+test('6r645 AC3: automatic parent close holds without an approval read', () => {
+  const src = setup('https://gitlab.com/acme/widget.git')
+  closedBead('closed', 'every child is closed')
+  fakeGlab(src, SHA1)
+  pass()
+  const calls = readFileSync(join(dir, 'glab.calls'), 'utf8')
+  expect(calls).not.toContain('/approvals')
+  expect(calls).not.toContain('mr close')
+  expect(read('orphans.json')[0].error).toContain('held for the person: every child is closed')
+})
+
+const unreadableViews: MrOpts[] = [
+  { detailExit: 1 },
+  { detail: '{' },
+  { detail: 'null' },
+  { detail: '[]' },
+  { approvalExit: 1 },
+  ...['{', 'null', '[]', 'false', '{}', ...['"false"', '"true"', '0', '1'].map(v => `{"approved":${v}}`)].map(
+    approval => ({ approval }),
+  ),
+]
+for (const [index, opts] of unreadableViews.entries())
+  test(`6r645 AC4: unreadable GitLab view ${index} permits no effect`, () => {
+    const src = setup('https://gitlab.com/acme/widget.git')
+    closedBead('closed')
+    fakeGlab(src, SHA1, opts)
+    pass()
+    const calls = readFileSync(join(dir, 'glab.calls'), 'utf8')
+    expect(calls).not.toContain('mr close')
+    expect(calls).not.toContain('mr update')
+    expect(runIds()).toHaveLength(1)
+    expect(read('orphan-forks.json')).toEqual({})
+  })
 
 test('AC6: a GitLab MR that is not green, not a draft, from a fork or off factory/ forks nothing', () => {
   const rows: (MrOpts | ((src: string) => MrOpts))[] = [

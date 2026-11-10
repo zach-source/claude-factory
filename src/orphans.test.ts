@@ -362,6 +362,19 @@ test('e2xe: a live owner or live bead stops the close, even when the PR has a re
 const gone = { status: 'closed', reason: 'every child is closed' }
 const approvedView = async () => ({ mergeable: 'MERGEABLE', changes: false, approved: true })
 
+test('6r645 AC3: an approved GitLab MR holds a person-closed bead', async () => {
+  const p = pr(1, { url: 'https://gitlab.com/acme/widget/-/merge_requests/1' })
+  const { res, calls } = await sweep(
+    [p],
+    {},
+    { bead: async () => ({ status: 'closed' }), view: approvedView },
+  )
+  expect(calls.close).toEqual([])
+  expect(calls.fork).toEqual([])
+  expect(calls.label).toEqual([[p.url, ['owner']]])
+  expect(res.skipped).toEqual([{ url: p.url, why: 'held for the person: approved' }])
+})
+
 test('i1qiv: a bead the repair pass closed keeps its PR open and gets the owner label', async () => {
   const { res, calls } = await sweep([pr()], {}, { bead: async () => gone })
   expect(calls.close).toEqual([])

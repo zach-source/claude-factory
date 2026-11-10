@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { Bead } from './beads'
 import { closableParents, conflictProbes, heldBeads, repairs, type PrFact } from './repairs'
+import { gitlabOpenFacts, type Gh } from './prs'
 
 const bead = (id: string, extra: Partial<Bead> = {}): Bead => ({ id, title: id, status: 'open', ...extra })
 const pr = (number: number, state: string, extra: Partial<PrFact> = {}): PrFact => ({
@@ -11,6 +12,86 @@ const pr = (number: number, state: string, extra: Partial<PrFact> = {}): PrFact 
 })
 const run = (every: Bead[], prs: PrFact[] = [], live: string[] = []) =>
   repairs('rig', every, prs, new Set(live), Date.now())
+
+test('6r645 AC1: GitLab facts hold the epic and its ancestors through the existing policy', async () => {
+  const calls: string[][] = []
+  const glab: Gh = async (argv, opts) => {
+    calls.push(argv)
+    expect(opts).toEqual({ cwd: '/repo', timeout: 60_000 })
+    const full = Array.from({ length: 100 }, (_, i) => ({
+      iid: i + 10,
+      state: 'opened',
+      web_url: `https://gitlab.example/acme/sub/widget/-/merge_requests/${i + 10}`,
+      source_branch: 'factory/unknown',
+    }))
+    return {
+      code: 0,
+      err: '',
+      out: JSON.stringify(
+        calls.length === 1
+          ? full
+          : [
+              {
+                iid: 7,
+                state: 'opened',
+                web_url: 'https://gitlab.example/acme/sub/widget/-/merge_requests/7',
+                source_branch: 'factory/run-1',
+              },
+            ],
+      ),
+    }
+  }
+  const facts = await gitlabOpenFacts(glab, 'gitlab.example', 'acme/sub/widget', '/repo')
+  expect(calls).toEqual(
+    [1, 2].map(page => [
+      'api',
+      '--hostname',
+      'gitlab.example',
+      `projects/acme%2Fsub%2Fwidget/merge_requests?state=opened&per_page=100&page=${page}`,
+    ]),
+  )
+  expect(facts).not.toBeNull()
+  const held = heldBeads(facts!, new Map([['run-1', 'e']]))
+  expect([...held]).toEqual(['e'])
+  const all = [bead('e'), bead('e.1', { status: 'closed' })]
+  expect(repairs('rig', all, facts!, new Set(), Date.now(), held)).toEqual([])
+  expect(closableParents(all, new Set(['e.1']), 'e.1', held)).toEqual([])
+  expect(closableParents(all, new Set(['e.1']), 'e.1')).toEqual(['e'])
+  for (const branch of ['factory/run-2', 'factory/unknown', 'feat/run-1'])
+    expect(heldBeads([{ ...facts!.at(-1)!, headRefName: branch }], new Map([['run-1', 'e']])).size).toBe(0)
+})
+
+test('6r645 AC2: a timeout or failed later page never returns partial GitLab facts', async () => {
+  for (const failure of [
+    { code: 1, out: '', err: 'failed' },
+    { code: 124, out: '', err: 'timed out' },
+    { code: 0, out: '{', err: '' },
+  ]) {
+    let calls = 0
+    const facts = await gitlabOpenFacts(
+      async () =>
+        ++calls === 1
+          ? {
+              code: 0,
+              err: '',
+              out: JSON.stringify(
+                Array.from({ length: 100 }, () => ({
+                  iid: 1,
+                  state: 'opened',
+                  web_url: 'https://gitlab.example/acme/widget/-/merge_requests/1',
+                  source_branch: 'factory/run-1',
+                })),
+              ),
+            }
+          : failure,
+      'gitlab.example',
+      'acme/widget',
+      '/repo',
+    )
+    expect(facts).toBeNull()
+    expect(calls).toBe(2)
+  }
+})
 
 describe('repairs', () => {
   test('closes a bead whose ship_pr is merged', () => {
