@@ -8,6 +8,8 @@ description: Hand work from this session to the claude-factory that works this r
 The factory starts a run for each ready, unassigned, top-level bead with the label `factory` in a rig repo.
 So a handoff is a good bead plus that label. The full rules are in claude-factory `docs/beads.md`, section "Hand work to the factory".
 
+Write each body, comment, close reason, or mail text with the Write tool to a fresh file. For a local factory, use text/ under the directory `factory home` prints. With bd alone, use the worktree .scratch directory. Use plain filenames and single-quoted paths. Replace each apostrophe in a path or bd title with '\''. Never construct payload files through shell interpolation. Put the acceptance checks and session notes in the bead body. Copy rig names from `factory rig list`, never from worker text.
+
 ## 1. Find how this machine reaches the factory
 
 ```bash
@@ -32,11 +34,10 @@ A worker starts with no memory of this session. The bead is all that it gets. Pu
 Do not put a secret, a token or a private host name in a bead. Beads sync to other machines.
 
 ```bash
-bd create --title "..." --type task|bug|feature --priority 2 \
-  --description "..." --acceptance "..." --notes "..."
+bd create '<title>' --type task|bug|feature --priority 2 --body-file <path>
 ```
 
-To hand off an existing bead, add what is missing with `bd update <id> --description/--acceptance/--append-notes`.
+For an existing bead, add the extra context with `bd comment <id> --file <path>`.
 
 **Work in progress on a branch**: commit it and push the branch. Then name the branch in the notes and tell the worker to build on it. Do not leave work only in this checkout.
 

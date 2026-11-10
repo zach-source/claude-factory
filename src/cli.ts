@@ -2080,9 +2080,9 @@ function remembered(run: Run, node: string, notes = '') {
     `What this factory's workers learned before you, in ${MEMORY}.`,
     ...(core ? [core] : []),
     ...(topics.length ? ['Topics (search finds their notes):', ...topics] : []),
-    `- Before you start, search it for what you are about to do: ${CLI} memory search${rig ? ` --rig ${rig}` : ''} '<query>'. It prints the closest notes in full.`,
+    `- Before you start, search it for what you are about to do: ${CLI} memory search${rig ? ` --rig ${rig}` : ''} --query-file <path>. It prints the closest notes in full.`,
     ...(notes ? [`- The factory already searched for your goal and station. The closest notes:`, notes] : []),
-    `- When you learn what a later worker would otherwise relearn the hard way (a command that works, a trap, an unwritten convention, why something failed), save it: ${CLI} memory add --from ${run.id}/${node} --kind fact|rule|recipe${rig ? ` [--rig ${rig}]` : ''} '<one-line summary>' --body-file <path>${rig ? ` (--rig when it holds only in ${rig})` : ''}. Only what is verified, reusable and not obvious, at most three per station. When a note proved wrong, add the correct one with --supersedes <old note path>: that marks the old note stale. A note that names a bead id or a PR needs --until <bead|owner/repo#N|YYYY-MM-DD> too, unless --kind recipe: that bead or PR's status belongs in its own tracker (bd comments, the PR), not here. What one bead's status is (already fixed, a duplicate) goes in its bd comments, not here.`,
+    `- When you learn what a later worker would otherwise relearn the hard way (a command that works, a trap, an unwritten convention, why something failed), save it: ${CLI} memory add --from ${run.id}/${node} --kind fact|rule|recipe${rig ? ` [--rig ${rig}]` : ''} --summary-file <path> --body-file <path>${rig ? ` (--rig when it holds only in ${rig})` : ''}. Only what is verified, reusable and not obvious, at most three per station. When a note proved wrong, add the correct one with --supersedes <old note path>: that marks the old note stale. A note that names a bead id or a PR needs --until <bead|owner/repo#N|YYYY-MM-DD> too, unless --kind recipe: that bead or PR's status belongs in its own tracker (bd comments, the PR), not here. What one bead's status is (already fixed, a duplicate) goes in its bd comments, not here.`,
     helpedHint(run, node),
   ]
 }
@@ -13332,7 +13332,7 @@ async function wikiRefresh(dryRun: boolean): Promise<string[]> {
 
 // shared between the help text below, the memory-case fallback usage error, and gate()'s own refusal
 // message, so the three never drift apart (claude-factory-3u1.1.1)
-const MEMORY_ADD_USAGE = `[--rig r] [--from run/station] --kind ${memory.NOTE_KINDS.join('|')} [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] [--supersedes <note path>] '<summary>' ('[body...]' | --body-file <path>)`
+const MEMORY_ADD_USAGE = `[--rig r] [--from run/station] --kind ${memory.NOTE_KINDS.join('|')} [--until <bead|owner/repo#N|YYYY-MM-DD>] [--anyway] [--supersedes <note path>] ('<summary>' | --summary-file <path>) ('[body...]' | --body-file <path>)`
 
 /**
  * Check a `memory add --supersedes <path>` value (claude-factory-3u1.1.2, FR-009).
@@ -13368,7 +13368,7 @@ function supersedesRefusal(dir: string, p: string): string | null {
 const [cmd, ...args] = process.argv.slice(2)
 const usage = `factory — herdr software factories on xstate
 
-  start <factory>[@station] <rig|repo> '<goal...>'|bead [--owned]   new run: herdr worktree off the repo, first worker
+  start <factory>[@station] <rig|repo> '<goal...>'|bead|--goal-file path [--owned]   new run: herdr worktree off the repo, first worker
                                      launched; --owned starts a bead carrying its owner's decisions, when they ask
   settings [list] | set <key> <value> | unset <key>   stored settings (HOME/settings.json): key, value, source; the environment wins; devenv.builder, devenv.token and devenv.push go to HOME/devenv.json
   image build [--target worker|manager]   build and push the AX worker (or manager) image; store it as ax.image (or ax.manager-image)
@@ -13427,7 +13427,7 @@ const usage = `factory — herdr software factories on xstate
   home                               the factory these commands work: FACTORY_HOME, else found from here
   stop | resume                      graceful shutdown: workers commit and wait, their panes close, nothing
                                      launches or dispatches; resume brings each back in its own conversation
-  memory search [--rig r] '<query...>'  the closest notes in the factory's shared memory (semantic search)
+  memory search [--rig r] [--from run/station] [--no-core] '<query...>'|--query-file path  the closest notes in the factory's shared memory (semantic search)
   memory add ${MEMORY_ADD_USAGE}   save a learning to the memory's
                                      inbox; one an existing note already says counts as that note helping;
                                      a note that names a bead or PR needs --until unless --kind recipe
@@ -13446,7 +13446,7 @@ const usage = `factory — herdr software factories on xstate
                                      cases (default 60) from the notes, each note's first body
                                      sentence as the query, the same sample for one seed (default 1)
   dream                              groom the memory now: file the inbox, merge, prune, learn from the journals
-  skills [install <n> | reject <n> <why>]  the skills the dream proposed for the manager: list them, install one
+  skills [install <n> | reject <n> '<why>'|--reason-file path]  the skills the dream proposed for the manager: list them, install one
                                      once reviewed, or reject it, saying why
                                      (each tick starts one a day)
   proposals [install <n> [--rig r] | reject <n> <why>]  the dream's learning-ladder proposals: rung core
@@ -13471,10 +13471,10 @@ const usage = `factory — herdr software factories on xstate
                                      GET /healthz for its counters
   decide <run> <outcome> '[note...]' the person: answer a gate station
   mail <run> <node|manager> [--wake] '<text...>'|--text-file path  drop a message in a mailbox; --wake starts a worker at a held PR park or an outage hold
-  poke <run> '[text...]'             nudge the current station's worker: report, or say what blocks it
+  poke <run> '[text...]'|--text-file path   nudge the current station's worker: report, or say what blocks it
   retry <run> | goto <run> <node|done> | abort <run>   quarterback a run
   unhold <runner> [--codex]          after a token swap by hand: wake the stations that runner's usage limit holds, as far as slots are free
-  fork <run> <station> '[note...]'   new run from <run>'s branch and state, restarted at <station>
+  fork <run> <station> '[note...]'|--note-file path   new run from <run>'s branch and state, restarted at <station>
   rm <run>                           finished run: drop its worktree and state, keep its branch
   gc [--days N] [--dry-run]          done or aborted runs older than N days (default 7, FACTORY_GC_DAYS):
                                      remove the whole run as rm does (worktree, state; the branch stays,
@@ -13498,7 +13498,12 @@ const usage = `factory — herdr software factories on xstate
 else the template in ${join(ROOT, 'factories')}. Each run pins its factory. This factory is ${HOME}
 (FACTORY_HOME, else the nearest directory up holding a rigs.json, else the default home in up). start and fork refuse past FACTORY_MAX_RUNS (${MAX_BUSY}) runs holding a worker,
 or past the rig's own --max.
-In a repo with .beads, every run works a bead: the one its goal names, or a new one.`
+In a repo with .beads, every run works a bead: the one its goal names, or a new one.
+Manager text files must stay below FACTORY_HOME/text or the real git worktree .scratch directory.
+Each file must contain nonblank text, at most 100 KiB. The CLI removes trailing whitespace.
+In file mode, use each file flag once. Do not mix inline and file input for the same field.
+Rig add and rig set also accept --goal-file path in place of --goal.
+Mail accepts -- before literal text that starts with an option name.`
 
 // claude-factory-6g6ud: a gated kind from the main chat needs the person's one-time Allow token
 function mainChatGateRefusal(): string | undefined {

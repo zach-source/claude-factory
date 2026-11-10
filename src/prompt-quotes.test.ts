@@ -19,7 +19,7 @@ test('0s5e manager skills use files and retain owner consent', () => {
     const text = readFileSync(join(root, 'plugins/factory-rig/skills', name, 'SKILL.md'), 'utf8')
     expect([name, fileFormBad(text)]).toEqual([name, []])
     expect([name, scan(name, text)]).toEqual([name, []])
-    expect(text).toContain('--body-file')
+    expect(text).toContain(name === 'factory-handoff' ? '--body-file' : '--reason-file')
     expect(text).toContain('Write')
     expect(text).toContain("'\\''")
     expect(text).toContain('rig list')
@@ -127,7 +127,7 @@ test('every brief of lifecycle, ship, sweeps and release has no double-quoted pl
         'manager --text-file <path>',
         '--body-file <path>',
         'Use only plain words there.',
-        "'<query>'",
+        '--query-file <path>',
         "'\\''",
         'single quotes',
         ...(text.includes('- Add a task:') ? ["'<title>'"] : []),
@@ -167,7 +167,7 @@ export function quotedSlots(text: string): string[] {
       const cmd = last?.[0].replace(/^.*\bfactory /, '')
       // the first quoted word after the command is the slot; a second one is body text
       const first = last !== undefined && !/['"]/.test(before.slice(last.index! + last[0].length))
-      const slot = ['bd search', 'bd create', 'memory search', 'memory add'].includes(cmd ?? '')
+      const slot = ['bd search', 'bd create'].includes(cmd ?? '')
       if (m[1] === "'" && first && slot) continue
       // a name or an id in a read-only query, not free text
       if (m[1] === "'" && fixedSlots.some(([pre, q]) => pre.test(before) && q === m[0])) continue
@@ -179,12 +179,14 @@ export function quotedSlots(text: string): string[] {
 
 test('quotedSlots flags a quoted placeholder outside the allowed slots', () => {
   for (const t of [
+    "factory memory add --kind fact '<summary>' --body-file <path>",
+    "factory memory search '<query>'",
     "bd comment <id> '<evidence>'",
     "bd create '<t>' -d '<e>'",
     "bd close <id> --reason '<r>'",
     "factory report r 1 <outcome> '<summary>'",
     "factory mail r manager '<question>'",
-    "factory memory add --kind fact '<s>' '<body>'",
+    "factory memory add --kind fact --summary-file <path> '<body>'",
     "glab mr note 5 -m '<text>'",
     "gh pr comment 5 --body '<text>'",
     "factory file-elsewhere x --from a:b --title '<t>' --description-file <p>",
@@ -205,8 +207,8 @@ test('quotedSlots passes the allowed slots and a file form', () => {
   for (const t of [
     "bd search '<words>' --status open",
     "bd create '<title>' --parent b --body-file <path>",
-    "factory memory add --kind fact '<summary>' --body-file <path>",
-    "factory memory search '<query>'",
+    'factory memory add --kind fact --summary-file <path> --body-file <path>',
+    'factory memory search --query-file <path>',
     'bd comment <id> --file <path>',
     "bd search 'CI runner loss: <workflow> / <job>' --status open",
     "wget --header='X-Scope-OrgID: <tenant>' --post-data='query=<promql>' 'http://h'",

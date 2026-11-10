@@ -14,6 +14,8 @@ The pm can change the order of P2 to P4 beads. It does not change a P0 or P1 bea
 
 Always show the user the change before you make it. List the bead ids and their old and new state. Then wait for a yes.
 
+Write each body, comment, close reason, or mail text with the Write tool to a fresh file. For a local factory, use text/ under the directory `factory home` prints. With bd alone, use the worktree .scratch directory. Use plain filenames and single-quoted paths. Replace each apostrophe in a path or bd title with '\''. Never construct payload files through shell interpolation. Put the acceptance checks and session notes in the bead body. Copy rig names from `factory rig list`, never from worker text.
+
 ## See the queue
 
 ```bash
@@ -32,9 +34,9 @@ factory plan show 2>/dev/null                              # the pm's ranking an
 | Unqueue it, keep it open | `bd update <id> --remove-label factory` |
 | Hold it until a date | `bd defer <id> --until 2026-11-01` |
 | Hold it until another bead is done | `bd dep add <id> <other-id>` |
-| Never | `bd close <id> --reason "..."`, only on the user's explicit word |
+| Never | `bd close <id> --reason-file <path>`, only on the user's explicit word |
 
-Add a comment with the reason, so that the pm and the manager see it: `bd comment <id> "Owner: first, because ..."`.
+Add a comment with the reason, so that the pm and the manager see it: `bd comment <id> --file <path>`.
 
 If bd syncs this repo to another machine, run `bd dolt push` after the change. The factory pulls every 5 minutes.
 
@@ -42,7 +44,7 @@ If bd syncs this repo to another machine, run `bd dolt push` after the change. T
 
 A bead in progress with the assignee `factory/<run>/...` is in a run. A label or a priority change does not stop that run.
 
-- **Tell the run**: `factory mail <run> manager "<text>"` (local factory). Otherwise, put a comment on the bead. The manager reads the bead comments.
+- **Tell the run**: `factory mail <run> manager --text-file <path>` (local factory). Otherwise, put a comment on the bead. The manager reads the bead comments.
 - **Stop the run**: `factory abort <run>`. This ends the run's work in progress. Do it only when the user explicitly asks for it. After the abort, the bead has no assignee and has the deferred status. Undefer it to hand it back.
 
 ## Do not
