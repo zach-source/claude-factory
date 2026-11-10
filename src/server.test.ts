@@ -1,5 +1,6 @@
 import { afterEach, expect, spyOn, test } from 'bun:test'
 import type { Subprocess } from 'bun'
+import * as fs from 'node:fs'
 import {
   chmodSync,
   existsSync,
@@ -709,7 +710,12 @@ test('axo88 AC2: direct main refuses before listeners, ticks, backup, or model c
   const home = newHome()
   const before = 'retained mail'
   writeFileSync(join(home, 'patrol-state.json'), before)
-  const counts = { listener: 0, tick: 0, backup: 0, model: 0 }
+  const counts = { listener: 0, tick: 0, backup: 0, model: 0, state: 0 }
+  const write = fs.writeFileSync
+  const state = spyOn(fs, 'writeFileSync').mockImplementation((...args) => {
+    if (args[0] === join(home, 'patrol-state.json')) counts.state++
+    return write(...args)
+  })
   const listener = spyOn(Bun, 'serve').mockImplementation(() => {
     counts.listener++
     throw new Error('unexpected listener')
@@ -746,7 +752,7 @@ test('axo88 AC2: direct main refuses before listeners, ticks, backup, or model c
         ),
       ).toThrow('isolated runner')
     }
-    expect(counts).toEqual({ listener: 0, tick: 0, backup: 0, model: 0 })
+    expect(counts).toEqual({ listener: 0, tick: 0, backup: 0, model: 0, state: 0 })
     expect(readFileSync(join(home, 'patrol-state.json'), 'utf8')).toBe(before)
     expect(existsSync(leaseFile(home))).toBe(false)
     expect(existsSync(join(home, 'manager.lease'))).toBe(false)
@@ -754,6 +760,7 @@ test('axo88 AC2: direct main refuses before listeners, ticks, backup, or model c
   } finally {
     listener.mockRestore()
     model.mockRestore()
+    state.mockRestore()
   }
 })
 
