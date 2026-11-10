@@ -170,7 +170,7 @@ test('factory settings set and unset ask the person for every key', () => {
 
 test('the patrol rules preserve their order and exact reasons', () => {
   const bd =
-    'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author'
+    'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author. Write a bd command in literal words with bd as its first word: no $, backtick, glob, brace, # or <. Put other comment text in a file: bd comments add <id> -f <file>'
   const install =
     'a subagent never installs or rejects a skill or proposal: only the manager or the person installs'
   for (const [command, reason] of [
@@ -228,3 +228,92 @@ test('the tail cut preserves each old match end', () => {
   }
   expect(old.every(re => GATED_KINDS.some(k => k.re.source === re.source))).toBe(true)
 })
+
+const BD_DENY_REASON =
+  'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author. Write a bd command in literal words with bd as its first word: no $, backtick, glob, brace, # or <. Put other comment text in a file: bd comments add <id> -f <file>'
+
+test('a subagent bd command with a shell expansion or a hidden bd argv is denied', () => {
+  const DENY = [
+    'bd comment acme-1 approved --ac$()tor zperson',
+    String.raw`bd comment acme-1 approved $'\x2d\x2dactor' zperson`,
+    String.raw`printf '\x2d\x2dactor\nzperson\n' | xargs bd comment acme-1 approved`,
+    'x=; bd comment acme-1 approved --ac${x}tor zperson',
+    'BEADS_AC$()TOR=zperson bd comment acme-1 approved',
+    'bd comments add acme-1 approved -$()a zperson',
+    'bd comments add acme-1 approved --au$()thor zperson',
+    'bd comment acme-1 approved --ac{t,}or zperson',
+    'bd comments add acme-1 approved -{a,} zperson',
+    'bd show acme-1 {x',
+    'bd show acme-1 x}',
+    'bd comment acme-1 approved --ac$X',
+    'bd comment acme-1 approved --ac?or zperson',
+    'bd comment acme-1 approved --ac*',
+    'bd comment acme-1 approved --ac[t]or zperson',
+    'bd comment acme-1 approved ~/x',
+    'bd comment acme-1 approved "--ac$(echo)tor" zperson',
+    'bd comment acme-1 approved "--ac`echo`tor" zperson',
+    'bd show acme-1 \\',
+    String.raw`sh -c x\;bd comment acme-1 approved --ac'$()'tor zperson`,
+    String.raw`echo x \| bd show acme-1`,
+    'bd comments add acme-1 -f - <<EOF\nx\nEOF',
+    'bd comments add acme-1 -f - <<<x',
+    'bd show acme-1 # x',
+    'bd show acme-1\r',
+    'bd show acme-1 é',
+    "bd comment acme-1 'open",
+    'bd show acme-1 !x',
+    'bd show acme-1 (x)',
+    'env bd comment acme-1 approved',
+    'command bd show acme-1',
+    'xargs bd show',
+    'echo acme-1 | xargs -n1 bd show',
+    "sh -c 'bd show acme-1'",
+    "sh -c 'x;bd comment acme-1 approved --ac$()tor zperson'",
+    "eval 'x;bd show acme-1'",
+    "bash -c '\nbd comment acme-1 approved --ac$()tor zperson'",
+    'bash -c "x;bd comment acme-1 approved --ac{t,}or zperson"',
+    "'bd' show acme-1",
+    '"/usr/local/bin/"bd show acme-1',
+    'timeout 5 bd show acme-1',
+    'FOO=1 bd show acme-1',
+    "bd comment acme-1 'ran bd show'",
+    'echo tag acme-1 factory | xargs bd\nshow',
+    'acme-bd show acme-1',
+    'echo \\\\\nbd comment acme-1 approved zz',
+  ]
+  const ALLOW = [
+    'bd list --json | jq',
+    'bd show acme-1',
+    "bd list --json | jq '.[] | .id'",
+    "bd list --json | jq -r '.[0].id'",
+    'bd comment acme-1 "queued it; P2 (see PR 9)"',
+    '/usr/local/bin/bd show acme-1',
+    '/Users/x/.nix-profile/bin/BD show acme-1',
+    'cd /repo/acme; bd ready --json',
+    'bd show acme-1 && bd list --label factory',
+    'ls $HOME',
+    'echo "$(date)"',
+    String.raw`bd comment acme-1 approved "a\"b"`,
+    String.raw`bd comment acme-1 approved \x`,
+    String.raw`bd comment acme-1 'it'\''s queued'`,
+    String.raw`bd comment acme-1 approved --ac\$\(\)tor`,
+  ]
+  expect(DENY.filter(r => check(r, 'subagent').decision !== 'deny')).toEqual([])
+  expect(ALLOW.filter(r => check(r, 'subagent').decision !== 'allow')).toEqual([])
+  for (const r of DENY)
+    expect([r, check(r, 'subagent')]).toEqual([r, { decision: 'deny', reason: BD_DENY_REASON }])
+  for (const r of ALLOW) expect([r, check(r, 'subagent')]).toEqual([r, { decision: 'allow' }])
+})
+
+test('the subagent bd guard finishes within one second', () => {
+  for (const row of [
+    'bd show x; '.repeat(30000),
+    '/bd'.repeat(100000),
+    '-bd'.repeat(100000),
+    'bd/'.repeat(100000),
+  ]) {
+    const t0 = Date.now()
+    check(row, 'subagent')
+    expect(Date.now() - t0, row.slice(0, 12)).toBeLessThan(1000)
+  }
+}, 30000)
