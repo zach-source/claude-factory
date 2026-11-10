@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'bun:test'
-import { planSecurity, rigPaths, routeLine, SECURITY_REASON, securityRoute, sensitivePath } from './security-route'
+import {
+  planSecurity,
+  rigPaths,
+  routeLine,
+  SECURITY_REASON,
+  securityRoute,
+  sensitivePath,
+} from './security-route'
 
 describe('sensitivePath', () => {
   test.each([
@@ -176,12 +183,19 @@ describe('securityRoute rigPaths', () => {
       'mod/a.ts (rig:mod)',
     ])
     expect(
-      securityRoute({ paths: ['src/cli.ts'], labels: [], plan: 'Security-sensitive: no', rigPaths: ['src/cli.ts'] }),
+      securityRoute({
+        paths: ['src/cli.ts'],
+        labels: [],
+        plan: 'Security-sensitive: no',
+        rigPaths: ['src/cli.ts'],
+      }),
     ).toEqual({ required: true, why: ['src/cli.ts (rig:src/cli.ts)'] })
     expect(securityRoute({ paths: ['factories/x.ts'], labels: [], rigPaths: ['factories/'] }).why).toEqual([
       'factories/x.ts (dir:factories)',
     ])
-    expect(securityRoute({ paths: [], labels: [], rigPaths: null }).why).toEqual(['rig sensitivePaths malformed'])
+    expect(securityRoute({ paths: [], labels: [], rigPaths: null }).why).toEqual([
+      'rig sensitivePaths malformed',
+    ])
     expect(securityRoute({ paths: ['src/metrics.ts'], labels: [], rigPaths: [] }).required).toBe(false)
     expect(securityRoute({ paths: ['src/metrics.ts'], labels: [] }).required).toBe(false)
   })

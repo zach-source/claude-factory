@@ -103,7 +103,14 @@ import {
   type Bead,
 } from './beads'
 import { clusterKey } from './filing-guard'
-import { rigPaths, routeLine, SECURITY_REASON, securityRoute, type SecurityRoute } from './security-route'
+import {
+  rigPaths,
+  routeLine,
+  SECURITY_REASON,
+  securityRoute,
+  SENSITIVE_ENTRY,
+  type SecurityRoute,
+} from './security-route'
 import { applyRigChange, editRigs, redactRig, snapshots } from './rigs-edit'
 import { hideParseText, hideSecret } from './secrets'
 import * as plan from './plan'
@@ -12891,7 +12898,7 @@ const usage = `factory — herdr software factories on xstate
                                      FACTORY_HOME, else the platform data dir: XDG_DATA_HOME/claude-factory,
                                      else ~/Library/Application Support/claude-factory on macOS, else
                                      ~/.local/share/claude-factory)
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm] | env set|unset <name|repo> KEY[=VALUE] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] [--path-prefix /path/]... | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--sensitive-path path|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm] | env set|unset <name|repo> KEY[=VALUE] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] [--path-prefix /path/]... | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex, cursor, grok or pi), --mcp gives its workers
@@ -14401,12 +14408,14 @@ if (import.meta.main && !outboxCmd)
           console.log(JSON.stringify(redactRig(found!), null, 2))
         } else if (sub === 'set') {
           const usage =
-            "usage: factory rig set <rig|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner name] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm]"
+            "usage: factory rig set <rig|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner name] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--sensitive-path path|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm]"
           const val = (f: string) => (args.includes(f) ? (opt(f) ?? '') : undefined)
           const clusterRuns = val('--cluster-runs')
           const autoQueue = val('--auto-queue')
           const pushRules: string[] = []
           while (args.includes('--push-rule')) pushRules.push(opt('--push-rule') ?? '')
+          const sensitivePaths: string[] = []
+          while (args.includes('--sensitive-path')) sensitivePaths.push(opt('--sensitive-path') ?? '')
           const skills = val('--skills')
           const otelContent = val('--otel-content')
           const sandboxClass = val('--sandbox-class')
@@ -14448,6 +14457,16 @@ if (import.meta.main && !outboxCmd)
               fail('--push-rule is a non-empty rule text, or one --push-rule none alone')
             if (pushRules[0] === 'none') unset.push('pushRules')
             else set.pushRules = pushRules
+          }
+          if (sensitivePaths.length) {
+            const none = sensitivePaths.includes('none') && sensitivePaths.length !== 1
+            const bad = none ? 'none' : sensitivePaths.find(v => v !== 'none' && !SENSITIVE_ENTRY.test(v))
+            if (bad !== undefined)
+              fail(
+                `--sensitive-path is a repo path or directory (segments of letters, digits, . _ - joined by /; no . or .. segment; no glob), or one --sensitive-path none alone (not ${JSON.stringify(bad)})`,
+              )
+            if (sensitivePaths[0] === 'none') unset.push('sensitivePaths')
+            else set.sensitivePaths = sensitivePaths
           }
           if (skills !== undefined) {
             if (skills === 'none') unset.push('skills')

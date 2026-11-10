@@ -158,6 +158,11 @@ test('rig set changes one field and leaves every other byte equal (by name and b
       { pushRules: ['run bun test', 'no force'] },
       [],
     ],
+    [
+      ['--sensitive-path', 'src/cli.ts', '--sensitive-path', 'mod/'],
+      { sensitivePaths: ['src/cli.ts', 'mod/'] },
+      [],
+    ],
     [['--skills', 'asd-ste100,egm'], { skills: ['asd-ste100', 'egm'] }, []],
     [['--otel-content', 'off'], { otelContent: false }, []],
     [['--sandbox-class', 'microvm'], { sandboxClass: 'microvm' }, []],
@@ -233,6 +238,7 @@ test('rig set refuses a bad value, an unknown rig and a foreign flag; the file a
     '--cluster-runs',
     '--auto-queue',
     '--push-rule',
+    '--sensitive-path',
     '--skills',
     '--otel-content',
     '--sandbox-class',
@@ -245,6 +251,7 @@ test.each(
     '--cluster-runs': ['0', '1.5', '-1', 'abc', '', '9'.repeat(309)],
     '--auto-queue': ['5,3', '2,0', '2', '2,3,4', 'on', '', `2,${'9'.repeat(309)}`],
     '--push-rule': [' ', ''],
+    '--sensitive-path': ['*.ts', '../x', '/abs', '', 'a b', 'a\nb'],
     '--skills': ['nope', 'asd-ste100,', '', 'none,egm'],
     '--otel-content': ['false', 'no', 'OFF', ''],
     '--sandbox-class': ['kata', 'MICROVM', ''],
@@ -255,15 +262,27 @@ test.each(
     ...values.map(value => ['set', 'x', flag, value]),
     ['set', 'x', flag],
     ...(flag === '--push-rule' ? [] : [['set', 'x', flag, values[0]!, flag, values[0]!]]),
+    ...(flag === '--sensitive-path'
+      ? [
+          ['set', 'x', flag, 'none', flag, 'x'],
+          ['set', 'x', flag, 'none', flag, 'none'],
+        ]
+      : []),
   ])
   if (flag === '--push-rule')
     expect(factory(['rig', 'set', 'x', flag, ' ']).err).toContain('--push-rule is a non-empty rule text')
+  if (flag === '--sensitive-path') {
+    const err = factory(['rig', 'set', 'x', flag, '*.ts']).err
+    expect(err).toContain('--sensitive-path is a repo path or directory')
+    expect(err).toContain('(not "*.ts")')
+  }
 })
 
-test('rig set clears autoQueue, pushRules, skills, otelContent and sandboxClass', () => {
+test('rig set clears autoQueue, pushRules, sensitivePaths, skills, otelContent and sandboxClass', () => {
   const fields = {
     autoQueue: { minPriority: 2, perHour: 3 },
     pushRules: ['test'],
+    sensitivePaths: ['mod/'],
     skills: ['egm'],
     otelContent: false,
     sandboxClass: 'microvm',
@@ -271,6 +290,7 @@ test('rig set clears autoQueue, pushRules, skills, otelContent and sandboxClass'
   for (const [flag, value, key] of [
     ['--auto-queue', 'off', 'autoQueue'],
     ['--push-rule', 'none', 'pushRules'],
+    ['--sensitive-path', 'none', 'sensitivePaths'],
     ['--skills', 'none', 'skills'],
     ['--otel-content', 'on', 'otelContent'],
     ['--sandbox-class', 'gvisor', 'sandboxClass'],

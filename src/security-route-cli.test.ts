@@ -124,14 +124,18 @@ test.each([
   [undefined, 'not required: ', false],
   [['src/other.ts'], 'not required: ', false],
   ['src/worker-system.md', 'required: rig sensitivePaths malformed', true],
-])('a rig sensitivePaths %j gives %s', (paths, line, required) => {
-  setup('src/worker-system.md')
-  rigWith(paths)
-  reviewRun(def(true), 'Security-sensitive: no')
-  tick()
-  expect(prompt()).toContain(`## Security route\n${line}`)
-  expect(routeJson().route.required).toBe(required)
-}, 60_000)
+])(
+  'a rig sensitivePaths %j gives %s',
+  (paths, line, required) => {
+    setup('src/worker-system.md')
+    rigWith(paths)
+    reviewRun(def(true), 'Security-sensitive: no')
+    tick()
+    expect(prompt()).toContain(`## Security route\n${line}`)
+    expect(routeJson().route.required).toBe(required)
+  },
+  60_000,
+)
 
 test('a plan "yes" line makes a plain branch required', () => {
   setup('src/metrics.ts')
