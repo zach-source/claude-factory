@@ -1,5 +1,14 @@
 import { afterEach, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -129,16 +138,25 @@ test('d289.20: after the remote rejects a commit, the next backup pushes a fixed
   )
   for (const first of [true, false]) {
     const rr = first ? r : remote()
-    if (!first) Bun.spawnSync(['cp', hook, join(rr, 'hooks', 'pre-receive')])
+    if (!first) expect(Bun.spawnSync(['cp', hook, join(rr, 'hooks', 'pre-receive')]).exitCode).toBe(0)
     const a = workspace()
     // the second pass starts with a good backup on the remote
-    const good = first ? null : backup(cfg(a, rr), true).sha!
+    const initial = first ? null : backup(cfg(a, rr), true)
+    if (initial) {
+      expect(initial.error).toBeUndefined()
+      expect(initial.skipped).toBeUndefined()
+      expect(initial.sha).toBeTruthy()
+    }
+    const good = initial?.sha ?? null
     put(join(a, 'home', 'huge.txt'), 'too big')
     expect(backup(cfg(a, rr), true).error).toContain('git push')
+    const rejected = sh('--git-dir', join(a, 'backup.git'), 'rev-parse', 'HEAD')
     rmSync(join(a, 'home', 'huge.txt'))
     put(join(a, 'home', 'decisions.json'), '[1]')
     const out = backup(cfg(a, rr), true)
     expect(out.error).toBeUndefined()
+    expect(out.skipped).toBeUndefined()
+    expect(out.sha).toBeTruthy()
     expect(out.sha).toBe(sh('--git-dir', rr, 'rev-parse', 'manager-home'))
     const parents = sh('--git-dir', rr, 'rev-list', '--parents', '-n', '1', 'manager-home')
       .split(' ')
@@ -148,9 +166,66 @@ test('d289.20: after the remote rejects a commit, the next backup pushes a fixed
     // a later backup goes on top as usual
     put(join(a, 'home', 'decisions.json'), '[2]')
     const next = backup(cfg(a, rr), true)
+    expect(next.error).toBeUndefined()
+    expect(next.skipped).toBeUndefined()
+    expect(next.sha).toBeTruthy()
     expect(sh('--git-dir', rr, 'rev-parse', 'manager-home^')).toBe(out.sha!)
     expect(next.changed).toBe(true)
+    expect(next.sha).toBe(sh('--git-dir', rr, 'rev-parse', 'manager-home'))
+    expect(pushedFile(rr, 'home/decisions.json')).toBe('[2]')
+    const ancestors = sh('--git-dir', join(a, 'backup.git'), 'rev-list', next.sha!).split('\n')
+    expect(ancestors).not.toContain(rejected)
+    if (good) expect(ancestors).toContain(good)
   }
+})
+
+test('ohn03: a memory index update must not hide a racy home edit', () => {
+  const r = remote()
+  const ws = workspace()
+  const file = join(ws, 'home/decisions.json')
+  const gd = join(ws, 'backup.git')
+  const time = new Date('2000-01-01T00:00:00Z')
+  put(file, '[1]')
+  utimesSync(file, time, time)
+  const first = backup(cfg(ws, r), true)
+  expect(first.error).toBeUndefined()
+  expect(first.skipped).toBeUndefined()
+  expect(first.sha).toBeTruthy()
+  // Model a coarse stat cache. The index time makes this entry racy, so Git must read its content.
+  sh('--git-dir', gd, 'config', 'core.checkStat', 'minimal')
+  sh('--git-dir', gd, 'config', 'core.trustctime', 'false')
+  utimesSync(join(gd, 'index'), time, time)
+  put(file, '[2]')
+  utimesSync(file, time, time)
+  const control = join(gd, 'control.index')
+  copyFileSync(join(gd, 'index'), control)
+  utimesSync(control, time, time)
+  const add = Bun.spawnSync(['git', '--git-dir', gd, '--work-tree', ws, 'add', '-A', '--', 'home'], {
+    env: { ...process.env, GIT_INDEX_FILE: control },
+  })
+  expect(add.exitCode).toBe(0)
+  const blob = sh('--git-dir', gd, 'hash-object', file)
+  expect(
+    Bun.spawnSync(['git', '--git-dir', gd, 'show', ':home/decisions.json'], {
+      env: { ...process.env, GIT_INDEX_FILE: control },
+    }).stdout.toString(),
+  ).toBe('[2]')
+  const next = backup(cfg(ws, r), true)
+  expect(next.error).toBeUndefined()
+  expect(next.skipped).toBeUndefined()
+  expect(next.changed).toBe(true)
+  expect(next.sha).toBe(sh('--git-dir', r, 'rev-parse', 'manager-home'))
+  expect(sh('--git-dir', r, 'rev-parse', 'manager-home^')).toBe(first.sha!)
+  expect(pushedFile(r, 'home/decisions.json')).toBe('[2]')
+  expect(sh('--git-dir', gd, 'rev-parse', 'HEAD:home/decisions.json')).toBe(blob)
+  const same = backup(cfg(ws, r), true)
+  expect(same.error).toBeUndefined()
+  expect(same.changed).toBe(false)
+  expect(same.sha).toBe(next.sha)
+  expect(JSON.parse(readFileSync(join(ws, 'home/backup.json'), 'utf8'))).toMatchObject({
+    sha: next.sha,
+    error: '',
+  })
 })
 
 test('AC1: a backup restores into an empty home with the same state', () => {
