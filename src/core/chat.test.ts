@@ -372,15 +372,17 @@ test('approve: a wrong hash on the socket does not use up the approval', async (
   const seen: number[] = []
   const m = fakeModel(async c => {
     const a = hookArgs(c)
-    const bad = await new Promise<string>(res => {
-      let out = ''
-      const s = connect(a[1]!)
-      s.setEncoding('utf8')
-      s.on('data', d => (out += d))
-      s.on('close', () => res(out))
-      s.write(`${sha('other')} ${'a'.repeat(32)}`)
-    })
-    expect(bad).toBe('no')
+    for (const req of [`${sha('other')} ${'a'.repeat(32)}`, `${a[0]} nonce`, `${a[0]} ${'a'.repeat(32)} x`]) {
+      const bad = await new Promise<string>(res => {
+        let out = ''
+        const s = connect(a[1]!)
+        s.setEncoding('utf8')
+        s.on('data', d => (out += d))
+        s.on('close', () => res(out))
+        s.write(req)
+      })
+      expect(bad).toBe('no')
+    }
     seen.push((await hook(ASK, a)).code)
     return ok()
   })
