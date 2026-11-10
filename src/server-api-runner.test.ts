@@ -33,6 +33,16 @@ describe('cliRunner', () => {
   const env = () => {
     for (const n of NAMES) delete process.env[n]
   }
+  test('an env argument replaces the person env', async () => {
+    env()
+    const home = tmp()
+    const cli = join(home, 'env.ts')
+    writeFileSync(cli, 'console.log(process.env.FACTORY_FROM ?? "")\n')
+    const run = cliRunner(home, cli)
+    const r = await run(['x'], undefined, { ...personEnv(process.env, home), FACTORY_FROM: 'x' })
+    expect(r.out).toBe('x\n')
+    expect((await run(['x'])).out).toBe('\n')
+  })
   test('status on a fresh home exits 0', async () => {
     env()
     const home = tmp()
