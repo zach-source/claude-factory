@@ -46,6 +46,7 @@ import {
   FLOW_WINDOWS,
   flowJobWords,
   flowLayout,
+  managerLimitText,
   parseFlows,
   recentMovers,
 } from './view.js'
@@ -152,6 +153,7 @@ export default class Factory extends View {
       runs: res.runs,
       halt: res.halt,
       readOnly: res.readOnly,
+      managerLimited: res.managerLimited ?? null,
       at: Date.now(),
       mail: [...(prev.mail ?? []), ...res.manager].slice(-50),
     })
@@ -191,7 +193,9 @@ export default class Factory extends View {
       ? `read-only: ${state.readOnly}`
       : state.error
         ? `tick failed: ${state.error}`
-        : statusText(runs) || 'no live runs'
+        : [statusText(runs) || 'no live runs', managerLimitText(state.managerLimited)]
+            .filter(Boolean)
+            .join(' · ')
     if (p.band)
       return h_flex()
         .size_full()
