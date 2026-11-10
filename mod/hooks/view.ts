@@ -1272,7 +1272,7 @@ export function gatedCommand(rawCommand: string): { question: string; deny: stri
   const baseTexts = unreadable
     ? [rawCommand.replace(/\\\n/g, '\n'), rawCommand.replace(/\\\n/g, '')]
     : [command]
-  const at = baseTexts.some(t => CALLER.test(t) || CALLER.test(strip(t)) || cliCall(strip(mask(t))))
+  const at = baseTexts.some(t => CALLER.test(t) || CALLER.test(strip(t)) || cliCall(strip(t)))
     ? substitutionIn(rawCommand)
     : -1
   // claude-factory-6tl1: the first word after the caller must be a literal word
@@ -1369,36 +1369,16 @@ const strip = (s: string) => s.replace(/[\\'"]/g, '')
 const CLI = String.raw`(?:^|[\s;&|(])(?:[^\s;&|()]*/)?(?:bun|node|run)\s+(?:\S*/)?cli(?:\.\w+)?`
 /** the factory CLI as a command word */
 const CALLER = new RegExp(String.raw`(?<![\w.-])factory(?![\w./-])|${CLI}(?=[\s;&|),}]|$)`)
-/** t with each quoted or escaped ; & | ( ) made a plain "_", same length: strip(mask(t)) and strip(t) share offsets, and a quoted separator does not end a command. One linear scan. */
-function mask(t: string): string {
-  let q = ''
-  let out = ''
-  for (let i = 0; i < t.length; i++) {
-    const c = t.charAt(i)
-    if (c === '\\' && q !== "'" && i + 1 < t.length) {
-      out += c + (/[;&|()]/.test(t.charAt(i + 1)) ? '_' : t.charAt(i + 1))
-      i++
-    } else if (q) {
-      if (c === q) q = ''
-      out += /[;&|()]/.test(c) ? '_' : c
-    } else {
-      if (c === '"' || c === "'") q = c
-      out += c
-    }
-  }
-  return out
-}
-/** a runner word (bun, node, run) and a later cli word in one simple command, with any words between (`bun --smol src/cli.ts`). One linear word scan. */
-function cliCall(t: string): { start: number; end: number } | null {
-  let runner = -1
-  for (const m of t.matchAll(/[^\s;&|()]+|[;&|()]/g)) {
+/** A runner word (bun, node, run) and each later cli word. The call starts at the first runner word and ends with the text. No character ends it, because this guard cannot split shell text into commands. One linear word scan. */
+function cliCall(t: string): { start: number; ends: number[] } | null {
+  let start = -1
+  const ends: number[] = []
+  for (const m of t.matchAll(/[^\s;&|()]+/g)) {
     const w = m[0]
-    if (/^[;&|()]$/.test(w)) runner = -1
-    else if (runner >= 0 && /(?:^|\/)cli(?:\.\w+)?$/.test(w))
-      return { start: runner, end: m.index! + w.length }
-    else if (runner < 0 && /(?:^|\/)(?:bun|node|run)$/.test(w)) runner = m.index!
+    if (start >= 0 && /(?:^|\/)cli(?:\.\w+)?$/.test(w)) ends.push(m.index! + w.length)
+    else if (start < 0 && /(?:^|\/)(?:bun|node|run)$/.test(w)) start = m.index!
   }
-  return null
+  return start >= 0 && ends.length ? { start, ends } : null
 }
 const VERB_AFTER = /\s+[^\s$\x60*?[{]*[$\x60*?[{]/y
 /** a word the hook cannot read as a literal command name */
@@ -1417,10 +1397,13 @@ const GLUED_BRACE = /[\w-]\{+[^\s{},]*[,}]|[,{][^\s{},]*\}+[\w-]/
 const VERB_HIDDEN = {
   test: (t: string) => {
     const s = strip(t)
-    const c = cliCall(strip(mask(t)))
+    const c = cliCall(s)
     if (c) {
-      VERB_AFTER.lastIndex = c.end
-      if (VERB_AFTER.test(s) || GLUED_BRACE.test(s.slice(c.start))) return true
+      if (GLUED_BRACE.test(s.slice(c.start))) return true
+      for (const end of c.ends) {
+        VERB_AFTER.lastIndex = end
+        if (VERB_AFTER.test(s)) return true
+      }
     }
     const i = s.search(CALLER)
     return VERB_FIRST.test(s) || (i >= 0 && GLUED_BRACE.test(s.slice(i)))
