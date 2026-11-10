@@ -128,6 +128,63 @@ const groom = (args: string[] = [], env: Record<string, string> = {}) =>
 const branches = () => git('branch', '--list', 'groom/*')
 const creates = () => ghCalls().filter(c => c[0] === 'pr' && c[1] === 'create')
 
+test('ot1ew pass overlap groom', async () => {
+  setup()
+  const ready = join(fake, 'ready')
+  const release = join(fake, 'release')
+  const marker = join(fake, 'MARKER')
+  const script = join(fake, 'fsmonitor')
+  writeFileSync(script, `#!/bin/sh\ntouch '${marker}'\n`)
+  chmodSync(script, 0o755)
+  apply(
+    `printf '[core]\\n\\tfsmonitor = ${script}\\n' >> .git/config\ntouch '${ready}'\nn=0; while [ ! -f '${release}' ] && [ "$n" -lt 400 ]; do sleep 0.05; n=$((n + 1)); done\n`,
+  )
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_WIKI_REMOTE, ...env } = process.env
+  const pass = Bun.spawn([CLI, 'wiki', 'groom'], {
+    env: {
+      ...env,
+      FACTORY_HOME: home,
+      FACTORY_SELF_UPDATE: '0',
+      FACTORY_NO_KICK: '1',
+      FAKE_DIR: fake,
+      FACTORY_CLAUDE: join(dir, 'bin', 'claude'),
+      PATH: `${join(dir, 'bin')}:${env.PATH}`,
+      GIT_CONFIG_GLOBAL: cfg,
+    },
+    stdout: 'ignore',
+    stderr: 'ignore',
+  })
+  try {
+    const until = Date.now() + 15_000
+    while (!existsSync(ready) && Date.now() < until) await Bun.sleep(20)
+    expect(existsSync(ready)).toBe(true)
+    const lock = join(home, 'wiki.lock', 'pid')
+    const owner = readFileSync(lock, 'utf8')
+    expect(owner).toBe(String(pass.pid))
+    const bin = join(fake, 'recorder')
+    const calls = join(fake, 'competing-calls')
+    mkdirSync(bin)
+    for (const tool of ['git', 'gh', 'bd']) {
+      writeFileSync(join(bin, tool), `#!/bin/sh\ntouch '${calls}'\nexit 99\n`)
+      chmodSync(join(bin, tool), 0o755)
+    }
+    for (const args of [
+      ['wiki', 'find', 'sample'],
+      ['wiki', 'status'],
+    ]) {
+      const r = factory(args, { PATH: `${bin}:${env.PATH}` })
+      expect([r.code, r.out, r.err.trim()]).toEqual([1, '', 'wiki: busy'])
+      expect(existsSync(calls)).toBe(false)
+      expect(existsSync(marker)).toBe(false)
+      expect(readFileSync(lock, 'utf8')).toBe(owner)
+      expect(pass.exitCode).toBe(null)
+    }
+  } finally {
+    writeFileSync(release, '')
+    expect(await pass.exited).toBe(0)
+  }
+}, 30_000)
+
 test(
   'AC1 AC5 a groom pass opens a PR with the plan as body and leaves main alone',
   () => {
