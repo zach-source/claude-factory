@@ -260,6 +260,8 @@ import {
   type ManagerUsage,
   tokensReport,
   type StoredUsage,
+  validStart,
+  parseStartLines,
   validUsage,
   type Usage,
 } from './metrics'
@@ -1325,10 +1327,32 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
     else if (argv![0] === 'report') {
       try {
         const rows = validUsage(JSON.parse(line).usage, side!.node, side!.seq)
-        // first report wins per node+seq: a replayed line must not add rows again
-        if (rows.length && !storedUsage(run.id).some(r => r.node === side!.node && r.seq === side!.seq))
+        // first report wins per node+seq: a replayed line must not add rows again (halt rows do not count)
+        if (
+          rows.length &&
+          !storedUsage(run.id).some(r => r.node === side!.node && r.seq === side!.seq && !r.halt)
+        )
           appendUsage(run.id, rows)
       } catch {} // a bad usage never changes the report
+      try {
+        // claude-factory-ad6r: the VM's start record. rig, sandbox, node and seq are the laptop's, never the VM's
+        const start = validStart(JSON.parse(line).start)
+        const file = join(HOME, 'starts.jsonl')
+        const have = existsSync(file) ? parseStartLines(readFileSync(file, 'utf8')) : []
+        if (start && !have.some(l => l.run === run.id && l.node === side!.node && l.seq === side!.seq)) {
+          const rig = rigOf(run.repo)
+          const row = {
+            at: Date.now(),
+            run: run.id,
+            rig: rig?.name ?? '(no rig)',
+            sandbox: rig?.sandboxClass ?? 'gvisor',
+            node: side!.node,
+            seq: side!.seq,
+            ...start,
+          }
+          appendFileSync(file, JSON.stringify(row) + '\n')
+        }
+      } catch {} // a bad start never changes the report
       Bun.spawnSync(['git', '-C', run.worktree, 'pull', '--ff-only', 'origin', run.branch])
       if (!skew) {
         // from where this VM was told to push, which a rig changed since does not move
@@ -4705,6 +4729,8 @@ function haltRun(
     halt.told[run.id] = c.seq
   } else if (step === 'close' || step === 'gone') {
     if (step === 'close') {
+      // ponytail: a Suspended or serve-exited task's usage is still lost here; resume it before the read to keep it
+      if (info!.status === 'working' || info!.status === 'idle') storeAxUsage(run, c.pane!, node, c.seq, true)
       runnerOf(c.pane!).close(c.pane!)
     }
     halt.closed[run.id] = c.seq
@@ -4735,14 +4761,16 @@ function storeUsage(run: Run, pane: string, node: string, seq: number, startedAt
 /**
  * An AX station closed. If no report stored usage for this node and seq (a timeout, a lost worker, a refused
  * usage), ask the VM for its rows with `factory worker usage`. The VM is untrusted: ax.usage caps the
- * output, and validUsage checks every row and sets node and seq. Never throw.
+ * output, and validUsage checks every row and sets node and seq. A factory stop's close also calls it with
+ * `halt`: those rows get `halt: true`, and halt rows do not stop a later read, because a resume keeps the
+ * seq and starts a new VM. Never throw.
  */
-function storeAxUsage(run: Run, pane: string, node: string, seq: number) {
+function storeAxUsage(run: Run, pane: string, node: string, seq: number, halt = false) {
   try {
     if (runnerOf(pane).name !== 'ax') return
-    if (storedUsage(run.id).some(r => r.node === node && r.seq === seq)) return
+    if (storedUsage(run.id).some(r => r.node === node && r.seq === seq && !r.halt)) return
     const rows = validUsage(ax.usage(ax.taskOf(pane)), node, seq)
-    if (rows.length) appendUsage(run.id, rows)
+    if (rows.length) appendUsage(run.id, halt ? rows.map(r => ({ ...r, halt: true as const })) : rows)
   } catch {}
 }
 const usageFile = (id: string) => join(runDir(id), 'usage.jsonl')
@@ -13055,7 +13083,7 @@ if (queued) {
     const sync = worker.syncBeads()
     if (!sync.ok && worker.isSchemaSkew(sync)) {
       // no retry fixes a VM whose bd is too old for the store: the report goes out, and the laptop holds the station
-      worker.queue([cmd!, ...queuedArgs], worker.usageOfSession(args[0]!), sync.error)
+      worker.queue([cmd!, ...queuedArgs], worker.usageOfSession(args[0]!), sync.error, worker.startRecord())
       console.log(
         `queued for the factory: report; bd could not sync (schema skew: ${sync.error}), so the factory holds this station for the person; you are done, stop now`,
       )
@@ -13070,7 +13098,12 @@ if (queued) {
       process.exit(1)
     }
   }
-  worker.queue([cmd!, ...queuedArgs], cmd === 'report' ? worker.usageOfSession(args[0]!) : undefined)
+  worker.queue(
+    [cmd!, ...queuedArgs],
+    cmd === 'report' ? worker.usageOfSession(args[0]!) : undefined,
+    undefined,
+    cmd === 'report' ? worker.startRecord() : undefined,
+  )
   console.log(`queued for the factory: ${cmd}${cmd === 'report' ? '; you are done, stop now' : ''}`)
 }
 
@@ -13770,6 +13803,12 @@ if (import.meta.main && !outboxCmd)
         break
       case 'devenv':
         refuseWorker('devenv')
+        if (args.includes('--missing')) {
+          if (args.length !== 1) fail('usage: factory devenv [rig...] [--force] | factory devenv --missing')
+          const lines = devenv.cacheProposal(rigs(), r => devenv.remoteDevenv(r.repo).hasDevenv)
+          if (lines.length) console.log(lines.join('\n'))
+          break
+        }
         console.log(
           devenvPass(
             args.filter(a => a !== '--force'),

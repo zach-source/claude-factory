@@ -79,7 +79,8 @@ The server checks the client certificate before it reads a request. It does not 
 
 - Start the listener with `--client-port`, `--tls-cert`, `--tls-key` and `--person-ca`. Give all four or none.
 - A request with an `Authorization` header gets 403. This holds for any value and any route. A worker token never opens this port.
-- The server serves only the routes in the tables above, except `GET /v1/events` (claude-factory-bb05) and `PUT` and `DELETE /v1/rigs/<name>` (claude-factory-tsam). Those give 404.
+- The server serves only the routes in the tables above. `PUT` and `DELETE` on `/v1/rigs/<name>` (claude-factory-tsam) give 404.
+- `GET /v1/events` streams `text/event-stream`. Each board change is one event: `id: <n>` and `data: <board JSON>`. The query is empty or `?after=<digits>`; any other query gives 400. The server sends the retained events with an id above `after` (default 0), then the new ones. It keeps the last 256 events in memory. The ids restart with the server: after a restart, reconnect with `after=0`. The connection stays open until the client or the server closes it. The server closes a client that falls more than 256 events behind.
 - `GET /v1/board` gives the result of the last tick of the server. It gives 503 before the first tick. It runs no CLI command.
 - A decision answer goes to `POST /v1/decisions/<rig>/<bead>/answer`. A decision can only be made on this port. The health port (8080) gives 404 for `decide`.
 - Status codes:

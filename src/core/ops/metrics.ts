@@ -11,11 +11,14 @@ import {
   parseDenialLines,
   parseLaunchLines,
   parsePrecheckLines,
+  parseStartLines,
   precheckStats,
   render,
   renderDenials,
   renderLaunches,
+  renderStarts,
   renderTokens,
+  startStats,
   tokensReport,
 } from '../../metrics'
 import { inProc, type Ctx, type Input, type RunResult } from '../catalog'
@@ -41,6 +44,11 @@ export async function show(ctx: Ctx, i: Input): Promise<RunResult> {
     const launchFile = join(home, 'launches.jsonl')
     const launchesAll = existsSync(launchFile) ? parseLaunchLines(readFileSync(launchFile, 'utf8')) : []
     const launches = launchesAll.filter(l => l.at >= since_ && (!rig || l.rig === rig))
+    // claude-factory-ad6r: HOME/starts.jsonl, one line a first brief turn; the launch join uses every launch line
+    const startFile = join(home, 'starts.jsonl')
+    const startsAll = existsSync(startFile) ? parseStartLines(readFileSync(startFile, 'utf8')) : []
+    const startLines = startsAll.filter(l => l.at >= since_ && (!rig || l.rig === rig))
+    const starts = startStats(launchesAll, startLines)
     // claude-factory-dsfg: runs/*/denials.jsonl, one file a run. --rig maps a run to its rig through
     // every launch line (not the --since window: a denial can be newer than its run's first launch)
     const rigOfRun = new Map(launchesAll.map(l => [l.run, l.rig]))
@@ -74,6 +82,7 @@ export async function show(ctx: Ctx, i: Input): Promise<RunResult> {
           ...(tokenArgs && { tokens: tokensReport(...tokenArgs) }),
           precheck: precheckStats(rig ? precheckAll.filter(l => l.rig === rig) : precheckAll),
           launches,
+          ...(startsAll.length && { starts }),
           denials,
           rigs: Object.fromEntries(groups.map(g => [g, { ...of(g), precheck: precheckOf(g) }])),
         }),
@@ -88,6 +97,7 @@ export async function show(ctx: Ctx, i: Input): Promise<RunResult> {
       )
       if (groups.length > 1) for (const g of groups) print('\n' + render(of(g), g, precheckOf(g)))
       if (launches.length) print('\nlaunches by harness and model:\n' + renderLaunches(launchStats(launches)))
+      if (startLines.length) print('\nstarts by rig (first starts, median s):\n' + renderStarts(starts))
       if (Object.keys(denials).length) print('\ndenials by harness and reason:\n' + renderDenials(denials))
       if (cursor || env.CURSOR_API_KEY) print('\n' + cursorLine(cursor, cursorCap(env)))
       if (grokSpent(home) > 0 || grokBudget(env) !== undefined)
