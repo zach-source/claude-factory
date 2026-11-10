@@ -15,6 +15,7 @@ const OUTSIDE_TEXT = [
   '/fixture/home/text-other/a',
   '/fixture/home/text/../a',
   '/fixture/home/text/sub/../../a',
+  '/fixture/home/text/./../a',
   '/fixture/home/text',
   '/fixture/home/text/',
   '',
@@ -84,7 +85,7 @@ for (const home of ['/fixture/home', '', undefined, 'relative', '/fixture/\0home
         file_path,
         content: 'private content',
       } as never)
-      expect(result.deny).toContain('text/')
+      expect(result.deny).toBe('Patrol Write requires a path inside FACTORY_HOME/text/.')
       expect(result.deny).not.toContain('private content')
       expect(downstream).toBe(0)
       expect(dialogs).toBe(0)
@@ -99,6 +100,7 @@ for (const home of [
   '/fixture/home space',
   '/fixture/other/../home',
   '/fixture//home',
+  '/fixture/./home',
 ]) {
   test(`oxib AC2 allowed paths with home ${home}`, SLOW, async ($, on) => {
     const clock = mock.clock(on)
@@ -210,7 +212,7 @@ test(
               expect(seen.length).toBe(count + 1)
               expect(seen.at(-1)).toEqual(event)
             } else {
-              expect(result.deny).toContain('text/')
+              expect(result.deny).toBe('Patrol Write requires a path inside FACTORY_HOME/text/.')
               expect(seen.length).toBe(count)
             }
           }
@@ -255,28 +257,36 @@ test(
   SLOW,
   async ($, on) => {
     const clock = mock.clock(on)
+    const files = new Map<string, string>()
     homeMocks(
       on,
       () => [],
       () => {},
       '/fixture/home',
-      new Map(),
+      files,
     )
     agentListMock(on, ['oxib-fresh'])
     on('ui.status', () => ({ value: undefined }) as never)
     on('ui.toast', () => ({ value: undefined }) as never)
     let downstream = 0
     let dialogs = 0
-    on('tool.call', { tool: 'AskUserQuestion' }, () => {
+    on('tool.call', { tool: 'AskUserQuestion' }, (_$, e) => {
       dialogs++
-      return { deny: 'unexpected dialog' }
+      return {
+        result: { questions: e.questions, answers: { [e.questions[0]!.question]: 'Allow for this turn' } },
+      }
     })
+    on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: '', stderr: '', interrupted: false } }))
     on('tool.call', { tool: 'Write' }, () => {
       downstream++
       return { deny: 'downstream policy' }
     })
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
+    await $.tool.call({ tool: 'Bash', command: 'factory decisions answer acme acme-1 "not now"' })
+    expect(dialogs).toBe(1)
+    expect([...files.keys()].some(path => path.includes('/allow/'))).toBe(true)
+    const before = [...files]
     const event = { tool: 'Write', agentId: 'oxib-fresh', content: 'stub' }
     expect((await $.tool.call({ ...event, file_path: INSIDE_TEXT[0] } as never)).deny).toBe(
       'downstream policy',
@@ -284,7 +294,8 @@ test(
     expect(downstream).toBe(1)
     expect((await $.tool.call({ ...event, file_path: OUTSIDE_TEXT[0] } as never)).deny).toContain('text/')
     expect(downstream).toBe(1)
-    expect(dialogs).toBe(0)
+    expect(dialogs).toBe(1)
+    expect([...files]).toEqual(before)
   },
 )
 
