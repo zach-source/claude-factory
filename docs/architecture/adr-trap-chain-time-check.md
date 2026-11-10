@@ -2,7 +2,7 @@
 
 ## Context
 
-Bead: `claude-factory-xfbp6`. Status: proposed. This is a CI reliability repair, not a new bypass.
+Bead: `claude-factory-xfbp6`. Status: implemented. This is a CI reliability repair, not a new bypass.
 
 The reported CI sample took 131 ms against a 100 ms limit on `b0d16431`.
 The [failed job](https://github.com/zach-source/claude-factory/actions/runs/42815991372/job/129829247784) completed its test step.
@@ -19,7 +19,7 @@ Plan did not run the full project suite, build, plugin check, audit, or CI.
 
 `src/worker-hook.test.ts:10879` measures the direct chain against 300 ms.
 Line 10885 defines two bd-scan cases with a 100 ms limit.
-Each case takes one `Date.now()` sample and discards the scan result.
+At baseline, each case took one `Date.now()` sample and discarded the scan result.
 Wall time includes CPU suspension, runtime warmup, and garbage collection.
 The historical sample does not identify which cause applied. Do not claim that it does.
 
@@ -49,7 +49,7 @@ Require an undefined result. A fast budget denial must not pass as a successful 
 This clock is for the count test only. The wall-time test must use the real clock and production deadline.
 Retain the direct chain at 1,150 words and both bd chains at 1,000 words.
 
-The proposed wall ceiling is 300 ms for all three original cases.
+The selected wall ceiling is 300 ms for all three original cases.
 This is the current direct-chain ceiling and remains far below the 7,000 ms scan deadline.
 The count assertion must replace the lost sensitivity of the 100 ms assertion before any ceiling change.
 Do not change 100 ms until AC1 proves the variation mechanism and AC3 proves both regression checks.
@@ -345,3 +345,11 @@ These checks do not replace the required CI checks on the final repair SHA.
 
 A local project diagnostic also started before the repair. It used Go 1.26.10 instead of CI's Go 1.23.
 The current Nix package set no longer supplies Go 1.23. The CI run above supplies the pinned-tool baseline.
+
+## Repair
+
+The two wrapped real-clock checks now use 300 ms. The direct check retains 300 ms.
+All three checks assert an undefined scan result and measure elapsed time before the result assertion.
+All original chain inputs, the 30,000 ms test timeout, and all production code remain unchanged.
+The nine independent count checks retain the linear envelope at each selected input size.
+Final local and CI results belong in the implement report and the pull request.

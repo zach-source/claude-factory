@@ -10902,8 +10902,10 @@ test.each(
 
 test('denyReason bounds a long dash-led trap chain (claude-factory-81tz.3)', () => {
   const t0 = Date.now()
-  denyReason('trap ' + '-/trap '.repeat(1150) + 'x')
-  expect(Date.now() - t0).toBeLessThan(300)
+  const reason = denyReason('trap ' + '-/trap '.repeat(1150) + 'x')
+  const elapsed = Date.now() - t0
+  expect(reason).toBeUndefined()
+  expect(elapsed).toBeLessThan(300)
 }, 30_000)
 
 test.each([
@@ -10913,8 +10915,10 @@ test.each([
   'denyReason bounds a long trap chain in the bd scan (claude-factory-81tz.4)',
   cmd => {
     const t0 = Date.now()
-    denyReason(cmd)
-    expect(Date.now() - t0).toBeLessThan(100)
+    const reason = denyReason(cmd)
+    const elapsed = Date.now() - t0
+    expect(reason).toBeUndefined()
+    expect(elapsed).toBeLessThan(300)
   },
   30_000,
 )
