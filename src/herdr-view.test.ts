@@ -234,7 +234,15 @@ test('interviewItems counts the beads of `factory decisions` once each, plus the
 test('parseSnapshot splits one snapshot into the board result and the decisions (claude-factory-hpmc.23)', () => {
   const out = JSON.stringify({ views: { board: { runs: [], manager: [] }, decisions: { rigs: [] } } })
   expect(herdr.parseSnapshot(0, out, '')).toEqual({
-    tick: { runs: [], manager: [], rigs: [], halt: undefined, readOnly: undefined, managerLimited: null },
+    tick: {
+      runs: [],
+      manager: [],
+      rigs: [],
+      halt: undefined,
+      readOnly: undefined,
+      managerLimited: null,
+      managerCodexAuth: null,
+    },
     decisions: { rigs: [] },
   })
   const bad = JSON.stringify({ views: { board: { error: 'no tick yet' }, decisions: { error: 'x' } } })
@@ -369,4 +377,16 @@ test('chatArgv picks a codex chat on the machine while the manager is limited', 
   expect(herdr.chatArgv({ cli: 'x', home: '/h' }, { kind: 'x', until: 1 })).toBeNull()
   expect(herdr.chatLabel({ kind: 'x', until: 1 })).toBe('Manager chat (codex)')
   expect(herdr.chatLabel(null)).toBe('Manager chat')
+})
+
+test('the board header names a refused manager codex key, and parseTick carries the field', () => {
+  expect(herdr.managerCodexAuthText({ at: 1, text: 'x' })).toBe('manager codex: key refused')
+  expect(herdr.managerCodexAuthText(null)).toBe('')
+  const res = herdr.parseTick(
+    0,
+    JSON.stringify({ runs: [], manager: [], managerCodexAuth: { at: 1, text: 'x' } }),
+    '',
+  )
+  expect(res.managerCodexAuth).toEqual({ at: 1, text: 'x' })
+  expect(herdr.parseTick(0, JSON.stringify({ runs: [], manager: [] }), '').managerCodexAuth).toBeNull()
 })
