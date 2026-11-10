@@ -233,7 +233,7 @@ The full guide for each tab, with its keys and buttons, is in [console.md](conso
 | `factory waiting` | Show everything that waits on you, and how to answer each item. |
 | `factory poke <run> [text...]` | Nudge the worker of the current station. |
 | `factory retry <run>` | Retry a stuck run. |
-| `factory goto <run> <node\|done>` | Queue a move of a run to a station. The next tick applies it. A goto also grants a fresh step budget. The command exits 1 in two cases. An earlier goto is still queued. Or the run is done. |
+| `factory goto <run> <node\|done>` | Queue a move of a run to a station. The next tick applies it. A goto also grants a fresh step budget. The command exits 1 in three cases. An earlier goto is still queued. Or the run is done. Or the move would revive an ended ship run beside another live ship run on the same repo. |
 | `factory abort <run>` | Abort a run. Its bead is deferred. |
 | `factory rm <run>` | Remove a finished run. Its branch stays. |
 | `factory gc [--days N] [--dry-run]` | Remove old files of finished runs, and a dead launch script. `--dry-run` only shows the bytes. |
