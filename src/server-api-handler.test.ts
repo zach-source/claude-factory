@@ -29,6 +29,10 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
     planShowText: () => (log('planShowText', []), '{"ok":1}'),
     gateBriefFacts: async id => (log('gateBriefFacts', [id]), { ok: 1 }),
     records: () => (log('records', []), []),
+    flowData: async () => ({
+      def: { name: 'f', start: 'a', nodes: { a: { prompt: 'p', next: { done: 'done' } } } },
+      runs: [],
+    }),
     refreshMerges: async recs => (log('refreshMerges', [recs]), []),
     managerUsage: since => (log('managerUsage', [typeof since]), []),
     rigList: async print => (log('rigList', []), print('{"ok":1}')),
