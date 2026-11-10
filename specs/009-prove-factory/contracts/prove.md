@@ -44,7 +44,7 @@ proofs/
   plan.json            # the proof plan
   comparator.json      # modules, theorem_names, permitted_axioms
   gate.sh              # the gatekeeper
-  LICENSE-upstream     # the Apache 2.0 text of arm64-semantics and comparator
+  LICENSE-upstream     # the Apache 2.0 text and any NOTICE text of arm64-semantics and comparator
 .github/workflows/prove-gate.yml   # runs proofs/gate.sh on ubuntu-latest, on each pull request and on the default branch
 ```
 

@@ -20,6 +20,14 @@ Facts come from a survey of these sources:
 | `leanprover/comparator` | Its own `LICENSE` file. | Apache-2.0 |
 | `landrun` | GitHub license field. | MIT |
 
+License facts that the owner checked on 2026-11-10:
+
+- The README of google-deepmind/code-verification says that all code is Apache 2.0 (Copyright 2026 Google LLC).
+- Only the `third_party/libsignal` files are AGPL-3.0. Phase 1 does not need them.
+- The hashbrown, Rust standard library and musl parts are MIT.
+
+Result: phase 1 can reuse `arm64-semantics/` and `comparator` under Apache 2.0. Apache 2.0 section 4 requires that the rig keeps the license text and any `NOTICE` text with the dependency. On 2026-11-10, the repo root and `arm64-semantics/` have no `NOTICE` file. If a later pinned commit adds one, the rig must keep it in `LICENSE-upstream`.
+
 Neither repo has a release (0 releases on 2026-11-10). So the rig pins a commit. The upstream `comparator/run.sh` runs `comparator` on two configs and fails unless both print `Your solution is okay!`. Its `install-tools.sh` builds `comparator` and `lean4export` at their `v4.34.0` tags, and `landrun` at a pinned commit. The factory copies this behavior, not the files.
 
 **Alternatives**: Copy the upstream files into this repo. That adds about 7,600 lines of trusted Lean to a public repo that does not run Lean. It also makes the upstream fixes hard to take.
@@ -161,6 +169,15 @@ These theorems are part of the approved statements. So `comparator` checks them,
 - Use Talos as a reference only, until a license decision. AGPL-3.0 and GPL-3.0 may not fit a public repo.
 - Write the decoder in Lean. Or keep `wasm-tools` outside the trusted base, with differential tests.
 - Build Rust cores with `-Ctarget-cpu=mvp` and `-Zbuild-std`, so that the `.wasm` uses only the MVP features.
+
+**Option under study (owner, 2026-11-10, no decision)**: Use Rocq for phase 2 in place of a new Lean WebAssembly semantics.
+
+| Part | What it is | License |
+| --- | --- | --- |
+| WasmCert-Coq | A mature mechanization of Wasm 2.0 in Rocq. | `LICENSE.txt`: mostly MIT. Some vendored directories are LGPL 2.1 or later. |
+| logsem/iriswasm (Iris-Wasm) | A separation logic for WebAssembly on top of WasmCert, in Rocq. | MIT |
+
+This option gives a mature semantics and a program logic at once. It also gives a second proof assistant in the factory. The gatekeeper then needs the Rocq kernel and a Rocq check that is equal to `comparator`, next to Lean. The vendored LGPL directories need a check before a public rig uses them. The owner decides between this option and our own Lean semantics before L1 starts.
 
 ## R13. Where the Go engine lives
 

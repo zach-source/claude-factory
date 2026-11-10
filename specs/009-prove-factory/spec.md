@@ -45,7 +45,7 @@ The factory has no workflow that proves properties of code. The `lifecycle` work
 | The repo root, its scripts and its case studies | google-deepmind/code-verification | Apache-2.0 by the root README ("All code is licensed under the Apache License, Version 2.0", copyright 2026 Google LLC). The root `LICENSE` file lists only the third-party exceptions (MIT parts and the AGPL-3.0 libsignal files). GitHub cannot read a license from that file, so it shows `NOASSERTION`. | Not needed. The factory writes its own `comparator` run script. Do not copy the libsignal files: they are AGPL-3.0-only. |
 | `third_party/libsignal` | same repo | AGPL-3.0-only | No. |
 
-Result: the factory can reuse the AArch64 semantics and `comparator`. The license of each part that phase 1 uses is clear, so this is not an owner question. Neither repo has a release. Thus each rig pins a commit, not a version. The factory does not copy upstream files into this repo. Each rig that uses `prove` keeps the upstream `LICENSE` text with the dependency.
+Result: the factory can reuse the AArch64 semantics and `comparator`. The license of each part that phase 1 uses is clear, so this is not an owner question. Neither repo has a release. Thus each rig pins a commit, not a version. The factory does not copy upstream files into this repo. Each rig that uses `prove` keeps the upstream Apache 2.0 `LICENSE` text and any `NOTICE` text with the dependency (research.md R1).
 
 ## Decisions (owner, 2026-11-10)
 
