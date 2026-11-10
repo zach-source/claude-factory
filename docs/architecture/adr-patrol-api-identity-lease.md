@@ -226,6 +226,39 @@ Required CI checks must pass on the final PR head: test, plugin, typecheck, and 
 Audit tests must assert the exact field set and no token, digest, body, free text, or raw error.
 Report tool gaps plainly. No AC in this dormant increment is must-see-live.
 
+### AC6 recovery plan after three partial passes
+
+Task `claude-factory-1ocuv.6` remains open. Tasks `.1` through `.5` remain closed.
+The AX parent fix retains the separate real-bd test and every test limit.
+The remaining gate evidence does not establish a patrol regression.
+Do not change patrol behavior to address an unrelated scan-time failure.
+
+Use this order for the next implementation pass:
+
+1. Read task `.6` and its comments. Check the draft PR head and its required checks.
+2. Compare the local tools with `.github/workflows/ci.yml`. Use Bun 1.4.4 and Prettier 3.9.9.
+3. Run the focused `src/worker-hook-38jm.test.ts` suite without concurrent checks. Record each failed row and its duration.
+4. Measure the same rows at `origin/main` in this worktree. Restore only the files that this comparison changes.
+5. Select one measured scanner cost. State one hypothesis before a code change.
+6. Make one minimal fix. Keep the existing assertions, input sizes, and time limits.
+7. Repeat the baseline command. Reject the fix if the target still fails after two attempts.
+8. Commit a successful fix before its separate guard mutations. Push before the next task.
+9. Repeat the focused home-guard and worker-hook failures from task `.6` in sequence.
+10. Merge `origin/main`, then run the complete CI-equivalent gate at the final head.
+
+The full test command must retain `PKGGATE_E2E_REQUIRE=1` and `PG_SCRATCH_REQUIRE=1`.
+Use a script in `.scratch/` for these environment variables and the required local tools.
+Run the complete plugin check, root type check, format check, audit, and secret scan.
+Run `bun run typecheck` separately. Report absent generated mod types as a local input gap.
+The CI root type check does not prove the mod type check.
+Report failed model downloads separately from tests that execute and fail.
+Do not bypass network limits or obtain live credentials for model data.
+Do not close `.6` from a focused pass or an older green CI head.
+The final report must retain each unresolved local failure and the exact-head CI result.
+
+This plan adds no activation, credential change, scanner bypass, larger limit, or weaker assertion.
+It does not authorize a ready report while a required check remains incomplete.
+
 ## Test plan and tasks
 
 Write tests before implementation. Use temporary homes and fake credentials only.
