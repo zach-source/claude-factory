@@ -3484,7 +3484,15 @@ test('laptopSandbox wraps on darwin and fails closed elsewhere', () => {
       ?.reason,
   ).toContain('factory home')
   expect(() => laptopSandbox('codex', join(home, '.codex', 'w'), mac)).not.toThrow()
-  expect(refused(() => laptopSandbox('claude', wt, { ...mac, env: { CODEX_HOME: 'rel' } }))).not.toBeNull()
+  const rel = refused(() => laptopSandbox('claude', wt, { ...mac, env: { CODEX_HOME: 'rel' } }))
+  expect(rel).toMatchObject({ type: 'FAIL', seq: 1 })
+  expect(rel?.reason).toContain('must be absolute')
+  // the worktree is a symlink into a deny path: only the real-path half of the check sees it
+  mkdirSync(join(home, '.codex', 'w'), { recursive: true })
+  symlinkSync(join(home, '.codex', 'w'), join(home, 'sl'))
+  expect(refused(() => laptopSandbox('claude', join(home, 'sl'), mac))?.reason).toContain(
+    'inside the sandbox deny path',
+  )
   const empty = laptopSandbox('claude', wt, { ...mac, env: { CODEX_HOME: '' } })
   expect(empty).toContain(join(home, '.codex'))
   expect(empty).not.toContain('(subpath "")')

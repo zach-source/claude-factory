@@ -393,7 +393,11 @@ test.skipIf(process.platform !== 'darwin')('seatbelt blocks reads on macOS', () 
     `require('fs').renameSync(${JSON.stringify(join(home, '.config'))}, ${JSON.stringify(join(home, '.c'))})`,
     `require('fs').renameSync(${JSON.stringify(join(home, '.config', 'factory'))}, ${JSON.stringify(join(home, 'f2'))})`,
   ]
-  for (const code of fails) expect(run(code).exitCode).not.toBe(0)
+  for (const code of fails) {
+    const r = run(code)
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr.toString()).toMatch(/EPERM|EACCES|operation not permitted|permission denied/i)
+  }
   expect(run(`require('fs').writeFileSync('w.txt','x'); require('fs').readFileSync('w.txt')`).exitCode).toBe(
     0,
   )
