@@ -21,6 +21,7 @@ import {
   httpsRemote,
   isDenyLine,
   memorySnapshotPut,
+  outboxArgv,
   outboxDenial,
   overwritten,
   progressSig,
@@ -388,6 +389,138 @@ esac
   chmodSync(join(dir, 'ax'), 0o755)
 }
 const called = () => (existsSync(calls) ? readFileSync(calls, 'utf8') : '')
+
+test('yn9ag AC1: file report option text survives the outbox and replay once', () => {
+  const id = 'yn9-report'
+  const seq = launched(id)
+  const file = join(dir, 'yn9-summary')
+  const outbox = join(dir, 'yn9-report.jsonl')
+  writeFileSync(file, '--summary-file')
+  expect(
+    factory(['report', id, String(seq), 'ready', '--summary-file', file], fakeBd(id).env(outbox)).code,
+  ).toBe(0)
+  const lines = readFileSync(outbox, 'utf8').trim().split('\n')
+  cluster('Running', { status: 'working', lines })
+  expect(factory(['tick']).code).toBe(0)
+  const events = () =>
+    inbox(id)
+      .split('\n')
+      .filter(Boolean)
+      .map(l => JSON.parse(l))
+  expect(events().filter(e => e.type === 'DONE')).toEqual([
+    expect.objectContaining({ outcome: 'ready', summary: '--summary-file', seq }),
+  ])
+  factory(['tick'])
+  expect(events().filter(e => e.type === 'DONE')).toHaveLength(1)
+})
+
+test('yn9ag AC1: file mail option text preserves whitespace and only explicit wake', () => {
+  const id = 'yn9-mail'
+  launched(id)
+  const root = join(home, 'text')
+  mkdirSync(root, { recursive: true })
+  const file = join(root, 'yn9-mail')
+  const outbox = join(dir, 'yn9-mail.jsonl')
+  const env = fakeBd(id).env(outbox)
+  const texts = ['--wake', '--text-file', '--', '-h', ' \n"quotes" café 日本語\n ']
+  for (const text of texts) {
+    writeFileSync(file, text)
+    expect(factory(['mail', id, 'manager', '--text-file', file], env).code).toBe(0)
+  }
+  writeFileSync(file, '--wake')
+  expect(factory(['mail', id, 'manager', '--wake', '--text-file', file], env).code).toBe(0)
+  const lines = readFileSync(outbox, 'utf8').trim().split('\n')
+  cluster('Running', { status: 'working', lines })
+  factory(['tick'])
+  const events = () =>
+    inbox(id)
+      .split('\n')
+      .filter(Boolean)
+      .map(l => JSON.parse(l))
+  expect(events().filter(e => e.type === 'MAIL')).toEqual([
+    ...texts.map(text => ({ type: 'MAIL', from: 'a', to: 'manager', text, at: expect.any(Number) })),
+    { type: 'MAIL', from: 'a', to: 'manager', text: '--wake', wake: true, at: expect.any(Number) },
+  ])
+  factory(['tick'])
+  expect(events().filter(e => e.type === 'MAIL')).toHaveLength(texts.length + 1)
+})
+
+test('yn9ag AC2: closed replay grammar refuses file options and malformed boundaries before the spawn seam', () => {
+  const side = { node: 'a', seq: 1 }
+  const sentinel = join(dir, 'yn9-sentinel')
+  writeFileSync(sentinel, 'sentinel contents must stay private')
+  const link = join(dir, 'yn9-link')
+  symlinkSync(sentinel, link)
+  const invalid: unknown[][] = [
+    ['report', 'r', '1', 'ready', '--'],
+    ['report', 'r', '1', 'ready', '--', 'text', 'extra'],
+    ['report', 'r', '1', 'ready', '--', 7],
+    ['report', 'r', '1', 'ready', '--', 'text', '--summary-file', sentinel],
+    ['mail', 'r', 'manager', '--'],
+    ['mail', 'r', 'manager', '--', 'text', '--wake'],
+    ['mail', 'r', 'manager', '--wake', '--'],
+    ['mail', 'r', 'manager', '--wake', '--', 'text', 'extra'],
+    ['mail', 'r', 'manager', '--', null],
+    ['mail', 'other', 'manager', '--', 'text'],
+    ['report', 'other', '1', 'ready', '--', 'text'],
+    ['report', 'r', '2', 'ready', '--', 'text'],
+    ['report', 'r', '01', 'ready', '--', 'text'],
+    ['decide', 'r', 'ready', '--', 'text'],
+    ['mail', 'r', 'manager', '--', ' \n '],
+    ['report', 'r', '1', 'ready', '--', ''],
+  ]
+  for (const path of [sentinel, 'relative', '../escape', link]) {
+    invalid.push(['report', 'r', '1', 'ready', '--summary-file', path])
+    invalid.push(['mail', 'r', 'manager', '--text-file', path])
+    invalid.push(['mail', 'r', 'manager', '--wake', '--text-file', path])
+  }
+  for (const argv of invalid) {
+    const parsed = outboxArgv(JSON.stringify({ argv }))
+    expect(parsed && replayable(parsed, side, 'r')).toBeNull()
+  }
+  for (const argv of [
+    ['report', 'r', '1', 'ready', '--', sentinel],
+    ['mail', 'r', 'manager', '--', sentinel],
+    ['mail', 'r', 'manager', '--wake', '--', '--'],
+  ])
+    expect(replayable(argv, side, 'r')).toEqual(argv)
+})
+
+test('yn9ag AC2: refusals leave the next literal line usable and never copy file contents', () => {
+  const id = 'yn9-refuse'
+  const seq = launched(id)
+  const sentinel = join(home, 'text', 'yn9-private')
+  mkdirSync(join(home, 'text'), { recursive: true })
+  writeFileSync(sentinel, 'yn9 private sentinel contents')
+  const rows = [
+    ['mail', id, 'manager', '--text-file', sentinel],
+    ['report', id, String(seq), 'ready', '--summary-file', sentinel],
+    ['mail', id, 'manager', '--', 'text', '--wake'],
+    ['report', id, String(seq), 'invalid-outcome', '--', 'no event'],
+    ['mail', id, 'missing-box', '--', 'no event'],
+    ['mail', id, 'manager', '--', sentinel],
+  ]
+  cluster('Running', {
+    status: 'working',
+    lines: rows.map(argv => JSON.stringify({ argv, from: 'manager', at: 1 })),
+  })
+  factory(['tick'])
+  const events = inbox(id)
+    .split('\n')
+    .filter(Boolean)
+    .map(l => JSON.parse(l))
+  expect(events).toEqual([{ type: 'MAIL', from: 'a', to: 'manager', text: sentinel, at: expect.any(Number) }])
+  expect(called()).not.toContain('yn9 private sentinel contents')
+  expect(inbox(id)).not.toContain('yn9 private sentinel contents')
+})
+
+test('yn9ag AC3: canonical argv byte cap includes boundaries and multibyte text', () => {
+  const argv = ['mail', 'r', 'manager', '--', 'é']
+  const prefix = argv.slice(0, -1).join('').length
+  argv[4] = 'é' + 'x'.repeat(worker.OUTBOX_MAX_BYTES - prefix - 2)
+  expect(worker.outboxTooBig(argv)).toBeUndefined()
+  expect(worker.outboxTooBig([...argv.slice(0, -1), argv[4] + 'x'])).toBe(102401)
+})
 
 test('a run fixture can remain until its test ends', () => {
   launched('cleanup-check')
