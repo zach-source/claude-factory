@@ -1374,9 +1374,9 @@ function mask(t: string): string {
   let q = ''
   let out = ''
   for (let i = 0; i < t.length; i++) {
-    const c = t[i]
+    const c = t.charAt(i)
     if (c === '\\' && q !== "'" && i + 1 < t.length) {
-      out += c + (/[;&|()]/.test(t[i + 1]) ? '_' : t[i + 1])
+      out += c + (/[;&|()]/.test(t.charAt(i + 1)) ? '_' : t.charAt(i + 1))
       i++
     } else if (q) {
       if (c === q) q = ''
