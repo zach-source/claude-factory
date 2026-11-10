@@ -162,22 +162,24 @@ These theorems are part of the approved statements. So `comparator` checks them,
 | WasmCert-Coq | Rocq | Wasm 2.0, mature. Not Lean. | — |
 | SpecTec | — | Has Rocq output. Lean output is only planned. | — |
 
-**Recommended path for phase 2** (not decided):
+| linobit-corp/wasm-lean | Lean | "Formalization of WebAssembly in Lean 4". Last push 2026-04-25. Scope not known. | MIT |
 
-- Write our own small Lean WebAssembly core semantics from the official spec. Scope: Wasm 2.0 MVP plus bulk memory and sign extension.
-- Test it against the WebAssembly/spec reference interpreter and the official testsuite (differential tests) before any proof.
-- Use Talos as a reference only, until a license decision. AGPL-3.0 and GPL-3.0 may not fit a public repo.
-- Write the decoder in Lean. Or keep `wasm-tools` outside the trusted base, with differential tests.
-- Build Rust cores with `-Ctarget-cpu=mvp` and `-Zbuild-std`, so that the `.wasm` uses only the MVP features.
+**Decision (owner, 2026-11-10)**: Phase 2 uses a new Lean 4 WebAssembly semantics. It does not use Rocq.
 
-**Option under study (owner, 2026-11-10, no decision)**: Use Rocq for phase 2 in place of a new Lean WebAssembly semantics.
+- **Fork or build.** The fork base candidates are only the permissive ones: argumentcomputer/Wasm.lean (MIT, has a parser, no change since 2023) and linobit-corp/wasm-lean (MIT, scope not known). Task W1 evaluates both and picks a fork or a new build.
+- **Clean code.** Do not copy from AGPL or GPL code: Talos (AGPL-3.0), T-Brick/lean-wasm (GPL-3.0) and aionescu/lean-wasm (GPL-3.0). Read only their public docs. Our code then stays clean for a public repo.
+- **Scope.** Wasm 2.0 MVP plus bulk memory and sign extension. The semantics is executable. It has a decoder for that subset.
+- **State shape.** The top-level relation has the DeepMind style: a runs-to relation such as `ElfRunsTo` (`arm64-semantics/Arm64/Trusted/Process/Semantics.lean:126`), with partial and total forms. The same gatekeeper and `comparator` flow then work for phase 2.
+- **Gate before any proof.** The semantics must pass differential tests against the WebAssembly/spec reference interpreter and the official testsuite for the subset. No proof on it starts before this gate passes.
+- **Repo.** It lives in its own repo with a generic name. Rigs use it as a Lake dependency.
+- **Order.** It is phase 2 work with its own beads (W0 to W4). Phase 1 (Go on AArch64) does not wait for it.
+- **Build of the cores.** Build Rust cores with `-Ctarget-cpu=mvp` and `-Zbuild-std`, so that the `.wasm` uses only the MVP features.
 
-| Part | What it is | License |
-| --- | --- | --- |
-| WasmCert-Coq | A mature mechanization of Wasm 2.0 in Rocq. | `LICENSE.txt`: mostly MIT. Some vendored directories are LGPL 2.1 or later. |
-| logsem/iriswasm (Iris-Wasm) | A separation logic for WebAssembly on top of WasmCert, in Rocq. | MIT |
+**Alternatives** (not chosen):
 
-This option gives a mature semantics and a program logic at once. It also gives a second proof assistant in the factory. The gatekeeper then needs the Rocq kernel and a Rocq check that is equal to `comparator`, next to Lean. The vendored LGPL directories need a check before a public rig uses them. The owner decides between this option and our own Lean semantics before L1 starts.
+- Rocq: WasmCert-Coq (`LICENSE.txt` mostly MIT, some vendored directories LGPL 2.1 or later) with logsem/iriswasm (Iris-Wasm, a separation logic on WasmCert, MIT). It gives a mature semantics and a program logic. But it adds a second proof assistant and a second gatekeeper flow.
+- A fork of Talos or a GPL Lean project: the licenses may not fit a public repo.
+- `wasm-tools` as the decoder: it can stay as a differential-test oracle, outside the trusted base.
 
 ## R13. Where the Go engine lives
 

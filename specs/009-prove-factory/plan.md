@@ -122,12 +122,21 @@ Phase 1, in order. Each slice is one bead and one pull request.
 | P1 | `substrate` | The pilot run: `HostnamePattern.Matches`. The person makes the decisions and merges. | E4, F2, F3, F5, F6 |
 | P2 | `substrate` | Break the function on a test branch. Show SC-004. | P1 |
 
+Phase 2 base: the Lean 4 WebAssembly semantics (research.md R12). It lives in its own repo with a generic name. Rigs use it as a Lake dependency. It does not wait for phase 1, and phase 1 does not wait for it.
+
+| Slice | Where | Work | Depends on |
+| --- | --- | --- | --- |
+| W0 | owner | Make the repo with a generic name (default `lean-wasm-semantics`). | — |
+| W1 | Wasm repo | Evaluate argumentcomputer/Wasm.lean and linobit-corp/wasm-lean (both MIT). Pick a fork or a new build. Read only the public docs of the AGPL and GPL projects. Copy no code from them. | — |
+| W2 | Wasm repo | The executable semantics: Wasm 2.0 MVP plus bulk memory and sign extension. A runs-to relation with partial and total forms, in the style of `ElfRunsTo`. | W0, W1 |
+| W3 | Wasm repo | The decoder for the same subset, in Lean. `wasm-tools` is a test oracle only. | W2 |
+| W4 | Wasm repo | The gate before any proof: differential tests against the WebAssembly/spec reference interpreter and the official testsuite for the subset, in CI. | W3 |
+
 Later work. Each bead stays blocked until its dependency is done:
 
 | Bead | Work | Blocked by |
 | --- | --- | --- |
-| L1 | Phase 2: a small Lean WebAssembly core semantics (Wasm 2.0 MVP, bulk memory, sign extension), with differential tests against the reference interpreter and the testsuite (research.md R12) | P1 |
-| L2 | Phase 2: the `wasm` path in `prove` for TypeScript cores, with bun running the same `.wasm` | L1 |
+| L2 | Phase 2: the `wasm` path in `prove` for TypeScript cores, with bun running the same `.wasm` | W4, F4, F5 |
 | L3 | Phase 3: the Rust and C native path (static musl `aarch64`), with `pattern_matches` as its pilot against the same Lean reference matcher | P1 |
 | L4 | Phase 3 (maybe): Python through `.wasm` or a PyO3 extension | L2 |
 
