@@ -1327,12 +1327,15 @@ test('triage passes file-elsewhere text by file (claude-factory-dgok, claude-fac
   for (const p of ['title', 'description']) expect(spans.join('\n')).toContain(`--${p}-file <path>`)
 })
 
-test('3w8o AC6 only the plan prompt names must-see-live', () => {
+test('v5eq AC4 plan forbids must-see-live deadline', () => {
   for (const [id, node] of Object.entries(lifecycle.nodes)) {
     const p = (node as { prompt?: string }).prompt ?? ''
     if (id === 'plan') {
       expect(p).toContain('must-see-live')
       expect(p.slice(p.indexOf('6. Observability'), p.indexOf('7. Tasks'))).toContain('must-see-live')
+      expect(p.slice(p.indexOf('6. Observability'), p.indexOf('7. Tasks'))).toContain(
+        'Mark an AC must-see-live when the soak must see its own output before it reports healthy; the soak then never uses its deadline.',
+      )
     } else expect(p, id).not.toContain('must-see-live')
   }
 })
