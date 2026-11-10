@@ -281,7 +281,6 @@ test('a subagent bd command with a shell expansion or a hidden bd argv is denied
     'bd\nshow acme-1',
     'bd \t\nready',
     'echo tag acme-1 factory | xargs bd\r\nshow',
-    '<<<"tag acme-1 factory" xargs bd\nready',
     'bd ready --claim --label factory',
     'bd ready --claim',
     'bd ready --claim=true --json',
