@@ -1,4 +1,5 @@
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { clearCodexAuth, isCodexAuthError, recordCodexAuth } from './codex-auth'
 import { join } from 'node:path'
 import type { ModelCall, ModelResult } from './once'
 
@@ -170,6 +171,11 @@ export async function runStep(
   } else if (!call.codex && stepLimit(r)) {
     outcome = 'limit'
     tail = isolate ? await swapSlot(home, Date.now(), broker, deps.fetch) : '; no swap: not the server'
+  }
+  // claude-factory-y3f8w.10: a codex step shows a refused key, and works again once one succeeds
+  if (call.codex) {
+    if (r.isOk) clearCodexAuth(home)
+    else if (isCodexAuthError(r.error)) recordCodexAuth(home, Date.now(), r.error!)
   }
   const first = (r.error ?? r.text).split('\n')[0] ?? ''
   logRow(home, {
