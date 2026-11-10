@@ -604,6 +604,7 @@ Limits:
 - The broker answers 400 and runs no command for a worker policy in these cases:
   - It names the vault key `AX_AUTH` or `GITHUB_BASIC_MANAGER`.
   - A `credentialUri` is not `ate-secret://agent-vault/<vault>/<KEY>`.
+  - Its vault differs from `FACTORY_AX_VAULT` in the broker environment. This check also applies to both reviewer rules.
   - A rule has `pathPrefixes` or `paths` on a hostname pattern that can match a `github.com` host. Examples: `github.com`, `*.github.com`, `*.com`, `*`. The broker accepts one such rule: the reviewer rule. Its keys are exactly these:
     - `hostnames`: only `api.github.com` and `uploads.github.com`.
     - `pathPrefixes`: one `/repos/<owner>/<repo>/`.
@@ -633,6 +634,14 @@ Limits:
 - `workerPolicyRefusal` in `src/broker.ts` makes this check. `createPolicy` uses the same function. The owner must apply `deploy/broker.yaml` with a new broker image to start the check in the cluster.
 - The broker logs one line for each call, and one line `policy refused for <atespace>/<actor>: <reason>` for each refusal.
 
+Set `FACTORY_AX_VAULT` in the trusted broker Deployment to the same worker vault that the manager uses.
+The broker compares the complete vault segment as exact text. It does not decode, normalize, or trim that segment.
+An unset or empty value keeps the alphabet-only check: the vault must contain only `a-z`, `0-9`, and `-`.
+A nonempty config value with any other character stops the broker before startup. The value `-` remains valid.
+The manager request cannot choose the broker pin. Local `createPolicy` calls omit this optional constraint.
+This setting does not change `CLAUDE_TOKEN_VAULT`, which selects the vault for the token swap.
+The owner must deploy a broker image with this check and the vault config. Existing policies change only after a new PUT.
+
 Any caller that reaches the broker can set the egress of any worker in the served atespaces. Give the broker address only to the manager task and the factory server pod. Two callers can reach the broker. The manager task calls it through the egress gateway in namespace `ate-system`. Any pod in namespace `ate-system` can call the broker too, not only the gateway. The factory server pod calls it from namespace `factory` with the label `app: factory-server`. Any pod in namespace `factory` with that label can call the broker. Only the owner may create pods in that namespace. The broker has no caller authentication.
 
 Use in the manager task:
@@ -641,7 +650,7 @@ Use in the manager task:
 2. The manager policy gets one `http` rule for the router and one for the broker. An `https` rule does not work for plain HTTP (h2c) to a service. When ax-server caller authentication is on, use an `https` AX server URL, for example `https://ax-server.ax-system.svc:8443`. The gateway then adds `Authorization: Bearer <AX_AUTH>`. On the laptop, export `AX_AUTH_TOKEN` in the shell that runs `factory`. The `ax` CLI sends it over the loopback tunnel.
 3. In the manager VM and in the server pod, `FACTORY_POLICY_BROKER` makes `unavailable`, `createPolicy` and `egressCA` call the broker with `curl`, not `kubectl`. Unset, they run `kubectl` as before. `deploy/server.yaml` sets `FACTORY_POLICY_BROKER` to `http://factory-policy-broker.factory-broker.svc:8080`.
 
-Deploy: set `BROKER_IMAGE` to the image by digest. Run `envsubst '$BROKER_IMAGE $FACTORY_BROKER_KEY_HOSTS' < deploy/broker.yaml | kubectl apply -f -`. The ServiceAccount needs `get` on `clustertrustbundles`. The broker reaches ate-api at `api.ate-system.svc:443`. The cluster must let the namespace pull the image. For the token swap, also set the `CLAUDE_TOKEN_*` variables (see the header of `deploy/broker.yaml`) in the `envsubst` list.
+Deploy: set `BROKER_IMAGE` to the image by digest. Set `FACTORY_AX_VAULT` to the worker vault. The owner runs `envsubst '$BROKER_IMAGE $FACTORY_AX_VAULT $FACTORY_BROKER_KEY_HOSTS' < deploy/broker.yaml | kubectl apply -f -`. The ServiceAccount needs `get` on `clustertrustbundles`. The broker reaches ate-api at `api.ate-system.svc:443`. The cluster must let the namespace pull the image. For the token swap, also set the `CLAUDE_TOKEN_*` variables (see the header of `deploy/broker.yaml`) in the `envsubst` list.
 
 Two more calls serve the manager's secrets (see Manager secrets):
 
