@@ -630,6 +630,24 @@ test('akiq.15 AC8: the patrol job runs only for the lease holder, one at a time,
   await d.s.stop()
 }, 30_000)
 
+test('akiq.15 AC8: stop() calls the patrol kill hook', async () => {
+  const h = mkdtempSync(join(tmpdir(), 'server-pt-'))
+  dirs.push(h)
+  let killed = 0
+  const s = serve({
+    home: h,
+    port: 0,
+    everyMs: 50,
+    leaseMs: 1000,
+    holder: 'a',
+    log: () => {},
+    tick: () => {},
+    patrol: { everyMs: 50, run: async () => {}, kill: () => void killed++ },
+  })
+  await s.stop()
+  expect(killed).toBe(1)
+})
+
 test('akiq.15 AC8: --patrol-every-ms is off by default and must be at least --every-ms', () => {
   expect(parseFlags([]).patrolMs).toBe(0)
   expect(parseFlags(['--patrol-every-ms', '60000']).patrolMs).toBe(60000)
@@ -672,7 +690,11 @@ test('akiq.15 AC8: the server runs the patrol with its own HOME; with the flag o
     outcome: 'ok',
   })
   expect(readFileSync(join(on.home, 'child-env.txt'), 'utf8')).toContain(`HOME=${on.home}/steps/patrol\n`)
-  on.p.kill('SIGKILL')
+  // wait for a second patrol interval: the next child must take no refused lease
+  await sleep(700)
+  on.p.kill('SIGTERM')
+  await on.p.exited
+  expect(await new Response(on.p.stderr).text()).not.toContain('no patrol:')
   rmSync(on.stub)
   const off = await patrolServer([])
   await sleep(1500)

@@ -384,7 +384,7 @@ test('with no broker a limit sends no request', async () => {
 
 test('stepLimit reads a stream-json failure from a real child', async () => {
   writeFileSync(join(sdir, 'reply.jsonl'), failEvent('slow down', 429))
-  const r = await runStep(shome, 'pm', CALL, runModelAsync)
+  const r = await runStep(shome, 'pm', { ...CALL, baseEnv: { PATH: process.env.PATH } }, runModelAsync)
   expect(r.apiErrorStatus).toBe(429)
   expect(stepLimit(r)).toBe(true)
   expect(rows()[0].summary).toBe('slow down; no swap: not the server')

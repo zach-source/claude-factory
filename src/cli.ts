@@ -13657,7 +13657,10 @@ if (import.meta.main && !outboxCmd)
           })
         }
         // the patrol child takes manager.lease as ppid:<server pid>; the marker moves its HOME away from the person certificate
+        let patrolKid: ReturnType<typeof Bun.spawn> | undefined
         const patrol = {
+          // ponytail: SIGTERM reaches the patrol child only; a grandchild (the claude step) can outlive it. patrol.lock limits that. Upgrade: kill the process group.
+          kill: () => patrolKid?.kill('SIGTERM'),
           run: () => {
             const { FACTORY_LEASE_HOLDER, FACTORY_LEASE_KIND, ...env } = kickEnv(process.env, HOME)
             const p = Bun.spawn([CLI, 'patrol', '--once'], {
@@ -13665,6 +13668,7 @@ if (import.meta.main && !outboxCmd)
               stderr: 'inherit',
               env: { ...env, FACTORY_STEP_ISOLATE: '1' },
             })
+            patrolKid = p
             return p.exited.then(c => {
               if (c !== 0) throw new Error(`exit ${c}`)
             })

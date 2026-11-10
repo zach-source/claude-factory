@@ -35,7 +35,15 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 const factory = (args: string[], stdin = '') => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_PATROL, ...laptop } = process.env
+  const {
+    FACTORY_OUTBOX,
+    FACTORY_FROM,
+    FACTORY_RUN,
+    FACTORY_PATROL,
+    FACTORY_POLICY_BROKER,
+    FACTORY_STEP_ISOLATE,
+    ...laptop
+  } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: {
       ...laptop,

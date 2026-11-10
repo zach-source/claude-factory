@@ -83,7 +83,7 @@ export type ServeOpts = {
   /** the home backup: `run` starts every `everyMs` while this server holds the lease and no earlier `run` is pending */
   backup?: { everyMs: number; run: () => Promise<unknown> }
   /** the manager patrol (claude-factory-akiq.15): the same rules as `backup`, with its own pending flag */
-  patrol?: { everyMs: number; run: () => Promise<unknown> }
+  patrol?: { everyMs: number; run: () => Promise<unknown>; kill?: () => void }
   holder?: string
   log?: (line: string) => void
   /** the client API on its own mTLS listener; `ca` is the person CA text; `handle` gets the request and the peer address */
@@ -218,6 +218,7 @@ export function serve(o: ServeOpts) {
       clearTimeout(timer)
       clearInterval(backupTimer)
       clearInterval(patrolTimer)
+      o.patrol?.kill?.()
       await running
       clearInterval(renew)
       if (held) {
@@ -327,7 +328,7 @@ export function main(
   tick: () => unknown,
   port: Port,
   backup?: () => Promise<unknown>,
-  patrol?: { run: () => Promise<unknown>; keep: (out: unknown) => void },
+  patrol?: { run: () => Promise<unknown>; kill?: () => void; keep: (out: unknown) => void },
 ) {
   const f = parseFlags(args)
   let s: ReturnType<typeof serve> | undefined
@@ -358,7 +359,7 @@ export function main(
     onBoard: handle.publish,
     client,
     backup: b && 'cfg' in b && backup ? { everyMs: b.everyMs, run: backup } : undefined,
-    patrol: patrolOn ? { everyMs: f.patrolMs, run: patrolOn.run } : undefined,
+    patrol: patrolOn ? { everyMs: f.patrolMs, run: patrolOn.run, kill: patrolOn.kill } : undefined,
   })
   console.log(
     `factory server on :${s.port}${s.clientPort ? ` and client API on :${s.clientPort}` : ''} as ${s.holder}`,

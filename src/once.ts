@@ -129,6 +129,7 @@ function readJsonFile<T>(path: string, fallback: T): T {
 }
 
 /** atomic: a reader never sees half a file */
+// ponytail: the server tick and a patrol child can write this file at the same time. The last write wins. Upgrade: Dolt (S6).
 function saveJson(path: string, value: unknown) {
   // a tmp name per pid: the server and a patrol child never rename the same tmp file
   const tmp = `${path}.${process.pid}.tmp`

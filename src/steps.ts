@@ -177,6 +177,7 @@ export async function runStep(
     started_at: started,
     ended_at: Date.now(),
     outcome,
+    // ponytail: the slot is the last known swap state, a best guess; soak must not trust it
     token_slot: call.codex ? 'codex' : slot,
     summary: cut(cut(first, 240) + tail, 300),
   })
