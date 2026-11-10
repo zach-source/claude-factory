@@ -2329,17 +2329,7 @@ export const codexAuth = (egress: Egress[] = []): 'apikey' | 'chatgpt' =>
 export const codexEgress = (egress: Egress[] = []) =>
   codexAuth(egress) === 'apikey' || egress.some(e => e.hosts.includes('chatgpt.com'))
     ? egress
-    : [
-        ...egress,
-        {
-          hosts: ['chatgpt.com'],
-          pathPrefixes: ['/backend-api/codex/'],
-          headers: [
-            { header: 'Authorization', prefix: 'Bearer ', key: 'CODEX_CHATGPT' },
-            { header: 'ChatGPT-Account-ID', prefix: '', key: 'CODEX_CHATGPT_ACCOUNT' },
-          ],
-        },
-      ]
+    : [...egress, ax.CODEX_CHATGPT_RULE]
 
 /** FACTORY_GH_REVIEWER comes only from launchTask's reviewer flag, never from FACTORY_AX_ENV or a rig's env */
 const noReviewerFlag = (e: Record<string, string> = {}) => {
