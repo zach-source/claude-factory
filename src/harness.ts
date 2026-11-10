@@ -349,8 +349,7 @@ export function seatbelt(
     if (/["\\\u0000-\u001f\u007f]/.test(d))
       throw new SandboxPathError(`the sandbox cannot quote the path ${JSON.stringify(d)}`)
   const ancestors = new Set<string>()
-  for (const d of denied)
-    for (let a = dirname(d); a !== '/' && a !== dirname(a); a = dirname(a)) ancestors.add(a)
+  for (const d of denied) for (let a = dirname(d); a !== dirname(a); a = dirname(a)) ancestors.add(a)
   const lines = [
     '(version 1)',
     '(allow default)',
