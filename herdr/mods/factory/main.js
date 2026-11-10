@@ -39,6 +39,7 @@ import {
   actionWords,
   SNAPSHOT_WORDS,
   chatArgv,
+  chatLabel,
   directJob,
   onOf,
   FLOW_FACTORIES,
@@ -491,8 +492,11 @@ export default class Factory extends View {
     return [
       ...(chatArgv(this.cfg)
         ? [
-            button('chat', 'Manager chat', () =>
-              run('terminal.open', { argv: chatArgv(this.cfg), place: 'tab' }),
+            button('chat', chatLabel(shared('factory')?.managerLimited), () =>
+              run('terminal.open', {
+                argv: chatArgv(this.cfg, shared('factory')?.managerLimited),
+                place: 'tab',
+              }),
             ),
           ]
         : []),
