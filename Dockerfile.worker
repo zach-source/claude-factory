@@ -104,6 +104,9 @@ RUN mkdir -p /nix/var/nix/gcroots \
   && nix registry add --registry /etc/nix/registry.json nixpkgs "path:$p" \
   && nix profile install --profile /nix/var/nix/profiles/default nixpkgs#devenv nixpkgs#jdk21_headless nixpkgs#gitleaks nixpkgs#jq nixpkgs#postgresql \
   && devenv version && keytool -help >/dev/null 2>&1 && gitleaks version && jq --version
+# The pinned Go is in the store and a GC root keeps it. It is not on PATH, so a nix shell for Go fetches nothing.
+# A rig pins its own Go in devenv.nix.
+RUN nix build --out-link /nix/var/nix/gcroots/go nixpkgs#go && nix shell nixpkgs#go -c go version
 # serve runs as this user, not root (asWorker in src/worker.ts), which gives it Nix's store and database when the
 # task starts, since Substrate shows image files as root's, so nix shell and a rig's devenv substitute as it
 RUN useradd --create-home --shell /bin/bash worker
