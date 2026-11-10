@@ -71,7 +71,7 @@ test('n69b2 AC2 each gc caller marker refuses before HTTP, including previews', 
   let requests = 0
   const fetchFn = (async () => {
     requests++
-    return new Response('ok\n')
+    return Response.json({ code: 0, out: 'ok\n', err: '' })
   }) as unknown as typeof fetch
   const io = { out: () => {}, err: () => {} }
   for (const marker of [
@@ -87,6 +87,57 @@ test('n69b2 AC2 each gc caller marker refuses before HTTP, including previews', 
   expect(requests).toBe(0)
   expect(await main('gc', [], { FACTORY_SERVER: 'http://127.0.0.1:9' }, fetchFn, io)).toBe(0)
   expect(requests).toBe(1)
+})
+
+test('n69b2 AC3 gc success preserves stdout and stderr without extra newlines', async () => {
+  for (const result of [
+    { code: 0, out: 'totals\n', err: 'skip first\nskip second\n\n' },
+    { code: 0, out: '', err: '' },
+  ]) {
+    let out = ''
+    let err = ''
+    const fetchFn = (async () => Response.json(result)) as unknown as typeof fetch
+    expect(
+      await main('gc', [], { FACTORY_SERVER: 'http://127.0.0.1:9' }, fetchFn, {
+        out: text => {
+          out += text
+        },
+        err: text => {
+          err += text + '\n'
+        },
+      }),
+    ).toBe(0)
+    expect({ out, err }).toEqual({ out: result.out, err: result.err })
+  }
+})
+
+test('n69b2 AC3 malformed gc success results cause no output or local fallback', async () => {
+  for (const text of [
+    'not JSON',
+    'null',
+    '[]',
+    '"text"',
+    '{}',
+    '{"code":1,"out":"x","err":"x"}',
+    '{"code":0,"out":1,"err":"x"}',
+    '{"code":0,"out":"x","err":1}',
+  ]) {
+    let out = ''
+    const errors: string[] = []
+    const fetchFn = (async () => new Response(text)) as unknown as typeof fetch
+    expect(
+      await main('gc', [], { FACTORY_SERVER: 'http://127.0.0.1:9' }, fetchFn, {
+        out: text => {
+          out += text
+        },
+        err: text => {
+          errors.push(text)
+        },
+      }),
+    ).toBe(1)
+    expect(out).toBe('')
+    expect(errors).toEqual(['factory server: invalid gc result'])
+  }
 })
 
 test('serverUrl: https, or http on loopback, an origin only', () => {

@@ -90,6 +90,9 @@ test('n69b2 AC3 local, direct core, and server CLI use equivalent isolated homes
     let archived = 0
     for (const args of rows) {
       for (const home of [serverHome, localHome, directHome]) {
+        const broken = join(home, 'runs', 'broken-1xx')
+        mkdirSync(broken, { recursive: true })
+        writeFileSync(join(broken, 'run.json'), '{')
         const def: Factory = {
           name: 'ship',
           start: 'work',
@@ -150,6 +153,7 @@ test('n69b2 AC3 local, direct core, and server CLI use equivalent isolated homes
       expect(result(direct)).toEqual(result(local))
       expect(result(remote)).toEqual(result(local))
       expect(local.exitCode).toBe(0)
+      if (!args.includes('--worktrees')) expect(local.stderr.toString()).toContain('gc: skipping broken-1xx:')
       if (!args.includes('--dry-run') && !args.includes('--worktrees')) archived++
       for (const home of [serverHome, localHome, directHome]) {
         expect(existsSync(join(home, 'runs', 'ship-1xx'))).toBe(

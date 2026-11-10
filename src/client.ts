@@ -222,6 +222,19 @@ export async function main(
     )
   }
   if (!res.ok) return refuse(`factory server: ${res.status} ${text.slice(0, 500)}`)
+  if (cmd === 'gc') {
+    let result: { code?: unknown; out?: unknown; err?: unknown } | null
+    try {
+      result = JSON.parse(text)
+    } catch {
+      return refuse('factory server: invalid gc result')
+    }
+    if (!result || result.code !== 0 || typeof result.out !== 'string' || typeof result.err !== 'string')
+      return refuse('factory server: invalid gc result')
+    io.out(result.out)
+    if (result.err) io.err(result.err.replace(/\n$/, ''))
+    return 0
+  }
   io.out(text.endsWith('\n') ? text : `${text}\n`)
   return 0
 }

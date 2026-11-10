@@ -28,6 +28,9 @@ This pass does not claim full UI parity. It supplies the common contract that th
 Add `gc.run` to `src/core/catalog.ts`: `POST /v1/gc`, text output, owner rights, and `mutates: true`.
 Dry-run uses the same POST route and caller checks. It is not a read-rights bypass.
 Use the current synchronous result contract, `{code, out, err}`, and the server's current timeout behavior.
+Successful `/v1/gc` replies carry that result as JSON, including stderr diagnostics when `code` is zero.
+The catalog's text output describes `out`. Clients must emit both `out` and `err` from the result.
+Nonzero results retain the existing HTTP error envelope.
 Do not invent command polling in this pass. The UI follow-ups must use their established long-operation support.
 
 Add `src/core/ops/gc.ts` for caller checks, option validation, mode selection, defaults, locks, and stamp policy.

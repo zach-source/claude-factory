@@ -332,11 +332,10 @@ export function clientHandler(o: ClientOpts) {
         timer = setTimeout(() => res({ timedOut: true }), o.callTimeoutMs ?? 60_000)
       })
       const r = await Promise.race([op.run(ctx, input), limit])
-      return r.timedOut
-        ? refuse(504, 'the command timed out')
-        : r.code === 0
-          ? reply(200, r.out, op.output === 'json' || looksJson(r.out))
-          : refuse(422, r.err.slice(0, 500))
+      if (r.timedOut) return refuse(504, 'the command timed out')
+      if (r.code !== 0) return refuse(422, r.err.slice(0, 500))
+      if (op.name === 'gc.run') return reply(200, JSON.stringify(r), true)
+      return reply(200, r.out, op.output === 'json' || looksJson(r.out))
     } catch (e) {
       if (e instanceof OpError) return refuse(e.status, e.message)
       throw e

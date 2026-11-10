@@ -80,7 +80,11 @@ test('n69b2 AC1 gc route has no GET mutation or CLI bridge', async () => {
         calls.push(String(key))
         if (key === 'gcHold') return () => calls.push('release')
         if (key === 'gcRigs') return ['acme']
-        if (key === 'gcPass') args[2]('plain')
+        if (key === 'gcPass') {
+          args[2]('plain')
+          args[3]('skip diagnostic')
+          if (args[0] === 1) throw new Error('gc failed')
+        }
         if (key === 'gcWorktreesPass') args[2]('worktrees')
       },
   })
@@ -103,15 +107,46 @@ test('n69b2 AC1 gc route has no GET mutation or CLI bridge', async () => {
   ] as const) {
     const r = await post(h, '/v1/gc', body)
     expect(r.status).toBe(200)
-    expect(await r.text()).toBe(out)
+    expect(r.headers.get('content-type')).toBe('application/json')
+    expect(await r.json()).toEqual({ code: 0, out, err: body.worktrees ? '' : 'skip diagnostic\n' })
   }
-  expect(calls.filter(c => c === 'gcPass')).toHaveLength(1)
+  const repeat = () =>
+    h(
+      new Request('http://x/v1/gc', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': 'gc-repeat-1234' },
+        body: '{"dryRun":true}',
+      }),
+      'ip',
+    )
+  const first = await repeat()
+  const second = await repeat()
+  expect(await second.text()).toBe(await first.text())
+  expect(calls.filter(c => c === 'gcPass')).toHaveLength(2)
   expect(calls.filter(c => c === 'gcWorktreesPass')).toHaveLength(1)
+  const failed = await post(h, '/v1/gc', { days: '1' })
+  expect(failed.status).toBe(422)
+  expect(await failed.json()).toEqual({ refused: 'skip diagnostic\nfactory: gc failed\n' })
+  expect(calls.filter(c => c === 'gcPass')).toHaveLength(3)
   expect(cliCalls).toBe(0)
 })
 
 test('n69b2 AC2 gc transport and invalid input refuse before every port effect', async () => {
-  const { h, calls } = setup()
+  const calls: string[] = []
+  const h = clientHandler({
+    home: mkdtempSync(join(tmpdir(), 'gc-denial-')),
+    board: () => null,
+    run: async () => {
+      calls.push('cli')
+      throw new Error('unexpected CLI call')
+    },
+    port: new Proxy({} as Port, {
+      get: (_target, key) => () => {
+        calls.push(`port.${String(key)}`)
+        throw new Error('unexpected port effect')
+      },
+    }),
+  })
   for (const body of [
     null,
     [],
