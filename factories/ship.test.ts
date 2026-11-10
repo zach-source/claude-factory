@@ -708,6 +708,44 @@ const soakSentence = (needle: string) => {
   return p.slice(start, p.indexOf('. ', i) + 1)
 }
 
+test('v5eq AC1 follow-up identity', () => {
+  for (const sentence of [
+    'Read each candidate bead and its dependencies.',
+    'Reuse only an open verify:live bead with the same release, the same output, and the same discovered-from:<bead> source dependency.',
+    'Reject closed beads, other releases, other outputs, other sources, and absent source dependencies.',
+  ])
+    expect(soakSentence(sentence)).toBe(sentence)
+})
+
+test('v5eq AC2 current soak count', () => {
+  for (const sentence of [
+    "Soak deadline: count this release's prior unsure and blocked reports since deploy that did not see the output, plus this soak once.",
+    'Do not count other releases, pre-deploy reports, or retries without reports.',
+    'Report the current-inclusive count.',
+    'Before 24 hours, two prior reports plus this soak stay unsure; three prior reports plus this soak qualify.',
+    'Exactly 24 hours qualifies at count one.',
+    'The deadline passes at the fourth such soak or 24 hours after deploy, whichever comes first.',
+  ])
+    expect(soakSentence(sentence)).toBe(sentence)
+})
+
+test('v5eq AC3 unreadable health blocks', () => {
+  for (const sentence of [
+    'Absent or unreadable rollout evidence cannot count as a complete rollout.',
+    'Absent or unreadable log evidence cannot count as clean logs.',
+    'The deadline grants no infrastructure access; unauthorized reads cannot supply health evidence.',
+  ])
+    expect(soakSentence(sentence)).toBe(sentence)
+  expect(soakSentence('If the deadline has passed')).toBe(
+    'If the deadline has passed and rollout or log evidence is absent or unreadable, the rollout is not complete, or the logs are not clean, report blocked with the output you still need, its trigger and a `Question:` line.',
+  )
+})
+
+test('v5eq AC5 shell quote prohibition', () => {
+  const sentence = 'Do not use double quotes: bash expands $(...), backticks and $VAR in them.'
+  expect(soakSentence(sentence)).toBe(sentence)
+})
+
 test('3w8o AC1 soak has a deadline rule for unseen own output', () => {
   const dl = soakSentence('fourth such soak')
   for (const t of ['24 hours after deploy', 'whichever comes first']) expect(dl, t).toContain(t)
