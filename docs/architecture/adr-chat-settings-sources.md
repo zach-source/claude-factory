@@ -157,3 +157,23 @@ After `bun install --frozen-lockfile`, the focused suite passed: 27 tests, 145 a
 Plan used the installed Prettier entry point for the ADR.
 Plan did not run the full test suite, plugin check, audit, or secret scan.
 Plan did not run a real-Claude settings probe or claim a reproduced bypass.
+
+## Implementation baseline
+
+Claude 2.1.319 reproduced the bypass with the local transport in `src/chat-settings.integration.test.ts`.
+The fixture uses isolated homes and session stores under `.scratch/` and a fake downstream `factory`.
+It supplies a dummy API key to a local HTTP server. It reads no credentials.
+Use this command from the repository root:
+
+```sh
+WUA3V_REAL_CLAUDE=1 bun test src/chat-settings.integration.test.ts
+```
+
+Before the fix, this command exited 1 at the restricted guard-count assertion: expected 4, received 0.
+The unrestricted baseline completed all eight cases first.
+Without files, both turns ran four guard hooks and only two downstream `status` calls.
+With either file, or both files, present before launch, both turns ran zero guard hooks.
+Each turn reached the fake downstream `decide` command.
+With files created before resume, the first turn ran two hooks; the resumed turn ran zero.
+The benign project hook marker appeared without the restriction in all file cases.
+AC1 and AC2 also failed at their source-selection assertions before the fix.
