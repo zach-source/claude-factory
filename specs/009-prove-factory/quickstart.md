@@ -4,7 +4,8 @@ These steps show that phase 1 works from end to end. The station names and the f
 
 ## Prerequisites
 
-- The `substrate` rig is in `rigs.json`.
+- The owner's main private Go rig is in `rigs.json`. Below, `<rig>` is its name and `<function>` is the pilot function that its bead names.
+- The `prove` image is pushed, and `prove.image` is set.
 - The Go engine package exists and is pinned (research.md R13).
 - The rig's CI can run `ubuntu-latest` with 16 GB.
 
@@ -26,27 +27,28 @@ In a scratch clone of the rig, on a test branch, make each bad case. Run `proofs
 | Add `axiom cheat : False` and use it | `prove-gate: axioms: <theorem>: uses axiom cheat` |
 | Weaken a statement in `proofs/Spec/` | `prove-gate: hash: proofs/Spec/<file>: does not match approved.json` |
 | Weaken the statement and update `approved.json` | `proofs/gate.sh` passes the hash check, but the `gatekeep` station fails with check `hash` (the core's record differs) |
-| Change one line of `HostnamePattern.Matches` | `prove-gate: bytes: <symbol>: the machine code changed` |
+| Change one line of `<function>` | `prove-gate: bytes: <symbol>: the machine code changed` |
 | No change | `prove-gate: pass` |
 
 ## 3. One run on the pilot (SC-001, SC-001a, SC-003)
 
 ```sh
-factory start prove substrate 'prove HostnamePattern.Matches in internal/egresspolicy'
-factory decisions                 # the "choose" gate lists properties of HostnamePattern.Matches
+factory start prove <rig> 'prove <function>'
+factory decisions                 # the "choose" gate lists properties of <function>
 factory decide <run> picked 'property 1'   # or from any other front end
 ```
 
 Expected:
 
-1. The run stops at `approve`. The gate brief (`gates.brief`) shows the statement, a vacuity witness and at least one mutant disproof. It also shows the historical-bug disproof for the code before `6621f2b4`, the hook contracts and the trusted base. The trusted base shows the arm64 to amd64 gap.
-2. `factory decide <run> approve` writes `<factory home>/proofs/<run>/approvals.jsonl` and the held-out copy. `factory proofs show <run>` lists the hashes.
-3. The run files child beads for the lemmas, and the `lemma` runs prove them.
-4. `gatekeep` passes. The run hands the pull request to `ship`. The person merges it.
+1. The run stops at `approve`. The gate brief (`gates.brief`) shows the statement, a vacuity witness and at least one mutant disproof. It also shows the historical-bug disproof for the code before the fix, the hook contracts and the trusted base. The trusted base shows the arm64 to amd64 gap.
+2. Each runtime contract is a `part` gate on its own child run. Answer each one. Until each one has an answer, `factory decide <run> approve` refuses and names the open parts.
+3. `factory decide <run> approve` writes `<factory home>/proofs/<run>/approvals.jsonl` and the held-out copy. `factory proofs show <run>` lists the hashes.
+4. The run files child beads for the lemmas, and the `lemma` runs prove them.
+5. `gatekeep` passes. The run hands the pull request to `ship`. The person merges it.
 
 ## 4. A change breaks the proof (SC-004)
 
-On a test branch of the rig, change `HostnamePattern.Matches`. Open a pull request.
+On a test branch of the rig, change `<function>`. Open a pull request.
 
 Expected: `prove-gate` fails in the pull request with check `bytes`. After a red change merges to the default branch, the next `ci` sweep files one bead with `factory:prove` and `station:repair`. Then one repair run starts.
 
