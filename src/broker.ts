@@ -146,8 +146,7 @@ async function body(req: Request) {
 /** only the manager task can use these vault keys: they give full AX control or write access to the backup repo */
 const MANAGER_ONLY_KEYS = /(^|[^A-Za-z0-9_])(AX_AUTH|GITHUB_BASIC_MANAGER)([^A-Za-z0-9_]|$)/i
 /** a vault name is a-z, 0-9 and hyphen, as agent-vault makes it: no percent escape, dot or upper case */
-const vaultUri = (key: string) =>
-  new RegExp('^ate-secret://agent-vault/([a-z0-9-]+)/' + key + '$(?![\\s\\S])')
+const vaultUri = (key: string) => new RegExp('^ate-secret://agent-vault/([a-z0-9-]+)/' + key + '$')
 const CREDENTIAL_URI = vaultUri('[A-Z][A-Z0-9_]*')
 const REVIEWER_URI = vaultUri('GITHUB_REVIEWER')
 const REVIEWER_BASIC_URI = vaultUri('GITHUB_REVIEWER_BASIC')
