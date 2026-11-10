@@ -206,6 +206,7 @@ import {
 } from './wiki'
 import type { Page } from './wiki'
 import * as ax from './ax'
+import { codexChatLaunch } from './manager-codex'
 import type { Egress } from './ax'
 import {
   type ConnectCache,
@@ -13386,6 +13387,7 @@ const usage = `factory — herdr software factories on xstate
   status [run]                       runs at a glance, or one run's full log
   waiting                            everything that waits on the person, by rig, and how to answer each
   digest                             per rig: beads by state, the owner queue, recent repairs, PRs to merge in order
+  manager chat --codex               a Codex chat here, for when the manager's Claude is limited
   manager [claude args...]           start this factory's manager here, lean: Bash and file tools, no MCP servers
   attach [--follow]                  the AX manager's pane, read over ax ssh; --follow redraws every 3 s
                                      (no keyboard: ax ssh has no stdin or TTY; docs/remote-runner.md)
@@ -13784,6 +13786,15 @@ if (import.meta.main && !outboxCmd)
         if (args[0] === '--ax') {
           await launchAxManager(args.slice(1))
           break
+        }
+        if (args[0] === 'chat') {
+          // the manager's chat on Codex, for when every Claude slot is at its limit (claude-factory-y3f8w.4)
+          if (args.length !== 2 || args[1] !== '--codex') fail('usage: factory manager chat --codex')
+          const l = codexChatLaunch({ cli: CLI, home: HOME, env: process.env })
+          process.exit(
+            await Bun.spawn(l.argv, { cwd: l.cwd, env: l.env, stdio: ['inherit', 'inherit', 'inherit'] })
+              .exited,
+          )
         }
         lease()
         // ponytail: blocks until the manager exits; run it where it should live (a herdr pane)

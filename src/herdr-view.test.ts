@@ -354,3 +354,19 @@ test('the board header names a limited manager, and parseTick carries the field'
   )
   expect(res.managerLimited).toEqual({ kind: 'x', until })
 })
+
+test('chatArgv picks a codex chat on the machine while the manager is limited', () => {
+  const cfg = { cli: '/c/factory', home: '/h', machine: 'f-manager' }
+  expect(herdr.chatArgv(cfg, { kind: 'x', until: 1 })).toEqual([
+    'sh',
+    '-c',
+    expect.stringContaining('manager chat --codex'),
+    'f-manager',
+    '/h',
+    '/c/factory',
+  ])
+  expect(herdr.chatArgv(cfg, null)).toEqual(['hc', 'attach', 'f-manager/manager'])
+  expect(herdr.chatArgv({ cli: 'x', home: '/h' }, { kind: 'x', until: 1 })).toBeNull()
+  expect(herdr.chatLabel({ kind: 'x', until: 1 })).toBe('Manager chat (codex)')
+  expect(herdr.chatLabel(null)).toBe('Manager chat')
+})
