@@ -259,10 +259,10 @@ export function parseFlags(args: string[]) {
     const raw = args[i + 1]
     if (raw === undefined || seen.has(flag)) throw new Error(USAGE)
     seen.add(flag)
-    if (flag in NUMS) {
+    if (Object.hasOwn(NUMS, flag)) {
       if (!/^\d+$/.test(raw)) throw new Error(USAGE)
       v[NUMS[flag as keyof typeof NUMS]] = Number(raw)
-    } else if (flag in PATHS) {
+    } else if (Object.hasOwn(PATHS, flag)) {
       if (!raw || raw.startsWith('--')) throw new Error(USAGE)
       files[PATHS[flag as keyof typeof PATHS]] = raw
     } else throw new Error(USAGE)

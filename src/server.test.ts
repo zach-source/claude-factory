@@ -678,6 +678,9 @@ test('axo88 AC1: server patrol accepts only zero', () => {
 test('axo88 AC1: the server flag grammar stays closed', () => {
   for (const args of [
     ['--unknown', '0'],
+    ['toString', '0'],
+    ['constructor', '0'],
+    ['__proto__', '0'],
     ['--port', '0', '--port', '1'],
     ['--port'],
     ['positional'],
