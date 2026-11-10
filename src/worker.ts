@@ -78,7 +78,7 @@ export const outboxTooBig = (argv: string[]) => {
 }
 
 /** what `factory report|mail|memory add` does in a VM: queue the command line for the laptop to run */
-export function queue(argv: string[], usage?: Usage[], bdSkew?: string, start?: unknown) {
+export function queue(argv: string[], usage?: Usage[], bdSkew?: string, start?: unknown, mailFile = false) {
   appendFileSync(
     outbox(),
     JSON.stringify({
@@ -88,6 +88,7 @@ export function queue(argv: string[], usage?: Usage[], bdSkew?: string, start?: 
       ...(usage?.length && { usage }),
       ...(bdSkew && { bdSkew }),
       ...(start !== undefined && { start }),
+      ...(mailFile && { mailFile }),
     }) + '\n',
   )
 }

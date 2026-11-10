@@ -11,6 +11,21 @@ const tmp = (name: string) => {
   return d
 }
 
+test('0s5e legacy inline start and wake mail retain separator words', () => {
+  for (const rest of [
+    ['check', '--', 'help'],
+    ['--owned', 'check', '--', 'help'],
+    ['check', '--', 'help', '--owned'],
+  ]) {
+    const req = route('start', ['lifecycle', 'acme', ...rest])
+    expect(req).toMatchObject({ body: { goal: 'check -- help' } })
+    if (rest.includes('--owned')) expect(req).toMatchObject({ body: { owned: true } })
+  }
+  expect(route('mail', ['r1', 'manager', '--wake', '--', 'literal'])).toMatchObject({
+    body: { text: '-- literal', wake: true },
+  })
+})
+
 test('n69b2 AC3 gc server routes preserve both modes and flag orders', () => {
   const rows: [string[], Record<string, unknown>][] = [
     [[], {}],

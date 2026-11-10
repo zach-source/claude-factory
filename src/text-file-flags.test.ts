@@ -86,6 +86,21 @@ function badFiles(): Record<string, string> {
 
 const TEXT = 'x\'; id; \' and $(id) and `id` and "q"\n'
 
+test('0s5e legacy inline mail retains separators locally and after worker replay', () => {
+  const events = makeRun('r1')
+  for (const wake of [[], ['--wake']]) {
+    const argv = ['mail', 'r1', 'manager', ...wake, '--', 'literal']
+    expect(factory(argv).code).toBe(0)
+    expect(events().at(-1).text).toBe('-- literal')
+    const outbox = join(dir, `outbox-${wake.length}.jsonl`)
+    expect(factory(argv, { FACTORY_OUTBOX: outbox, FACTORY_FROM: 'implement' }).code).toBe(0)
+    const queued = JSON.parse(readFileSync(outbox, 'utf8')).argv
+    expect(replayable(queued, side, 'r1')).toEqual(argv)
+    expect(factory(queued).code).toBe(0)
+    expect(events().at(-1).text).toBe('-- literal')
+  }
+})
+
 test('mail --text-file mails the file text as written; a flag inside a longer word stays text (AC1)', () => {
   const events = makeRun('r1')
   mkdirSync(join(wt, '.scratch'), { recursive: true })
@@ -217,7 +232,7 @@ test('inside a VM, a bad file queues nothing: exit 1 for mail, 2 for memory add 
 
 test('0s5e file fields preserve text: poke and mail do not parse payload options', () => {
   const events = makeRun('literal')
-  for (const text of [TEXT, '--wake', '--text-file']) {
+  for (const text of [TEXT, '--', '--wake', '--text-file', '--owned']) {
     const path = txt('literal.md', text)
     for (const command of [
       ['poke', 'literal'],
@@ -382,7 +397,7 @@ test('0s5e remote text is data: server mail reads only the caller file', async (
     },
   })
   try {
-    for (const text of [TEXT, '--wake', '--text-file']) {
+    for (const text of [TEXT, '--', '--wake', '--text-file', '--owned']) {
       const path = txt('remote.md', text)
       const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, FACTORY_DEF_NAME, ...base } =
         process.env
@@ -392,6 +407,18 @@ test('0s5e remote text is data: server mail reads only the caller file', async (
       expect(await p.exited).toBe(0)
       expect(bodies.at(-1)).toMatchObject({ text: text.trimEnd(), to: 'manager' })
       expect(bodies.at(-1)).not.toHaveProperty('wake', true)
+    }
+    for (const wake of [[], ['--wake']]) {
+      const p = Bun.spawn([CLI, 'mail', 'r1', 'manager', ...wake, '--', 'literal'], {
+        env: {
+          PATH: process.env.PATH,
+          FACTORY_HOME: home,
+          FACTORY_SELF_UPDATE: '0',
+          FACTORY_SERVER: server.url.origin,
+        },
+      })
+      expect(await p.exited).toBe(0)
+      expect(bodies.at(-1)).toMatchObject({ text: wake.length ? '-- literal' : 'literal' })
     }
     const before = bodies.length
     const p = Bun.spawn([CLI, 'mail', 'r1', 'manager', '--text-file', txt('blank.md', ' ')], {
@@ -412,17 +439,20 @@ test('0s5e remote text is data: server mail reads only the caller file', async (
 test('0s5e remote text is data: flag-like mail survives worker replay without a file read', () => {
   const events = makeRun('r1')
   const outbox = join(dir, 'outbox.jsonl')
-  const path = txt('flag-mail.md', '--text-file')
-  const r = factory(['mail', 'r1', 'manager', '--text-file', path], {
-    FACTORY_OUTBOX: outbox,
-    FACTORY_FROM: 'implement',
-  })
-  expect(r.code, r.err).toBe(0)
-  const argv = JSON.parse(readFileSync(outbox, 'utf8')).argv
-  expect(replayable(argv, side, 'r1')).toEqual(argv)
-  expect(argv).not.toContain(path)
-  expect(factory(argv, {}, dir).code).toBe(0)
-  expect(events().at(-1).text).toBe('--text-file')
+  for (const text of ['--', '--wake', '--text-file', '--owned']) {
+    const path = txt('flag-mail.md', text)
+    const r = factory(['mail', 'r1', 'manager', '--text-file', path], {
+      FACTORY_OUTBOX: outbox,
+      FACTORY_FROM: 'implement',
+    })
+    expect(r.code, r.err).toBe(0)
+    const { argv, mailFile } = JSON.parse(readFileSync(outbox, 'utf8').trim().split('\n').at(-1)!)
+    expect(replayable(argv, side, 'r1')).toEqual(argv)
+    expect(argv).not.toContain(path)
+    expect(mailFile).toBe(true)
+    expect(factory(argv, { FACTORY_MAIL_FILE: mailFile ? '1' : '' }, dir).code).toBe(0)
+    expect(events().at(-1).text).toBe(text)
+  }
 })
 
 test('0s5e remote text is data: start parses owned before file content', async () => {
@@ -437,6 +467,23 @@ test('0s5e remote text is data: start parses owned before file content', async (
   })
   const path = txt('start.md', '--owned')
   try {
+    for (const rest of [
+      ['check', '--', 'help'],
+      ['--owned', 'check', '--', 'help'],
+      ['check', '--', 'help', '--owned'],
+    ]) {
+      const p = Bun.spawn([CLI, 'start', 'lifecycle', 'acme', ...rest], {
+        env: {
+          PATH: process.env.PATH,
+          FACTORY_HOME: home,
+          FACTORY_SELF_UPDATE: '0',
+          FACTORY_SERVER: server.url.origin,
+        },
+      })
+      expect(await p.exited).toBe(0)
+      expect(bodies.at(-1)).toMatchObject({ goal: 'check -- help' })
+      expect(bodies.at(-1)?.owned).toBe(rest.includes('--owned') ? true : undefined)
+    }
     for (const owned of [false, true]) {
       const p = Bun.spawn(
         [CLI, 'start', 'lifecycle', 'acme', '--goal-file', path, ...(owned ? ['--owned'] : [])],
@@ -462,7 +509,7 @@ test('0s5e remote text is data: start parses owned before file content', async (
       },
     })
     expect(await p.exited).not.toBe(0)
-    expect(bodies).toHaveLength(2)
+    expect(bodies).toHaveLength(5)
   } finally {
     server.stop(true)
   }

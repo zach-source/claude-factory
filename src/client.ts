@@ -53,7 +53,11 @@ export function serverUrl(env: Env): { url: URL } | { error: string } | null {
 }
 
 /** the request for one CLI form, `{local: true}` for a command that stays local, or the refusal text */
-export function route(cmd: string | undefined, args: string[]): Req | { local: true } | string {
+export function route(
+  cmd: string | undefined,
+  args: string[],
+  fileText = false,
+): Req | { local: true } | string {
   if (!cmd || LOCAL.has(cmd)) return { local: true }
   const no = `factory ${cmd} has no server mode: unset FACTORY_SERVER to run it on the local home`
   const bad = `usage: factory ${cmd} ...: the server mode form is not valid (see specs/004-factory-server/contracts/client-api.md)`
@@ -116,7 +120,7 @@ export function route(cmd: string | undefined, args: string[]): Req | { local: t
       // cli.ts expands --text-file before this call
       const wake = args[2] === '--wake'
       const at = wake ? 3 : 2
-      const text = args.slice(args[at] === '--' ? at + 1 : at).join(' ')
+      const text = args.slice((fileText || !wake) && args[at] === '--' ? at + 1 : at).join(' ')
       return n >= 3 && seg(a, b) && text
         ? {
             method: 'POST',
@@ -135,7 +139,7 @@ export function route(cmd: string | undefined, args: string[]): Req | { local: t
     case 'start': {
       const [target, rig, ...rest] = args
       const [factory, station, extra] = (target ?? '').split('@')
-      const end = rest.indexOf('--')
+      const end = fileText ? rest.indexOf('--') : -1
       const options = end < 0 ? rest : rest.slice(0, end)
       const goal = end < 0 ? rest.filter(w => w !== '--owned').join(' ') : rest.slice(end + 1).join(' ')
       if (extra !== undefined || !seg(factory, rig) || (station !== undefined && !seg(station)) || !goal)
@@ -178,6 +182,7 @@ export async function main(
   env: Env,
   fetchFn: typeof fetch = fetch,
   io: Io = stdio,
+  fileText = false,
 ): Promise<number | null> {
   if (!env.FACTORY_SERVER) return null
   const refuse = (s: string) => (io.err(s), 1)
@@ -188,7 +193,7 @@ export async function main(
       return refuse((e as Error).message)
     }
   }
-  const req = route(cmd, args)
+  const req = route(cmd, args, fileText)
   if (typeof req !== 'string' && 'local' in req) return null
   const found = serverUrl(env)
   if (!found) return null

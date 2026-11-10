@@ -1414,6 +1414,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
       FACTORY_OUTBOX: '',
       FACTORY_FROM: side?.node,
       FACTORY_RUN: run.id,
+      FACTORY_MAIL_FILE: cmd && JSON.parse(line).mailFile === true ? '1' : '',
     }
     // a report that went out without its bd sync is not replayed: its text goes to the journal in a hold
     const skew = cmd && argv![0] === 'report' ? bdSkewOf(line) : undefined
@@ -13633,6 +13634,7 @@ if (queued) {
     cmd === 'report' ? worker.usageOfSession(args[0]!) : undefined,
     undefined,
     cmd === 'report' ? worker.startRecord() : undefined,
+    cmd === 'mail' && queuedArgs !== args,
   )
   console.log(`queued for the factory: ${cmd}${cmd === 'report' ? '; you are done, stop now' : ''}`)
 }
@@ -13646,7 +13648,7 @@ if (import.meta.main && !outboxCmd && client.serverMode(process.env)) {
       const input = textInputs(args, ['--goal-file'], [], ['--owned'], 2)
       remoteArgs = [...input.args, '--', input.text['--goal-file']!]
     }
-    sent = await client.main(cmd, remoteArgs, process.env)
+    sent = await client.main(cmd, remoteArgs, process.env, undefined, undefined, remoteArgs !== args)
   } catch (e) {
     console.error((e as Error).message)
     process.exit(1)
@@ -14855,9 +14857,11 @@ if (import.meta.main && !outboxCmd)
       case 'mail': {
         // --wake comes right after the box; in a later word it stays text
         const wake = args[2] === '--wake'
-        const [id, to, ...rest] = fileArgs('mail', args)
+        const expanded = fileArgs('mail', args)
+        const [id, to, ...rest] = expanded
         const body = wake ? rest.slice(1) : rest
-        const text = body[0] === '--' ? body.slice(1) : body
+        const fileText = expanded !== args || process.env.FACTORY_MAIL_FILE === '1'
+        const text = fileText && body[0] === '--' ? body.slice(1) : body
         emit(
           await runsOp.mail(
             cliCtx(),

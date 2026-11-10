@@ -646,6 +646,30 @@ test("an outbox replays only the worker's own report, its run's mail and memory,
   rmSync(join(home, 'runs', 'r3'), { recursive: true })
 })
 
+test('0s5e a tick preserves inline mail and file-source mail separately', () => {
+  launched('r3')
+  const rows = [
+    { argv: ['mail', 'r3', 'manager', '--', 'literal'], text: '-- literal' },
+    { argv: ['mail', 'r3', 'manager', '--wake', '--', 'wake literal'], text: '-- wake literal' },
+    ...['--', '--wake', '--text-file', '--owned'].map(text => ({
+      argv: ['mail', 'r3', 'manager', '--', text],
+      mailFile: true,
+      text,
+    })),
+  ]
+  cluster('Running', {
+    status: 'working',
+    lines: rows.map(({ text, ...row }) => JSON.stringify({ ...row, from: 'a', at: 1 })),
+  })
+  expect(factory(['tick']).code).toBe(0)
+  const events = inbox('r3')
+    .trim()
+    .split('\n')
+    .map(l => JSON.parse(l))
+  expect(events.filter(e => e.type === 'MAIL').map(e => e.text)).toEqual(rows.map(r => r.text))
+  rmSync(join(home, 'runs', 'r3'), { recursive: true })
+})
+
 test("a tick replays memory helped as the worker's station, and refuses a path outside the memory dir", () => {
   launched('r20')
   const memDir = join(home, 'memory')
