@@ -61,7 +61,7 @@ test('AC2: the gap file holds the four seed gaps and the Herdr mod tab gaps (hpm
     row('herdr-mod', 'claude-factory-hpmc.10'),
     ...tabs.map(([op, n, tab]) => ({
       op,
-      frontEnd: 'herdr-mod',
+      frontEnd: 'herdr-mod' as const,
       bead: `claude-factory-hpmc.${n}`,
       reason: `the Herdr app mod has no ${tab} tab`,
     })),
