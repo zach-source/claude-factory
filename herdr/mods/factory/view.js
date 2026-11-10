@@ -131,10 +131,20 @@ export function parseTick(code, out, err) {
       rigs: res.rigs ?? [],
       halt: res.halt,
       readOnly: res.readOnly,
+      managerLimited: res.managerLimited ?? null,
     }
   } catch {
     return { error: line(`factory tick printed no JSON: ${out || err}`, 300) }
   }
+}
+
+/** the board header when the manager's Claude is limited: 'manager: Claude limited until HH:MM', else '' */
+export function managerLimitText(limited) {
+  if (!limited || typeof limited.until !== 'number') return ''
+  const d = new Date(limited.until)
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  return `manager: Claude limited until ${hh}:${mm}`
 }
 
 /** the result of `factory snapshot --views board,decisions`: { tick, decisions } for the tabs to share */
