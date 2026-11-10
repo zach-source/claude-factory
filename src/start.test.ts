@@ -576,6 +576,30 @@ test('fork of a live run is refused and makes nothing; after abort it works', ()
   expect(childRun).not.toHaveProperty('ship')
 })
 
+test('0s5e fork sends one literal file note and retains the no-note form', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  const id = startRun(r, false)
+  endRun(id)
+  mkdirSync(join(home, 'text'))
+  const path = join(home, 'text', 'fork.md')
+  const text = 'owner\'s "note"; | `printf x` $VAR $(printf y)\nsecond line'
+  writeFileSync(path, text + '\n')
+  const result = run(['fork', id, 'work', '--note-file', path])
+  expect(result.code, result.err).toBe(0)
+  const child = readdirSync(join(home, 'runs')).find(x => x !== id)!
+  const mails = readFileSync(join(home, 'runs', child, 'inbox.jsonl'), 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map(l => JSON.parse(l))
+    .filter(e => e.type === 'MAIL')
+  expect(mails.filter(e => e.text === text)).toHaveLength(1)
+  endRun(child)
+  expect(run(['fork', child, 'work']).code).toBe(0)
+})
+
 test('fork of a ship run keeps run.ship (claude-factory-0qh0)', () => {
   reset()
   const r = repo()

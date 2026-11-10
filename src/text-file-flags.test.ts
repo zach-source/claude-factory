@@ -386,6 +386,55 @@ test('0s5e remote text is data: server mail reads only the caller file', async (
   }
 })
 
+test('0s5e remote text is data: flag-like mail survives worker replay without a file read', () => {
+  const events = makeRun('r1')
+  const outbox = join(dir, 'outbox.jsonl')
+  const path = txt('flag-mail.md', '--text-file')
+  const r = factory(['mail', 'r1', 'manager', '--text-file', path], {
+    FACTORY_OUTBOX: outbox,
+    FACTORY_FROM: 'implement',
+  })
+  expect(r.code, r.err).toBe(0)
+  const argv = JSON.parse(readFileSync(outbox, 'utf8')).argv
+  expect(replayable(argv, side, 'r1')).toEqual(argv)
+  expect(argv).not.toContain(path)
+  expect(factory(argv, {}, dir).code).toBe(0)
+  expect(events().at(-1).text).toBe('--text-file')
+})
+
+test('0s5e remote text is data: start parses owned before file content', async () => {
+  const bodies: Record<string, unknown>[] = []
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    async fetch(req) {
+      bodies.push((await req.json()) as Record<string, unknown>)
+      return Response.json({ code: 0, out: '', err: '' })
+    },
+  })
+  const path = txt('start.md', '--owned')
+  try {
+    for (const owned of [false, true]) {
+      const p = Bun.spawn(
+        [CLI, 'start', 'lifecycle', 'acme', '--goal-file', path, ...(owned ? ['--owned'] : [])],
+        {
+          env: {
+            PATH: process.env.PATH,
+            FACTORY_HOME: home,
+            FACTORY_SELF_UPDATE: '0',
+            FACTORY_SERVER: server.url.origin,
+          },
+        },
+      )
+      expect(await p.exited).toBe(0)
+      expect(bodies.at(-1)).toMatchObject({ factory: 'lifecycle', rig: 'acme', goal: '--owned' })
+      expect(bodies.at(-1)?.owned).toBe(owned ? true : undefined)
+    }
+  } finally {
+    server.stop(true)
+  }
+})
+
 test('0s5e file mode fails closed before operations for every consumer', () => {
   const events = makeRun('r1')
   const bad = badFiles()
@@ -417,7 +466,9 @@ test('0s5e file mode fails closed on malformed argv and memory option payloads',
       [...argv, argv[flag]!, path],
       [...argv, '--unknown'],
       [...argv, 'extra', 'words'],
-      ...(argv[flag] === '--summary-file' ? [] : [[...argv.slice(0, flag), 'inline', ...argv.slice(flag)]]),
+      ...(argv[flag] === '--summary-file' || (argv[0] === 'rig' && argv[1] === 'add')
+        ? []
+        : [[...argv.slice(0, flag), 'inline', ...argv.slice(flag)]]),
     ]) {
       const r = factory(bad, {}, dir)
       expect(r.code, bad.join(' ')).not.toBe(0)
@@ -436,4 +487,58 @@ test('0s5e file mode fails closed on malformed argv and memory option payloads',
   }
   expect(events()).toEqual([])
   expect(notes()).toEqual([])
+})
+
+test('0s5e file mode accepts confined paths and exactly 100 KiB', () => {
+  const events = makeRun('r1')
+  expect(Bun.spawnSync(['git', 'init', '-q', wt]).exitCode).toBe(0)
+  mkdirSync(join(wt, '.scratch', 'nested'), { recursive: true })
+  mkdirSync(join(home, 'text', 'nested'), { recursive: true })
+  for (const root of [join(wt, '.scratch'), join(home, 'text')]) {
+    const path = join(root, 'nested', 'payload.md')
+    writeFileSync(path, 'a'.repeat(100 * 1024))
+    symlinkSync(path, join(root, 'link.md'))
+    for (const name of [path, join(root, 'link.md')]) {
+      const r = factory(['poke', 'r1', '--text-file', name], {}, wt)
+      expect(r.code, r.err).toBe(0)
+      expect(events().at(-1).text).toHaveLength(100 * 1024)
+    }
+  }
+  expect(factory(['poke', 'r1', '--text-file', '.scratch/link.md'], {}, wt).code).toBe(0)
+})
+
+test('0s5e file mode rejects a symlinked scratch root for every consumer', () => {
+  const events = makeRun('r1')
+  const linked = join(dir, 'linked-worktree')
+  const outside = join(dir, 'outside')
+  mkdirSync(linked)
+  mkdirSync(outside)
+  writeFileSync(join(outside, 'payload.md'), TEXT)
+  expect(Bun.spawnSync(['git', 'init', '-q', linked]).exitCode).toBe(0)
+  symlinkSync(outside, join(linked, '.scratch'))
+  for (const argv of consumers(join(linked, '.scratch', 'payload.md'))) {
+    const r = factory(argv, {}, linked)
+    expect(r.code).not.toBe(0)
+    expect(r.err).toContain('is outside')
+  }
+  expect(events()).toEqual([])
+  expect(notes()).toEqual([])
+})
+
+test('0s5e file fields preserve text through a real shell without a second command', () => {
+  const events = makeRun('r1')
+  const marker = join(dir, 'shell-marker')
+  const text = `owner'; touch ${marker}; printf 'x | \`touch ${marker}\` $(touch ${marker}) $VAR\nnext`
+  const path = txt('shell.md', text)
+  const script = join(dir, 'mail.sh')
+  const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'"
+  writeFileSync(script, `${quote(CLI)} mail r1 manager --text-file ${quote(path)}\n`)
+  const p = Bun.spawnSync(['bash', script], {
+    env: { PATH: process.env.PATH, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_NO_KICK: '1' },
+    cwd: dir,
+  })
+  expect(p.exitCode, p.stderr.toString()).toBe(0)
+  expect(events()).toHaveLength(1)
+  expect(events()[0].text).toBe(text)
+  expect(existsSync(marker)).toBe(false)
 })

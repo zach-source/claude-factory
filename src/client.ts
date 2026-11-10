@@ -115,7 +115,8 @@ export function route(cmd: string | undefined, args: string[]): Req | { local: t
     case 'mail': {
       // cli.ts expands --text-file before this call
       const wake = args[2] === '--wake'
-      const text = args.slice(wake ? 3 : 2).join(' ')
+      const at = wake ? 3 : 2
+      const text = args.slice(args[at] === '--' ? at + 1 : at).join(' ')
       return n >= 3 && seg(a, b) && text
         ? {
             method: 'POST',
@@ -134,7 +135,9 @@ export function route(cmd: string | undefined, args: string[]): Req | { local: t
     case 'start': {
       const [target, rig, ...rest] = args
       const [factory, station, extra] = (target ?? '').split('@')
-      const goal = rest.filter(w => w !== '--owned').join(' ')
+      const end = rest.indexOf('--')
+      const options = end < 0 ? rest : rest.slice(0, end)
+      const goal = end < 0 ? rest.filter(w => w !== '--owned').join(' ') : rest.slice(end + 1).join(' ')
       if (extra !== undefined || !seg(factory, rig) || (station !== undefined && !seg(station)) || !goal)
         return bad
       return {
@@ -145,7 +148,7 @@ export function route(cmd: string | undefined, args: string[]): Req | { local: t
           ...(station && { station }),
           rig,
           goal,
-          ...(rest.includes('--owned') && { owned: true }),
+          ...(options.includes('--owned') && { owned: true }),
         },
       }
     }

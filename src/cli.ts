@@ -796,7 +796,7 @@ export function replayable(
   if (cmd === 'mail' && id === run)
     return argv[3] === '--text-file' || (argv[3] === '--wake' && argv[4] === '--text-file') ? null : argv
   if (cmd === 'memory' && (id === 'add' || id === 'helped')) {
-    if (argv.includes('--body-file')) return null
+    if (argv.includes('--body-file') || argv.includes('--summary-file')) return null
     const rest = argv.slice(2).filter((w, i, a) => w !== '--from' && a[i - 1] !== '--from')
     // the forced --from goes first: a bare trailing flag (--rig) cannot take it as its value (claude-factory-zw2n)
     return ['memory', id, '--from', `${run}/${side.node}`, ...rest]
@@ -830,19 +830,67 @@ export function summaryArgs(args: string[]): string[] {
 /** the flags of `memory add` that take a value */
 const MEMORY_ADD_VALUE_FLAGS = ['--rig', '--from', '--kind', '--until', '--supersedes']
 
+/** Parse all options before the first file read. File text stays outside the option list. */
+function textInputs(
+  args: string[],
+  fields: string[],
+  values: string[],
+  switches: string[],
+  min: number,
+  max = min,
+  repeated: string[] = [],
+  ids = min,
+): { args: string[]; text: Record<string, string> } {
+  if (args.length < ids || args.slice(0, ids).some(w => !w || w.startsWith('-')))
+    return fail('invalid file mode: the IDs must come first')
+  const rest: string[] = []
+  const paths = new Map<string, string>()
+  const seen = new Set<string>()
+  let words = 0
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i]!
+    if (!word.startsWith('-')) {
+      words++
+      rest.push(word)
+      continue
+    }
+    if (
+      (!fields.includes(word) && !values.includes(word) && !switches.includes(word)) ||
+      (seen.has(word) && !repeated.includes(word))
+    )
+      return fail(`invalid file mode: unknown or duplicate option ${word}`)
+    seen.add(word)
+    if (switches.includes(word)) {
+      rest.push(word)
+      continue
+    }
+    const value = args[++i]
+    if (!value || value.startsWith('--')) return fail(`${word} needs one path or value in file mode`)
+    if (fields.includes(word)) paths.set(word, value)
+    else rest.push(word, value)
+  }
+  if (words < min || words > max)
+    return fail('invalid file mode: extra text, missing IDs, or conflicting inline text')
+  return {
+    args: rest,
+    text: Object.fromEntries([...paths].map(([flag, path]) => [flag, textFileArg(flag, path)])),
+  }
+}
+
 /**
  * claude-factory-jho3: expand a file flag to the inline form. Three forms exist:
  * report --summary-file (see summaryArgs);
  * mail <run> <box> [--wake] --text-file <path>, which counts only in that slot (a later whole word throws);
- * memory add --body-file <path>, which replaces the body words.
+ * memory add --summary-file and --body-file select independent text fields.
  * The path goes through textFileArg. Other args pass unchanged. A bad form throws.
  * A VM expands before it queues, so the laptop never reads a path that a VM chose.
- * ponytail: a body file whose text starts with "--" fails the unknown-flag check of memory add. Upgrade: skip that check for the body-file value.
+ * Memory retains its domain refusal for text that starts with -- before remote serialization.
  */
 export function fileArgs(cmd: string, args: string[]): string[] {
   if (cmd === 'report') return summaryArgs(args)
   if (cmd === 'mail') {
     const at = args[2] === '--wake' ? 3 : 2
+    if (args[at] === '--') return args
     if (args[at] !== '--text-file') {
       if (args.slice(at).includes('--text-file'))
         return fail('usage: factory mail <run> <box> [--wake] --text-file <path> (the flag must come first)')
@@ -850,24 +898,46 @@ export function fileArgs(cmd: string, args: string[]): string[] {
     }
     if (!args[at + 1] || args.length !== at + 2)
       return fail('usage: factory mail <run> <box> [--wake] --text-file <path> (one path, nothing after it)')
-    return [...args.slice(0, at), textFileArg('--text-file', args[at + 1]!)]
+    const { text } = textInputs(args, ['--text-file'], [], ['--wake'], 2)
+    const body = text['--text-file']!
+    // A terminator protects flag-like mail text on the client and worker replay paths.
+    return [...args.slice(0, at), ...(body.startsWith('--') ? ['--'] : []), body]
   }
-  if (cmd !== 'memory' || args[0] !== 'add' || !args.includes('--body-file')) return args
-  const i = args.indexOf('--body-file')
-  const path = args[i + 1]
-  // a second --body-file, or a flag as the value, stays in the positional words or fails to read: both refuse
-  if (!path) return fail('--body-file needs a path')
-  const rest = args.filter((_, j) => j !== i && j !== i + 1)
-  const words = rest
-    .slice(1)
-    .filter(
-      (w, j, a) =>
-        w !== '--anyway' &&
-        !MEMORY_ADD_VALUE_FLAGS.includes(a[j - 1]!) &&
-        !MEMORY_ADD_VALUE_FLAGS.includes(w),
-    )
-  if (words.length > 1) return fail('--body-file replaces the body words: give the summary and the file only')
-  return [...rest, textFileArg('--body-file', path)]
+  if (
+    cmd !== 'memory' ||
+    args[0] !== 'add' ||
+    (!args.includes('--body-file') && !args.includes('--summary-file'))
+  )
+    return args
+  const summaryFile = args.includes('--summary-file')
+  const bodyFile = args.includes('--body-file')
+  const count = summaryFile ? 1 : 2
+  const { args: rest, text } = textInputs(
+    args,
+    ['--summary-file', '--body-file'],
+    MEMORY_ADD_VALUE_FLAGS,
+    ['--anyway'],
+    count,
+    count + (bodyFile ? 0 : 1),
+    [],
+    1,
+  )
+  for (const value of Object.values(text))
+    if (value.startsWith('--')) return fail('memory file text cannot start with --: unknown flag')
+  const options: string[] = []
+  const words: string[] = []
+  for (let i = 1; i < rest.length; i++) {
+    const word = rest[i]!
+    if (MEMORY_ADD_VALUE_FLAGS.includes(word)) options.push(word, rest[++i]!)
+    else if (word === '--anyway') options.push(word)
+    else words.push(word)
+  }
+  return [
+    'add',
+    ...options,
+    ...(summaryFile ? [text['--summary-file']!] : [words.shift()!]),
+    ...(bodyFile ? [text['--body-file']!] : words),
+  ]
 }
 
 /** the stat/size/read core of --summary-file and the text-file flags; a bad file fails with the flag and path named */
@@ -13517,7 +13587,12 @@ if (queued) {
 if (import.meta.main && !outboxCmd && client.serverMode(process.env)) {
   let sent: number | null
   try {
-    sent = await client.main(cmd, cmd === 'mail' ? fileArgs('mail', args) : args, process.env)
+    let remoteArgs = cmd === 'mail' ? fileArgs('mail', args) : args
+    if (cmd === 'start' && args.includes('--goal-file')) {
+      const input = textInputs(args, ['--goal-file'], [], ['--owned'], 2)
+      remoteArgs = [...input.args, '--', input.text['--goal-file']!]
+    }
+    sent = await client.main(cmd, remoteArgs, process.env)
   } catch (e) {
     console.error((e as Error).message)
     process.exit(1)
@@ -13629,14 +13704,25 @@ if (import.meta.main && !outboxCmd)
       }
       case 'start': {
         refuseWorker('start')
-        const words = args.slice(2)
-        await start(args[0], args[1], words.filter(w => w !== '--owned').join(' '), words.includes('--owned'))
+        const input = args.includes('--goal-file')
+          ? textInputs(args, ['--goal-file'], [], ['--owned'], 2)
+          : undefined
+        const rest = input?.args ?? args
+        const words = rest.slice(2)
+        await start(
+          rest[0],
+          rest[1],
+          input?.text['--goal-file'] ?? words.filter(w => w !== '--owned').join(' '),
+          words.includes('--owned'),
+        )
         break
       }
-      case 'fork':
+      case 'fork': {
         if (args.length < 3) refuseWorker('fork') // a fork with a note is refused by managerSender
-        await fork(args[0], args[1], args.slice(2).join(' '))
+        const input = args.includes('--note-file') ? textInputs(args, ['--note-file'], [], [], 2) : undefined
+        await fork(args[0], args[1], input?.text['--note-file'] ?? args.slice(2).join(' '))
         break
+      }
       case 'tick': {
         refuseWorker('tick', true)
         // --board (claude-factory-hpmc.14): the board with no tick and no lease, for a remote view
@@ -13853,6 +13939,11 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'memory': {
+        const query =
+          args[0] === 'search' && args.includes('--query-file')
+            ? textInputs(args, ['--query-file'], ['--rig', '--from'], ['--no-core'], 1)
+            : undefined
+        if (query) args.splice(0, args.length, ...query.args)
         if (args[0] === 'add')
           try {
             args.splice(0, args.length, ...fileArgs('memory', args))
@@ -13879,7 +13970,7 @@ if (import.meta.main && !outboxCmd)
           opt('--supersedes'),
         ]
         const [sub, ...words] = args
-        if (sub === 'search' && words.length) {
+        if (sub === 'search' && (words.length || query)) {
           // a VM has no store: the laptop put a snapshot (memory.tgz) in the worker dir at launch (vffe.4)
           const snap = join(worker.own(), 'memory.tgz')
           if (!existsSync(MEMORY) && existsSync(snap)) {
@@ -13893,7 +13984,10 @@ if (import.meta.main && !outboxCmd)
               rmSafe(tmp, { recursive: true, force: true }) // a cut file, or another search won the rename
             }
           }
-          const found = await memory.search(MEMORY, words.join(' '), { rig, core: !noCore })
+          const found = await memory.search(MEMORY, query?.text['--query-file'] ?? words.join(' '), {
+            rig,
+            core: !noCore,
+          })
           memory.use(
             MEMORY,
             found.map(f => f.note.path),
@@ -14350,6 +14444,9 @@ if (import.meta.main && !outboxCmd)
         } else if (verb === 'reject') {
           if (!name) fail('skills reject <name> <why>')
           if (!why.length) fail('skills reject <name> <why>: the dream learns from the reason')
+          const input = args.includes('--reason-file')
+            ? textInputs(args, ['--reason-file'], [], [], 2)
+            : undefined
           const release = hold('dream.lock')
           if (!release) {
             console.error('memory: busy')
@@ -14357,7 +14454,7 @@ if (import.meta.main && !outboxCmd)
             break
           }
           try {
-            memory.rejectSkill(MEMORY, name!, why.join(' '))
+            memory.rejectSkill(MEMORY, name!, input?.text['--reason-file'] ?? why.join(' '))
             commitMemory(`the manager rejected the skill ${name}`)
             console.log(`rejected ${name}; the dream reads why`)
           } finally {
@@ -14696,7 +14793,8 @@ if (import.meta.main && !outboxCmd)
         // --wake comes right after the box; in a later word it stays text
         const [id, to, ...rest] = fileArgs('mail', args)
         const wake = rest[0] === '--wake'
-        const text = wake ? rest.slice(1) : rest
+        const body = wake ? rest.slice(1) : rest
+        const text = body[0] === '--' ? body.slice(1) : body
         emit(
           await runsOp.mail(
             cliCtx(),
@@ -14708,13 +14806,19 @@ if (import.meta.main && !outboxCmd)
       case 'poke': {
         refuseWorker('poke')
         // the manager's nudge: lands in the current worker's session on the next tick
+        const input = args.includes('--text-file') ? textInputs(args, ['--text-file'], [], [], 1) : undefined
         const [id, ...text] = args
         const { run, value, c } = current(id)
         const [node, sub] = where(value)
         if (sub !== 'working' || (await loadPinned(run.factory)).nodes[node]?.gate)
           fail(`${run.id} has no worker to poke: it is at ${node}${sub ? `/${sub}` : ''}`)
         const nudge = `[factory] The manager is checking in. When you are finished run: ${reportCmd(run, c)}; if something blocks you, mail the manager what it is.`
-        post(run.id, { type: 'MAIL', from: managerSender(run), to: node, text: text.join(' ') || nudge })
+        post(run.id, {
+          type: 'MAIL',
+          from: managerSender(run),
+          to: node,
+          text: input?.text['--text-file'] ?? (text.join(' ') || nudge),
+        })
         console.log(`poked ${node} of ${run.id}`)
         break
       }
@@ -14888,12 +14992,58 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'rig': {
+        const fileGoal =
+          ['add', 'set'].includes(args[0] ?? '') && args.includes('--goal-file')
+            ? textInputs(
+                args,
+                ['--goal-file'],
+                [
+                  '--max',
+                  '--sweeps',
+                  '--slo',
+                  '--drift',
+                  '--runner',
+                  '--agent',
+                  '--mcp',
+                  '--linear',
+                  '--linear-projects',
+                  '--linear-labels',
+                  '--param',
+                  '--egress',
+                  '--person-only-context',
+                  '--protected-branch',
+                  ...(args[0] === 'set'
+                    ? [
+                        '--cluster-runs',
+                        '--auto-queue',
+                        '--push-rule',
+                        '--sensitive-path',
+                        '--skills',
+                        '--otel-content',
+                        '--sandbox-class',
+                      ]
+                    : []),
+                ],
+                ['--merge-authority'],
+                args[0] === 'add' ? 3 : 2,
+                args[0] === 'add' ? 4 : 2,
+                [
+                  '--param',
+                  '--egress',
+                  '--person-only-context',
+                  '--protected-branch',
+                  '--push-rule',
+                  '--sensitive-path',
+                ],
+              )
+            : undefined
+        if (fileGoal) args.splice(0, args.length, ...fileGoal.args)
         const opt = (flag: string) =>
           args.includes(flag) ? args.splice(args.indexOf(flag), 2)[1] : undefined
         // the goal is the rest of the line, so `/factory rig add ... --goal finish it` needs no quotes
-        const goal = args.includes('--goal')
-          ? args.splice(args.indexOf('--goal')).slice(1).join(' ')
-          : undefined
+        const goal =
+          fileGoal?.text['--goal-file'] ??
+          (args.includes('--goal') ? args.splice(args.indexOf('--goal')).slice(1).join(' ') : undefined)
         const [max, sweeps, slo, drift, runner, agent, mcp, linear, linearProjects, linearLabels] = [
           opt('--max'),
           opt('--sweeps'),
