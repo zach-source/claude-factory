@@ -107,6 +107,17 @@ export function bdExports(top: string | undefined, env: Env = process.env): Reco
   )
 }
 
+/**
+ * whether a rig's repo has beads. On the laptop that is the repo's own .beads. In the task a rig may keep no .beads
+ * in git (its beads live on its beadsRemote), so a beadsRemote, or a store that `repos sync` made, counts too
+ */
+export function hasRigBeads(repo: string, rigs: RigLike[], env: Env = process.env) {
+  if (existsSync(join(repo, '.beads'))) return true
+  if (!inAx(env)) return false
+  if (rigs.some(r => r.repo === repo && r.beadsRemote)) return true
+  return !!env.FACTORY_HOME && existsSync(join(beadsDirOf(env.FACTORY_HOME, repo), '.beads'))
+}
+
 export type RepoStep =
   | { rig: string; path: string; do: 'clone'; url: string }
   | { rig: string; path: string; do: 'fetch' }
@@ -153,9 +164,9 @@ export function syncRepos(rigs: RigLike[], home: string, env: Env = process.env)
       problems.push(`${step.rig}: git ${step.do}: ${errLine(p)}`)
       continue
     }
-    if (!existsSync(join(step.path, '.beads'))) continue
+    const rig = rigs.find(r => r.name === step.rig)!
+    if (!existsSync(join(step.path, '.beads')) && !rig.beadsRemote) continue
     try {
-      const rig = rigs.find(r => r.name === step.rig)!
       const dir = beadsDirOf(home, step.path)
       const origin = run(['git', 'remote', 'get-url', 'origin'], step.path).stdout.toString().trim()
       const extra = rig.beadsRemote
