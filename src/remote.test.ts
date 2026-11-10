@@ -64,6 +64,7 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
     // `home` on a later tick and inflating manager-mail assertions (claude-factory-5h9.8)
     env: {
       ...laptop,
+      FACTORY_HARNESS: 'claude',
       FACTORY_HOME: home,
       FACTORY_WORKER_DIR: join(dir, 'worker'),
       FACTORY_NO_KICK: '1',
