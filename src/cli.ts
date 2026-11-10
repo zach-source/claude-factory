@@ -5222,9 +5222,20 @@ export const shipStarts = (repos: string[], queued: (repo: string) => number, li
 const liveShipRuns = () =>
   runIds().flatMap(id => {
     try {
-      const { run, value, c } = current(id)
+      const run = loadRun(id)
+      if (!run.ship) return []
+      const saved = readJson<Saved>(join(runDir(id), 'state.json'))
+      const { value, context: c } = saved.snapshot
       const ended = ['done', 'aborted'].includes(where(value)[0])
-      return !ended && run.ship ? [{ run, node: where(value)[0], c }] : []
+      const revival = ended
+        ? inboxLines(id)
+            .slice(saved.cursor)
+            .map(line => JSON.parse(line) as Ev)
+            .find(e => e.type === 'GOTO' && e.node !== 'done')
+        : undefined
+      return !ended || revival
+        ? [{ run, node: revival?.type === 'GOTO' ? revival.node : where(value)[0], c }]
+        : []
     } catch {
       return [] // removed mid-pass
     }
