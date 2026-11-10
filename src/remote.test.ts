@@ -568,6 +568,10 @@ test('yn9ag AC2: refusals leave the next literal line usable and never copy file
     .map(l => JSON.parse(l))
   expect(events).toEqual([{ type: 'MAIL', from: 'a', to: 'manager', text: sentinel, at: expect.any(Number) }])
   expect(called()).not.toContain('yn9 private sentinel contents')
+  const prompts = [...called().matchAll(/worker prompt (\S+)/g)].map(m =>
+    Buffer.from(m[1]!, 'base64').toString(),
+  )
+  expect(prompts.join('\n')).not.toContain('yn9 private sentinel contents')
   expect(inbox(id)).not.toContain('yn9 private sentinel contents')
   expect(
     readFileSync(trace, 'utf8')
