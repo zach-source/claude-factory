@@ -73,7 +73,46 @@ These operations come from the current CLI. The CLI command stays. It calls the 
 | `factory.halt` | `factory stop`, `factory resume` | `POST /v1/halt` with `mode` |
 | `lease.show`, `lease.release` | `factory lease status`, `release` | `GET /v1/lease`, `POST /v1/lease/release` |
 | `steps.reports` | the patrol, pm, brief and review logs | `GET /v1/steps` |
+| `flows.show` | `factory flows` (new) | `GET /v1/flows` |
 | `guard.check` | the Claude mod's `tool.call` gate | `POST /v1/guard/check` (read: it changes nothing) |
 | `chat.send`, `chat.show` | the Claude mod chat | `POST /v1/conversations/:id`, `GET /v1/conversations/:id` |
 
 The task that moves an operation can change the route of a new operation. That task must update this table in the same change.
+
+## The flow graph: `flows.show`
+
+`flows.show` is a read operation. Inputs: `factory` (a factory name; default: the factory with the most runs) and `since` (a cursor in ms since epoch, or a window such as `1h`, `24h`, `7d`; default `24h`). It returns:
+
+```json
+{
+  "factory": "lifecycle",
+  "since": 1700000000000,
+  "now": 1700086400000,
+  "nodes": [
+    {
+      "id": "plan",
+      "gate": false,
+      "legacy": false,
+      "rank": 0,
+      "order": 0,
+      "counts": { "working": 1, "parked": 0, "stuck": 0 },
+      "dwell": { "p50": 120000, "p90": 600000 },
+      "runs": ["lifecycle-abc12"]
+    }
+  ],
+  "edges": [
+    { "from": "plan", "outcome": "done", "to": "build", "back": false, "timed": false, "traversals": 4 }
+  ],
+  "exits": [{ "from": "merge", "outcome": "ship", "to": "ship" }],
+  "moves": [{ "run": "lifecycle-abc12", "from": "plan", "outcome": "done", "to": "build", "at": 1700000001000 }]
+}
+```
+
+- `rank` is the depth from the start station over forward edges. A back edge goes to a station with a rank that is equal or lower. A back edge has `back: true`.
+- `order` is the position of the station in the definition. It does not change between calls.
+- `counts` are the live runs at the station, by run state (`sub`). `runs` lists their ids.
+- `dwell` is the time that runs stay at the station, in ms, from the run logs in the window. It is `null` when there is no sample.
+- `traversals` counts the log entries `{node, outcome, at}` in the window for that edge. `timed` is true when the edge has `delayMin`.
+- `exits` are edges to another factory (`requeue`) or to the ship queue (`ship`). They are not stations.
+- `moves` are the traversals with `at` after `since`, oldest first.
+- A run pinned to an older version of the factory adds its own stations with `legacy: true`.
