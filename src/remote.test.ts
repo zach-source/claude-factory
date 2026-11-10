@@ -12,6 +12,7 @@ import {
   truncateSync,
   writeFileSync,
 } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
@@ -754,6 +755,66 @@ test('a laptop memory search does not import the parent worker snapshot', () => 
     else process.env.FACTORY_WORKER_DIR = keep
     rmSync(memDir, { recursive: true, force: true })
   }
+})
+
+describe('a VM memory search says why it found nothing', () => {
+  const rowEnv = (id: string, vm: boolean) => {
+    const base = join(dir, `vmsearch-${id}`)
+    mkdirSync(join(base, 'worker'), { recursive: true })
+    return {
+      base,
+      env: {
+        FACTORY_HOME: join(base, 'home'),
+        FACTORY_WORKER_DIR: join(base, 'worker'),
+        ...(vm ? { FACTORY_OUTBOX: join(base, 'outbox.jsonl') } : {}),
+      } as Record<string, string>,
+    }
+  }
+  const put = (base: string) => {
+    const store = join(base, 'store')
+    mkdirSync(join(store, 'topic'), { recursive: true })
+    writeFileSync(join(store, 'topic', 'n.md'), '---\nsummary: dolt lock note\n---\nbody\n')
+    expect(memorySnapshotPut(store, undefined, join(base, 'worker', 'memory.tgz')).put).toBe(true)
+  }
+  const rows: { id: string; vm: boolean; setup?: (base: string) => void; mem?: boolean; want: string }[] = [
+    { id: 'a', vm: true, want: 'the memory snapshot has not arrived yet: search again in a few minutes' },
+    { id: 'b', vm: true, mem: true, want: 'nothing in ' },
+    { id: 'c', vm: false, want: 'nothing in ' },
+    {
+      id: 'e',
+      vm: true,
+      setup: base => writeFileSync(join(base, 'worker', 'memory.tgz'), 'not gzip at all'),
+      want: 'the memory snapshot did not unpack (tar exit',
+    },
+    { id: 'd', vm: true, setup: put, want: 'dolt lock note' },
+  ]
+  for (const row of rows) {
+    test(`row ${row.id}`, () => {
+      const { base, env } = rowEnv(row.id, row.vm)
+      if (row.mem) mkdirSync(join(env.FACTORY_HOME!, 'memory'), { recursive: true })
+      row.setup?.(base)
+      const r = factory(['memory', 'search', 'dolt lock'], env)
+      expect(r.code).toBe(0)
+      if (row.id === 'a') expect(r.out.trim()).toBe(row.want)
+      else if (row.id === 'e') expect(r.out.startsWith(row.want)).toBe(true)
+      else expect(r.out).toContain(row.want)
+      if (row.id !== 'a' && row.id !== 'e') expect(r.out).not.toContain('memory snapshot')
+      rmSync(base, { recursive: true, force: true })
+    })
+  }
+  test('a VM memory search with no tar exits 0 and says the snapshot did not unpack', () => {
+    const { base, env } = rowEnv('notar', true)
+    put(base)
+    const bin = join(base, 'bin')
+    mkdirSync(bin)
+    for (const n of ['bun', 'dirname', 'realpath']) symlinkSync(Bun.which(n)!, join(bin, n))
+    const r = factory(['memory', 'search', 'dolt lock'], { ...env, PATH: bin })
+    expect(r.code).toBe(0)
+    expect(r.out.startsWith('the memory snapshot did not unpack')).toBe(true)
+    expect(existsSync(join(env.FACTORY_HOME!, 'memory'))).toBe(false)
+    expect(readdirSync(env.FACTORY_HOME!).filter(n => n.startsWith('memory'))).toEqual([])
+    rmSync(base, { recursive: true, force: true })
+  })
 })
 
 test('a report appended after the worker deletes its already-replayed probes still replays (claude-factory-4x1)', () => {
@@ -2576,6 +2637,12 @@ esac
       expect(sent).toEqual(row.sent)
     }
     if (row.done) expect(existsSync(file)).toBe(false)
+    const log = existsSync(join(home, 'launches.log')) ? readFileSync(join(home, 'launches.log'), 'utf8') : ''
+    const sentLines = log.split('\n').filter(l => l.includes(`${id}/a memory snapshot sent: `))
+    if (row.done) {
+      expect(sentLines).toHaveLength(1)
+      expect(sentLines[0]).toContain(`${row.parts * 72_000} bytes in ${row.parts} parts`)
+    } else expect(sentLines).toHaveLength(0)
     rmSync(join(home, 'runs', id), { recursive: true })
   })
 }
@@ -2603,16 +2670,20 @@ test('an ax launch searches the laptop memory once and puts the top notes in the
   }
   mkdirSync(dir, { recursive: true })
   const memDir = join(home, 'memory')
-  for (const [id, withNote] of [
-    ['r21a', true],
-    ['r21b', false],
+  for (const [id, note] of [
+    ['r21a', 'small'],
+    ['r21b', 'none'],
+    ['r21c', 'big'],
   ] as const) {
+    const withNote = note === 'small'
     rmSync(memDir, { recursive: true, force: true })
-    if (withNote) {
+    if (note !== 'none') {
       mkdirSync(join(memDir, 'topic'), { recursive: true })
       writeFileSync(
-        join(memDir, 'topic', 'n.md'),
-        '---\nsummary: bd init locks the shared Dolt server\n---\nbody\n',
+        join(memDir, 'topic', note === 'big' ? 'big.md' : 'n.md'),
+        note === 'big'
+          ? `---\nsummary: a big note over the snapshot cap\n---\n${randomBytes(9 * 1024 * 1024).toString('base64')}\n`
+          : '---\nsummary: bd init locks the shared Dolt server\n---\nbody\n',
       )
     }
     const origin = join(dir, id, 'origin.git')
@@ -2658,7 +2729,19 @@ test('an ax launch searches the laptop memory once and puts the top notes in the
     const sideNow = JSON.parse(readFileSync(join(runDir, `${stem}.json`), 'utf8'))
     expect(sideNow.put).toEqual(withNote ? ['brief.md', 'memory.tgz'] : ['brief.md'])
     expect(existsSync(join(runDir, `${stem}.memory.tgz`))).toBe(withNote)
-    if (withNote) {
+    const log = existsSync(join(home, 'launches.log')) ? readFileSync(join(home, 'launches.log'), 'utf8') : ''
+    const skipLine = log.split('\n').filter(l => l.includes(`${id}/a memory snapshot skipped: `))
+    if (note === 'big') {
+      expect(sideNow.memorySkipped).toContain('over the 8388608 byte cap')
+      expect(skipLine).toHaveLength(1)
+      expect(skipLine[0]).toContain('over the 8388608 byte cap')
+    } else {
+      expect(skipLine).toHaveLength(0)
+      expect(sideNow.memorySkipped).toBeUndefined()
+    }
+    if (note === 'big') {
+      // no brief or usage assertion: the notes were too big to snapshot
+    } else if (withNote) {
       expect(brief).toContain('The factory already searched for your goal and station')
       expect(brief).toContain('bd init locks the shared Dolt server')
       expect(brief).toContain(join(memDir, 'topic', 'n.md'))
@@ -2675,7 +2758,7 @@ test('an ax launch searches the laptop memory once and puts the top notes in the
     rmSync(runDir, { recursive: true })
   }
   rmSync(memDir, { recursive: true, force: true })
-}, 60_000) // git clones and whole ticks
+}, 120_000) // git clones, a 12 MB store and whole ticks
 
 test("a pull that kept the VM's version of an issue says on it what the laptop had", () => {
   // what dolt sql -r json printed for the pull's statements, one line each
