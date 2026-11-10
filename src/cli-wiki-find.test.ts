@@ -42,7 +42,7 @@ const git = (...args: string[]) => {
   if (p.exitCode !== 0) throw new Error(`git ${args.join(' ')}: ${p.stderr.toString()}`)
   return p.stdout.toString().trim()
 }
-const factory = (args: string[], env: Record<string, string> = {}) => {
+const factory = (args: readonly string[], env: Record<string, string> = {}) => {
   const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_WIKI_REMOTE, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: {
