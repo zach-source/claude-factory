@@ -32,6 +32,8 @@ import {
   type RunResult,
   type Runner,
 } from './core/catalog'
+import { where } from './machine'
+import { check } from './tokens'
 export type { RunResult, Runner } from './core/catalog'
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/
@@ -144,8 +146,12 @@ export function personEnv(env: Record<string, string | undefined>, home: string)
  * Mail text goes through <home>/text/<uuid>.md and --text-file. The file is gone when the call ends.
  * ponytail: one bun process per call (about 0.3 s). Upgrade path: export the command functions from cli.ts and call them in process.
  */
-export function cliRunner(home: string, cli = join(import.meta.dir, 'cli.ts'), timeoutMs = 60_000): Runner {
-  return async (argv, text) => {
+export function cliRunner(
+  home: string,
+  cli = join(import.meta.dir, 'cli.ts'),
+  timeoutMs = 60_000,
+): (argv: string[], text?: string, env?: Record<string, string>) => Promise<RunResult> {
+  return async (argv, text, env) => {
     let file: string | undefined
     try {
       if (text !== undefined) {
@@ -155,7 +161,7 @@ export function cliRunner(home: string, cli = join(import.meta.dir, 'cli.ts'), t
       }
       const proc = Bun.spawn([process.execPath, cli, ...argv, ...(file ? ['--text-file', file] : [])], {
         cwd: home,
-        env: personEnv(process.env, home),
+        env: env ?? personEnv(process.env, home),
         stdin: 'ignore',
         stdout: 'pipe',
         stderr: 'pipe',
@@ -448,6 +454,264 @@ export function clientHandler(o: ClientOpts) {
     /** the number of open event streams */
     subscribers: () => subs.size,
   })
+}
+
+export type WorkerRunner = (
+  argv: string[],
+  text: string | undefined,
+  env: Record<string, string>,
+) => Promise<RunResult>
+
+type CallRow = {
+  at: number
+  run: string
+  node: string
+  seq: number
+  token: string // the token id from check, never the raw token
+  kind: 'report' | 'mail' | 'progress'
+  args: Record<string, unknown> | null
+  status: 'pending' | 'applied' | 'refused'
+  reason: string | null
+  hash: string
+  http: number
+  body: string
+}
+
+const WEEK = 7 * DAY
+// the same cap as OUTBOX_MAX_BYTES in src/worker.ts
+const TEXT_MAX = 102_400
+const WORKER_KINDS = { '/v1/report': 'report', '/v1/mail': 'mail', '/v1/progress': 'progress' } as const
+const WORKER_KEYS = {
+  report: ['outcome', 'summary'],
+  mail: ['to', 'text'],
+  progress: ['note'],
+} as const
+const IDENT = ['run', 'node', 'seq']
+const BEARER = /^Bearer ([A-Za-z0-9._-]{1,4096})$/
+
+/** the call rows, {} when the file is missing, 'bad' when it does not parse */
+function readCalls(file: string): Record<string, CallRow> | 'bad' {
+  return readStore(file) as Record<string, CallRow> | 'bad'
+}
+
+/** write the rows that are under 7 days old; atomic, mode 0600 */
+function writeCalls(file: string, rows: Record<string, CallRow>, now: number) {
+  const keep = Object.fromEntries(Object.entries(rows).filter(([, r]) => now - r.at < WEEK))
+  const tmp = `${file}.tmp`
+  const fd = openSync(tmp, 'w', 0o600)
+  try {
+    writeSync(fd, JSON.stringify(keep))
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+  renameSync(tmp, file)
+}
+
+const nonBlank = (v: unknown, max: number, units: 'bytes' | 'chars'): v is string =>
+  typeof v === 'string' && v.trim() !== '' && (units === 'bytes' ? Buffer.byteLength(v) : v.length) <= max
+
+/** the grammar of one body; return the reason of the first rule that fails */
+function workerBody(kind: keyof typeof WORKER_KEYS, b: Record<string, unknown>): string | undefined {
+  const want = WORKER_KEYS[kind]
+  const keys = Object.keys(b).filter(k => !IDENT.includes(k))
+  if (keys.length !== want.length || !want.every(k => keys.includes(k)))
+    return `body keys must be ${want.join(', ')} (and the optional ${IDENT.join(', ')})`
+  if (kind === 'report') {
+    if (typeof b.outcome !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(b.outcome))
+      return 'outcome must match ^[a-z][a-z0-9-]{0,63}$'
+    if (!nonBlank(b.summary, TEXT_MAX, 'bytes'))
+      return 'summary must be a non-blank string of at most 102400 bytes'
+  } else if (kind === 'mail') {
+    if (typeof b.to !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(b.to))
+      return 'to must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$'
+    if (!nonBlank(b.text, TEXT_MAX, 'bytes')) return 'text must be a non-blank string of at most 102400 bytes'
+  } else if (!nonBlank(b.note, 2000, 'chars'))
+    return 'note must be a non-blank string of at most 2000 characters'
+}
+
+/**
+ * The handler of the worker port (claude-factory-akiq.9). Contract: specs/004-factory-server/contracts/worker-api.md.
+ * The run, node and seq come only from the Bearer token. A body that names another value gets 403.
+ * Each call that has a live token and a good Idempotency-Key makes one row in <home>/worker-calls.json.
+ * A repeated key replays the first answer and runs nothing. Calls run one at a time, in a chain of their own.
+ * ponytail: the rows are a JSON file on the PVC, kept 7 days. Upgrade path: the Dolt worker_calls table (spec step S6).
+ */
+export function workerHandler(o: {
+  home: string
+  key: Buffer
+  run: WorkerRunner
+  held: () => boolean
+  log?: (line: string) => void
+  now?: () => number
+}): (req: Request, ip: string) => Promise<Response> {
+  const file = join(o.home, 'worker-calls.json')
+  const clock = o.now ?? Date.now
+  let chain: Promise<unknown> = Promise.resolve()
+  return async (req, ip) => {
+    const no = (status: number, why: string) => {
+      o.log?.(`worker refused ${status} ${why} from ${ip}`)
+      return refuse(status, why)
+    }
+    const url = new URL(req.url)
+    const kind =
+      req.method === 'POST' && url.search === ''
+        ? WORKER_KINDS[url.pathname as keyof typeof WORKER_KINDS]
+        : undefined
+    if (!kind) return no(404, 'no such route')
+    if (!o.held()) return no(503, 'this server does not hold the lease')
+    const m = BEARER.exec(req.headers.get('authorization') ?? '')
+    if (!m) return no(403, 'a Bearer worker token is required')
+    const chk = check(o.home, o.key, m[1]!, clock())
+    if (!chk.ok) return no(403, `token ${chk.reason}`)
+    const { id: tokenId, claims } = chk
+    if (
+      claims.run === '.' ||
+      claims.run === '..' ||
+      claims.node === '.' ||
+      claims.node === '..' ||
+      claims.node === 'manager'
+    )
+      return no(403, 'token claims are not a run station')
+    const key = req.headers.get('idempotency-key') ?? ''
+    if (!KEY.test(key)) return no(400, 'Idempotency-Key must match ^[A-Za-z0-9-]{8,128}$')
+    const raw = await req.text()
+
+    const work = async (): Promise<Response> => {
+      const rows = readCalls(file)
+      if (rows === 'bad') return no(503, 'the worker call store is corrupt')
+      const t = clock()
+      const hash = createHash('sha256').update(`${req.method}\0${url.pathname}\0${raw}`).digest('hex')
+      const old = rows[key]
+      if (old && t - old.at < WEEK) {
+        if (old.token !== tokenId || old.hash !== hash)
+          return no(409, 'Idempotency-Key was used for another request')
+        if (old.status === 'pending')
+          return no(409, 'the first call with this key did not finish; its result is unknown')
+        return reply(old.http, old.body)
+      }
+      if (!o.held()) return no(503, 'this server does not hold the lease')
+
+      const put = (row: CallRow) => {
+        const cur = readCalls(file)
+        if (cur === 'bad') throw new Error('the worker call store is corrupt')
+        cur[key] = row
+        writeCalls(file, cur, clock())
+      }
+      const base = { at: t, run: claims.run, node: claims.node, seq: claims.seq, token: tokenId, kind, hash }
+      let args: Record<string, unknown> | null = null
+      const refused = (res: Response, why: string, text: string): Response => {
+        put({ ...base, args, status: 'refused', reason: why, http: res.status, body: text })
+        o.log?.(`worker ${kind} ${claims.run}/${claims.node}/${claims.seq} ${res.status} refused`)
+        return res
+      }
+      const bad = (status: number, why: string) => {
+        const text = `${JSON.stringify({ refused: why })}\n`
+        return refused(reply(status, text), why, text)
+      }
+
+      const type = req.headers.get('content-type') ?? ''
+      if (!/^application\/json\s*(;.*)?$/i.test(type))
+        return bad(400, 'content-type must be application/json')
+      if (Buffer.byteLength(raw) > MAX_BODY) return bad(400, 'body over 128 KiB')
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(raw)
+      } catch {
+        return bad(400, 'body is not JSON')
+      }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+        return bad(400, 'body must be an object')
+      const b = parsed as Record<string, unknown>
+      args = Object.fromEntries(
+        Object.entries(b).map(([k, v]) => [k, typeof v === 'string' ? v.slice(0, 500) : v]),
+      )
+      for (const [k, v] of Object.entries({ run: claims.run, node: claims.node, seq: claims.seq }))
+        if (Object.hasOwn(b, k) && b[k] !== v)
+          return bad(403, `the token is for run ${claims.run} node ${claims.node} seq ${claims.seq}`)
+      const why = workerBody(kind, b)
+      if (why) return bad(400, why)
+
+      let at: { node: string; seq: unknown } | undefined
+      try {
+        const st = JSON.parse(readFileSync(join(o.home, 'runs', claims.run, 'state.json'), 'utf8'))
+        at = { node: where(st.snapshot.value)[0], seq: st.snapshot.context.seq }
+      } catch {}
+      if (!at) return bad(409, 'no such run')
+      if (at.node !== claims.node || at.seq !== claims.seq)
+        return bad(
+          409,
+          `stale: the run is at ${at.node} seq ${at.seq}; this token is for ${claims.node} seq ${claims.seq}`,
+        )
+
+      try {
+        put({ ...base, args, status: 'pending', reason: null, http: 0, body: '' })
+      } catch {
+        return no(503, 'the worker call store cannot be written')
+      }
+      let res: Response
+      let status: 'applied' | 'refused' = 'refused'
+      let why2: string | null = null
+      try {
+        let r: RunResult = { code: 0, out: '', err: '' }
+        if (kind !== 'progress') {
+          const env = {
+            ...personEnv(process.env, o.home),
+            FACTORY_FROM: claims.node,
+            FACTORY_RUN: claims.run,
+          }
+          r =
+            kind === 'report'
+              ? await o.run(
+                  ['report', claims.run, String(claims.seq), b.outcome as string, b.summary as string],
+                  undefined,
+                  env,
+                )
+              : await o.run(['mail', claims.run, b.to as string], b.text as string, env)
+        }
+        if (r.timedOut) {
+          why2 = 'the command timed out; it can have applied'
+          res = refuse(504, why2)
+        } else if (r.code === 0) {
+          status = 'applied'
+          res = reply(
+            200,
+            `${JSON.stringify(kind === 'progress' ? { ok: true } : { ok: true, out: r.out.trim().slice(0, 2000) })}\n`,
+          )
+        } else {
+          why2 = r.err.trim().slice(0, 500)
+          res = refuse(409, why2)
+        }
+      } catch {
+        why2 = 'internal error'
+        res = refuse(500, why2)
+      }
+      try {
+        put({ ...base, args, status, reason: why2, http: res.status, body: await res.clone().text() })
+      } catch {
+        return refuse(500, 'the call ran but its row was not saved; do not retry with a new key')
+      }
+      o.log?.(`worker ${kind} ${claims.run}/${claims.node}/${claims.seq} ${res.status} ${status}`)
+      return res
+    }
+    const next = chain.then(work, work)
+    chain = next.catch(() => {})
+    return next.catch(() => refuse(500, 'internal error'))
+  }
+}
+
+/**
+ * Read the worker token key. A read that fails throws its path; a key under 32 bytes throws too. The error never holds the key.
+ */
+export function workerKey(path: string): Buffer {
+  let k: Buffer
+  try {
+    k = readFileSync(path)
+  } catch {
+    throw new Error(`cannot read ${path}`)
+  }
+  if (k.length < 32) throw new Error(`worker key in ${path} must be at least 32 bytes`)
+  return k
 }
 
 const HEAD_MAX = 16 * 1024
