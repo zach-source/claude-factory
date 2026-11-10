@@ -66,18 +66,6 @@ async function child(args: string[], env: Record<string, string>, preload?: stri
 const SERVER_REFUSED = 'FACTORY_MAIN_CHAT is set; start the server from your own shell'
 
 test('05sap AC1 AC2: all server forms refuse before startup, backup, or forwarding', async () => {
-  const { home, env } = serverSetup()
-  const spy = join(home, 'spy.ts')
-  const calls = join(home, 'calls')
-  writeFileSync(
-    spy,
-    `import { mock } from 'bun:test'
-import { appendFileSync } from 'node:fs'
-const server = await import(${JSON.stringify(join(import.meta.dir, 'server.ts'))})
-const called = () => { appendFileSync(${JSON.stringify(calls)}, 'call\\n'); throw new Error('server effect') }
-mock.module(${JSON.stringify(join(import.meta.dir, 'server.ts'))}, () => ({ ...server, main: called, serverBackupCfg: called }))
-`,
-  )
   let requests = 0
   const recorder = Bun.serve({
     port: 0,
@@ -86,9 +74,6 @@ mock.module(${JSON.stringify(join(import.meta.dir, 'server.ts'))}, () => ({ ...s
       return new Response('unexpected')
     },
   })
-  const token = join(home, 'allow', `${U}.json`)
-  const content = JSON.stringify({ kinds: ['decide'], exp: Date.now() + 60_000 })
-  writeFileSync(token, content)
   try {
     for (const marker of ['1', '0', 'false']) {
       for (const args of [
@@ -109,6 +94,21 @@ mock.module(${JSON.stringify(join(import.meta.dir, 'server.ts'))}, () => ({ ...s
           '/no/ca',
         ],
       ]) {
+        const { home, env } = serverSetup()
+        const spy = join(home, 'spy.ts')
+        const calls = join(home, 'calls')
+        writeFileSync(
+          spy,
+          `import { mock } from 'bun:test'
+import { appendFileSync } from 'node:fs'
+const server = await import(${JSON.stringify(join(import.meta.dir, 'server.ts'))})
+const called = () => { appendFileSync(${JSON.stringify(calls)}, 'call\\n'); throw new Error('server effect') }
+mock.module(${JSON.stringify(join(import.meta.dir, 'server.ts'))}, () => ({ ...server, main: called, serverBackupCfg: called }))
+`,
+        )
+        const token = join(home, 'allow', `${U}.json`)
+        const content = JSON.stringify({ kinds: ['decide'], exp: Date.now() + 60_000 })
+        writeFileSync(token, content)
         const r = await child(
           ['server', ...args],
           {
