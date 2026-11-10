@@ -174,6 +174,16 @@ Main advanced during this gate. The next merge includes test-isolation fixes out
 Proof on `72ba8312` does not replace the final self-check after that merge.
 The timeout and production code remain unchanged.
 
+### Proof on the unchanged final test
+
+The next implement pass retained main `7595aef6`; fetched main had no new commit.
+At `87678c57`, all nine independent mutations again returned factory exit 0 and test exit 1.
+Each mutant failed at its intended assertion. No mutant failed from a timeout.
+The result mutants retained `ReturnType<typeof backup>`.
+The tool restored each edit. The complete focused suite then passed 33 tests and 272 assertions in 33.92 seconds.
+These results show further runtime variance. They do not establish the original failure's cause.
+The station report records the final-head gate and mutation results after this evidence commit.
+
 ### Rejected alternatives
 
 - A larger timeout can hide an operation failure and lacks a measured basis.
