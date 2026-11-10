@@ -882,15 +882,6 @@ export function fileArgs(cmd: string, args: string[]): string[] {
   return [...rest, textFileArg('--body-file', path)]
 }
 
-/** Parse options before file text, then queue one literal value after the boundary. */
-function queuedTextArgs(cmd: string, args: string[]): string[] {
-  if (cmd !== 'report' && cmd !== 'mail') return fileArgs(cmd, args)
-  if (worker.outboxUsage(cmd, args) || worker.literalText(cmd, args)) return args
-  const expanded = fileArgs(cmd, args)
-  const at = cmd === 'report' ? 3 : args[2] === '--wake' ? 3 : 2
-  return [...expanded.slice(0, at), '--', expanded.slice(at).join(' ')]
-}
-
 /** the stat/size/read core of --summary-file and the text-file flags; a bad file fails with the flag and path named */
 function readTextFile(flag: string, path: string): string {
   let size: number
@@ -13481,7 +13472,13 @@ const outboxCmd =
 let queuedArgs = args
 if (outboxCmd)
   try {
-    queuedArgs = queuedTextArgs(cmd!, args)
+    if (cmd === 'memory') queuedArgs = fileArgs(cmd, args)
+    else if (!worker.outboxUsage(cmd!, args) && !worker.literalText(cmd!, args)) {
+      // Parse options before file text. Queue one literal value after the boundary.
+      const expanded = fileArgs(cmd!, args)
+      const at = cmd === 'report' ? 3 : args[2] === '--wake' ? 3 : 2
+      queuedArgs = [...expanded.slice(0, at), '--', expanded.slice(at).join(' ')]
+    }
   } catch (e) {
     console.error((e as Error).message)
     process.exit(cmd === 'memory' ? 2 : 1)
