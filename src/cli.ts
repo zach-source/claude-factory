@@ -13572,7 +13572,9 @@ if (queued) {
 if (import.meta.main && !outboxCmd && client.serverMode(process.env)) {
   let sent: number | null
   try {
-    sent = await client.main(cmd, cmd === 'mail' ? fileArgs('mail', args) : args, process.env)
+    const remoteArgs = cmd === 'mail' ? fileArgs('mail', args) : args
+    if (cmd === 'mail' && args[2] === '--text-file') remoteArgs.splice(2, 0, '--')
+    sent = await client.main(cmd, remoteArgs, process.env)
   } catch (e) {
     console.error((e as Error).message)
     process.exit(1)
@@ -14758,8 +14760,8 @@ if (import.meta.main && !outboxCmd)
       }
       case 'mail': {
         // --wake comes right after the box; in a later word it stays text
+        const wake = args[2] === '--wake'
         const [id, to, ...rest] = fileArgs('mail', args)
-        const wake = rest[0] === '--wake'
         const text = wake ? rest.slice(1) : rest
         emit(
           await runsOp.mail(
