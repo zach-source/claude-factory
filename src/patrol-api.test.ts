@@ -94,6 +94,8 @@ describe('1ocuv AC1 identity before application access', () => {
     const t = setup()
     expect((await t.request()).status).toBe(200)
     expect(t.reads()).toBe(1)
+    t.time(0)
+    expect((await t.request()).status).toBe(200)
   })
   for (const auth of [
     '',
@@ -153,9 +155,128 @@ describe('1ocuv AC1 identity before application access', () => {
     expect((await t.acquire()).status).toBe(401)
     t.zero()
   })
+  test('provider failures refuse access without raw errors', async () => {
+    const t = setup()
+    const handle = patrolHandler({
+      audience: 'test-server',
+      identities: () => {
+        throw new Error('zqsecret')
+      },
+      metadata: () => {
+        throw new Error('must not run')
+      },
+      lease: t.lease,
+      now: () => 1000,
+      audit: e => t.audit.push(e),
+    })
+    const response = await handle(
+      new Request('https://localhost/v1/patrol/snapshot', { headers: { authorization: `Patrol ${token}` } }),
+    )
+    expect(response.status).toBe(401)
+    expect(await response.json()).toEqual({ error: 'invalid_identity' })
+    expect(JSON.stringify(t.audit)).not.toContain('zqsecret')
+    t.zero()
+  })
 })
 
 describe('1ocuv AC2 closed grammar', () => {
+  test('key boundaries and field order remain valid', async () => {
+    for (const key of ['a'.repeat(8), 'Z'.repeat(128)]) {
+      const t = setup()
+      const acquired = (await (await t.acquire(key)).json()) as { generation: string }
+      expect(
+        (
+          await t.request(
+            '/v1/patrol/lease/renew',
+            { generation: acquired.generation, epoch: t.epoch },
+            undefined,
+            'renew-key',
+          )
+        ).status,
+      ).toBe(200)
+    }
+  })
+  test('canonical JSON rejects duplicate keys, whitespace, and alternate escapes with a valid epoch', async () => {
+    const t = setup()
+    for (const text of [
+      ` {"epoch":"${t.epoch}"}`,
+      `{"epoch":"${t.epoch}","epoch":"${t.epoch}"}`,
+      `{"epoch":"${t.epoch.replace('-', '\\u002d')}"}`,
+    ]) {
+      expect((await t.request('/v1/patrol/lease/acquire', text)).status).toBe(400)
+      t.zero()
+    }
+  })
+  test('generation and outcome use closed types and values', async () => {
+    const t = setup()
+    for (const generation of [null, 1, 'not-a-uuid', '11111111-1111-4111-8111-11111111111A']) {
+      expect((await t.request('/v1/patrol/lease/renew', { epoch: t.epoch, generation })).status).toBe(400)
+      t.zero()
+    }
+    for (const outcome of [null, true, 1, 'unknown']) {
+      expect(
+        (
+          await t.request('/v1/patrol/lease/complete', {
+            epoch: t.epoch,
+            generation: '11111111-1111-4111-8111-111111111111',
+            outcome,
+          })
+        ).status,
+      ).toBe(400)
+      t.zero()
+    }
+  })
+  test('an oversized stream is cancelled before further reads', async () => {
+    const t = setup()
+    let cancelled = false
+    const stream = new ReadableStream({
+      start(c) {
+        c.enqueue(new Uint8Array(4097))
+      },
+      cancel() {
+        cancelled = true
+      },
+    })
+    const response = await t.handle(
+      new Request('https://localhost/v1/patrol/lease/acquire', {
+        method: 'POST',
+        headers: {
+          authorization: `Patrol ${token}`,
+          'content-type': 'application/json',
+          'idempotency-key': 'test-key-0001',
+        },
+        body: stream,
+      }),
+    )
+    expect(response.status).toBe(400)
+    expect(cancelled).toBe(true)
+    t.zero()
+  })
+  test('revocation during a body read prevents a lease call', async () => {
+    const t = setup()
+    let controller!: ReadableStreamDefaultController<Uint8Array>
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        controller = c
+      },
+    })
+    const pending = t.handle(
+      new Request('https://localhost/v1/patrol/lease/acquire', {
+        method: 'POST',
+        headers: {
+          authorization: `Patrol ${token}`,
+          'content-type': 'application/json',
+          'idempotency-key': 'test-key-0001',
+        },
+        body: stream,
+      }),
+    )
+    t.records([])
+    controller.enqueue(new TextEncoder().encode(JSON.stringify({ epoch: t.epoch })))
+    controller.close()
+    expect((await pending).status).toBe(401)
+    t.zero()
+  })
   const paths = [
     'decisions',
     'gates',
@@ -255,6 +376,39 @@ describe('1ocuv AC2 closed grammar', () => {
 })
 
 describe('1ocuv AC3 metadata projection', () => {
+  test('metadata exceptions give only the fixed unavailable error', async () => {
+    const t = setup()
+    const handle = patrolHandler({
+      audience: 'test-server',
+      identities: () => [identity()],
+      metadata: () => {
+        throw new Error('zqsecret')
+      },
+      lease: t.lease,
+      now: () => 1000,
+      audit: e => t.audit.push(e),
+    })
+    const response = await handle(
+      new Request('https://localhost/v1/patrol/snapshot', { headers: { authorization: `Patrol ${token}` } }),
+    )
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({ error: 'unavailable' })
+    expect(JSON.stringify(t.audit)).not.toContain('zqsecret')
+  })
+  test('the projection drops provider prototypes and serialization hooks', async () => {
+    const t = setup()
+    const row = Object.assign(
+      Object.create({
+        toJSON() {
+          return { secret: 'zqsecret' }
+        },
+      }),
+      { id: 'one', rig: 'acme' },
+    )
+    t.rows([row])
+    expect(await (await t.request()).json()).toEqual({ epoch: t.epoch, runs: [{ id: 'one', rig: 'acme' }] })
+    expect(await (await t.request('/v1/patrol/runs/one')).json()).toEqual({ run: { id: 'one', rig: 'acme' } })
+  })
   test('exact keys, scope, sort, and identifier boundaries', async () => {
     const t = setup()
     const boundary = `A${'x'.repeat(127)}`
@@ -301,7 +455,11 @@ describe('1ocuv AC3 metadata projection', () => {
 describe('1ocuv AC4 handler lease and audit', () => {
   test('exact acquire replay, renew, and complete', async () => {
     const t = setup()
-    const first = await (await t.acquire()).json()
+    const first = (await (await t.acquire()).json()) as {
+      epoch: string
+      generation: string
+      expiresAt: number
+    }
     expect(first).toEqual({
       epoch: t.epoch,
       generation: expect.stringMatching(/^[a-f0-9-]{36}$/),
@@ -320,6 +478,15 @@ describe('1ocuv AC4 handler lease and audit', () => {
       await (await t.request('/v1/patrol/lease/complete', done, undefined, 'complete-key')).json(),
     ).toEqual({ completed: true })
     expect((await t.request('/v1/patrol/lease/complete', done, undefined, 'complete-key')).status).toBe(200)
+    expect(t.audit).toContainEqual({
+      at: 2000,
+      epoch: t.epoch,
+      generation: first.generation,
+      identity: 'patrol-one',
+      operation: 'complete',
+      reason: 'ok',
+      status: 200,
+    })
     await t.acquire('new-acquire')
     t.clear()
     expect((await t.request('/v1/patrol/lease/complete', done, undefined, 'complete-key')).status).toBe(409)
@@ -453,7 +620,7 @@ test('1ocuv AC5 lease failure, expiry, restart, and forbidden mail preserve mail
   const bytes = '{"mail":[{"id":"m1","text":"zqsecret"}]}\n'
   writeFileSync(path, bytes)
   const t = setup()
-  const first = await (await t.acquire()).json()
+  const first = (await (await t.acquire()).json()) as { epoch: string; generation: string; expiresAt: number }
   await t.request(
     '/v1/patrol/lease/complete',
     { epoch: t.epoch, generation: first.generation, outcome: 'failed' },

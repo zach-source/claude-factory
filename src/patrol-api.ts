@@ -149,7 +149,7 @@ export function patrolHandler(o: {
   return async (req: Request): Promise<Response> => {
     let who: PatrolIdentity | null = null
     let operation: Operation = 'unknown'
-    const respond = (status: number, data?: unknown) => {
+    const respond = (status: number, data?: unknown, completedGeneration: string | null = null) => {
       const reason: Reason =
         (
           {
@@ -163,7 +163,9 @@ export function patrolHandler(o: {
           } as const
         )[status as 200] ?? 'unavailable'
       const generation =
-        status === 200 && object(data) && typeof data.generation === 'string' ? data.generation : null
+        status === 200 && object(data) && typeof data.generation === 'string'
+          ? data.generation
+          : completedGeneration
       try {
         o.audit({
           at: now(),
@@ -240,7 +242,11 @@ export function patrolHandler(o: {
       req.headers.get('idempotency-key')!,
       current.records,
     )
-    return respond(result.status, result.body)
+    return respond(
+      result.status,
+      result.body,
+      result.status === 200 && operation === 'complete' ? (parsed.generation as string) : null,
+    )
   }
 }
 

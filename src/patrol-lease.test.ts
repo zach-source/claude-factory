@@ -34,6 +34,12 @@ const setup = () => {
 }
 
 describe('1ocuv AC4 remote lease exclusion and replay', () => {
+  test('lease expiry must remain a safe integer', () => {
+    const now = Number.MAX_SAFE_INTEGER - 1
+    const lease = new PatrolLease({ now: () => now })
+    const who = { ...principal, expiresAt: Number.MAX_SAFE_INTEGER }
+    expect(lease.mutate(who, 'acquire', { epoch: lease.epoch }, 'test-key-0001', [who]).status).toBe(503)
+  })
   test('overlap has one winner and exact retries have no new transition', async () => {
     const t = setup()
     const results = await Promise.all(
@@ -98,6 +104,23 @@ describe('1ocuv AC4 remote lease exclusion and replay', () => {
     t.time(61000)
     t.lookup.mockClear()
     expect(t.call('complete', body, 'complete-key').status).toBe(409)
+    expect(t.lookup).not.toHaveBeenCalled()
+  })
+  test('old keys cannot read receipts after a new generation starts', () => {
+    const t = setup()
+    const first = t.first()
+    t.call(
+      'complete',
+      { epoch: t.lease.epoch, generation: first.generation, outcome: 'success' },
+      'complete-key',
+    )
+    const newer = t.acquire('new-acquire').body as { generation: string }
+    t.lookup.mockClear()
+    expect(t.acquire().status).toBe(409)
+    expect(t.lookup).not.toHaveBeenCalled()
+    expect(
+      t.call('renew', { epoch: t.lease.epoch, generation: newer.generation }, 'test-key-0001').status,
+    ).toBe(409)
     expect(t.lookup).not.toHaveBeenCalled()
   })
   test('restart refuses an old epoch before replay', () => {
