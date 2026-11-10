@@ -11845,10 +11845,10 @@ async function watchPass() {
             const b = beads(run.repo, actorOf(id))
             for (const body of d.bodies)
               try {
-                const first = cut(body.split('\n', 1)[0]!, 80)
+                const first = cleanText(cut(body.split('\n', 1)[0]!, 80), 80)
                 b.create(
                   `PR change request: ${first}`,
-                  `${d.url}\n\n${body}`,
+                  cleanReport(`${d.url}\n\n${body}`),
                   '--parent',
                   run.bead,
                   '-t',
