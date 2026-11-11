@@ -178,7 +178,7 @@ import {
   type Io,
 } from './once'
 import { guardHook } from './core/chat'
-import { check } from './core/guards'
+import { check, serverBashReason, serverToolReason, TOOL_REASON } from './core/guards'
 import { REPAIR_CAP, closableParents, conflictProbes, heldBeads, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
 import * as devenv from './devenv'
@@ -10674,8 +10674,40 @@ async function onceCmd(verb: 'patrol' | 'pm' | 'brief' | 'review', args: string[
   }
 }
 
-/** `factory patrol-guard`: the patrol's Claude Code PreToolUse hook for Bash. It reads the hook JSON on stdin. */
-async function patrolGuard() {
+/** `factory patrol-guard`: the Claude Code tool hook. Server mode checks Bash and file tools. */
+async function patrolGuard(server: boolean) {
+  if (server) {
+    const deny = (why: string) => {
+      console.error(why)
+      process.exitCode = 2
+    }
+    try {
+      const input = JSON.parse(await Bun.stdin.text())
+      if (
+        !input ||
+        typeof input !== 'object' ||
+        typeof input.tool_name !== 'string' ||
+        typeof input.cwd !== 'string'
+      )
+        return deny(TOOL_REASON)
+      let reason: string | undefined
+      if (input.tool_name === 'Bash') {
+        if (
+          !input.tool_input ||
+          typeof input.tool_input !== 'object' ||
+          typeof input.tool_input.command !== 'string'
+        )
+          return deny(TOOL_REASON)
+        reason = serverBashReason(input.tool_input.command, input.cwd, CLI)
+      } else {
+        reason = serverToolReason(input.tool_name, input.tool_input, input.cwd, process.env.FACTORY_HOME)
+      }
+      if (reason) return deny(reason)
+    } catch {
+      return deny(TOOL_REASON)
+    }
+    return
+  }
   let command: unknown
   try {
     command = JSON.parse(await Bun.stdin.text())?.tool_input?.command
@@ -13844,7 +13876,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'patrol-guard':
-        await patrolGuard()
+        await patrolGuard(args.includes('--server'))
         break
       case 'patrol-bd': {
         // the bd shim of a codex patrol (src/once.ts): refuse a write, else run the real bd

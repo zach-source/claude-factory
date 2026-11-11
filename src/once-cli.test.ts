@@ -10,6 +10,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -138,6 +139,96 @@ test('patrol --once sends the kept mail to the model and logs the outcome', () =
 })
 
 const MAIL = { run: 'r1', from: 'build', text: 'which branch do I merge into?', at: 5 }
+
+test('server patrol settings add tool hooks and retain base denies', async () => {
+  const old = process.env.FACTORY_CLAUDE
+  process.env.FACTORY_CLAUDE = join(dir, 'stub.sh')
+  const permissions = { deny: ['Bash(curl:*)'] }
+  try {
+    for (const server of [false, true]) {
+      write('manager-tick.json', { runs: [], manager: [], rigs: [] })
+      write('patrol-state.json', { unsent: [MAIL], seen: [], patrolAt: 0 })
+      reply('ok')
+      if (server) process.env.FACTORY_STEP_ISOLATE = '1'
+      else delete process.env.FACTORY_STEP_ISOLATE
+      await patrolOnce(
+        {
+          home,
+          cli: CLI,
+          factories: '/x/factories/',
+          settings: { permissions },
+          planFacts: async () => '',
+          gateFacts: async () => '',
+          reviewFacts: () => '',
+        },
+        { specs: STEP_SPECS },
+      )
+      const args = readFileSync(join(dir, 'args.txt'), 'utf8').split('\n')
+      const settings = JSON.parse(args[args.indexOf('--settings') + 1]!)
+      const guard = { type: 'command', command: `'${CLI}' patrol-guard${server ? ' --server' : ''}` }
+      expect(settings.hooks.PreToolUse).toEqual(
+        server
+          ? [
+              { matcher: 'Bash', hooks: [guard] },
+              { matcher: 'Read|Grep|Glob|Write', hooks: [guard] },
+            ]
+          : [{ matcher: 'Bash', hooks: [guard] }],
+      )
+      expect(settings.permissions).toEqual(
+        server
+          ? {
+              deny: [
+                ...permissions.deny,
+                'Read(//etc/factory/**)',
+                'Read(//run/secrets/**)',
+                'Read(//var/run/secrets/**)',
+                'Read(//proc/**)',
+              ],
+            }
+          : permissions,
+      )
+    }
+  } finally {
+    delete process.env.FACTORY_STEP_ISOLATE
+    if (old === undefined) delete process.env.FACTORY_CLAUDE
+    else process.env.FACTORY_CLAUDE = old
+  }
+})
+
+test('server patrol guard rejects secrets and invalid input', () => {
+  symlinkSync('/etc', join(home, 'link'))
+  const guard = (tool_name: string, tool_input: unknown) =>
+    factory(['patrol-guard', '--server'], JSON.stringify({ tool_name, tool_input, cwd: home }))
+  for (const path of [
+    '/etc/factory/worker-key/key',
+    '/etc/factory/tls/tls.key',
+    '/etc/factory/backup/basic',
+    '/var/run/secrets/kubernetes.io/serviceaccount/token',
+    '/proc/1/environ',
+    '/etc',
+    '/',
+    `${home}/../../../etc/factory/worker-key/key`,
+    join(home, 'link/factory/worker-key/key'),
+  ])
+    expect([path, guard('Read', { file_path: path }).code]).toEqual([path, 2])
+  expect(guard('Bash', { command: 'cat /etc/factory/worker-key/key' }).code).toBe(2)
+  for (const [tool, input] of [
+    ['Read', { file_path: join(home, 'text/a.md') }],
+    ['Bash', { command: 'factory status' }],
+  ] as const)
+    expect(guard(tool, input)).toEqual({ code: 0, out: '', err: '' })
+  for (const input of [
+    '{}',
+    'not json',
+    'null',
+    JSON.stringify({ tool_name: 'Read', tool_input: { file_path: 'a' } }),
+  ])
+    expect(factory(['patrol-guard', '--server'], input).code).toBe(2)
+  expect(guard('Edit', {}).code).toBe(2)
+  expect(guard('Bash', null).code).toBe(2)
+  expect(guard('Bash', { command: 1 }).code).toBe(2)
+  expect(guard('Read', { file_path: 'a\0b' }).code).toBe(2)
+})
 
 test('a patrol that a usage limit refused keeps its mail', () => {
   write('manager-tick.json', { runs: [], manager: [], rigs: [] })

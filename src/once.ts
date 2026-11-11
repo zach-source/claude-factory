@@ -430,6 +430,7 @@ export async function patrolOnce(
   deps: { specs?: Record<StepKey, StepSpec> } = {},
   codex?: string,
 ): Promise<string> {
+  const server = process.env.FACTORY_STEP_ISOLATE === '1'
   const tick = readTick(io.home)
   const state = readState(io.home)
   const now = Date.now()
@@ -454,7 +455,8 @@ export async function patrolOnce(
     [...(tick.reviewed ?? []), ...(tick.reviews ?? [])],
   )
   if (!due) return 'nothing due'
-  const guard = { type: 'command', command: `'${io.cli}' patrol-guard` }
+  const guard = { type: 'command', command: `'${io.cli}' patrol-guard${server ? ' --server' : ''}` }
+  const base = io.settings as { permissions?: { deny?: string[] } }
   const res = await runStep(
     io.home,
     'patrol',
@@ -464,7 +466,31 @@ export async function patrolOnce(
       // codex has no hook: the core refuses a factory verb (FACTORY_PATROL) and a bd shim refuses a bd write
       ...(codex
         ? { codex, env: codexPatrolEnv(io) }
-        : { settings: { ...io.settings, hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } } }),
+        : {
+            settings: {
+              ...io.settings,
+              ...(server
+                ? {
+                    permissions: {
+                      ...base.permissions,
+                      deny: [
+                        ...(base.permissions?.deny ?? []),
+                        'Read(//etc/factory/**)',
+                        'Read(//run/secrets/**)',
+                        'Read(//var/run/secrets/**)',
+                        'Read(//proc/**)',
+                      ],
+                    },
+                  }
+                : {}),
+              hooks: {
+                PreToolUse: [
+                  { matcher: 'Bash', hooks: [guard] },
+                  ...(server ? [{ matcher: 'Read|Grep|Glob|Write', hooks: [guard] }] : []),
+                ],
+              },
+            },
+          }),
       ...(codex ? {} : { env: { FACTORY_HOME: io.home } }),
     },
     runModelAsync,
