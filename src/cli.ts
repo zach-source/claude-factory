@@ -9856,8 +9856,12 @@ async function precheckSkip(
 
 async function dispatch() {
   const stamp = join(HOME, 'dispatch.stamp')
-  if (halted() || !rigs().length || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < DISPATCH_MS))
+  if (halted() || !rigs().length) {
+    // a pass that is off must not leave the rows of an old failed pass on the board
+    if (existsSync(dispatchFile())) writeJson(dispatchFile(), [])
     return
+  }
+  if (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < DISPATCH_MS) return
   writeFileSync(stamp, '')
   const errors: Row[] = []
   const { busy, held } = await busyRigs()
@@ -11211,7 +11215,12 @@ async function digest() {
  */
 async function labelPass() {
   const stamp = join(HOME, 'labels.stamp')
-  if (halted() || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < LABELS_MS)) return
+  if (halted()) {
+    // a pass that is off must not leave the rows of an old failed pass on the board
+    if (existsSync(join(HOME, 'labels.json'))) writeJson(join(HOME, 'labels.json'), [])
+    return
+  }
+  if (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < LABELS_MS) return
   writeFileSync(stamp, '')
   const errors: Row[] = []
   const { busy, held } = await busyRigs()
