@@ -227,11 +227,44 @@ test('forge note and the glab approve reason use the file form for a note text',
   }
 })
 
+// a run of 4+ caps between non-letters in a single-quoted span; an env name (FACTORY_HOME) has an underscore, so it passes
+function capsInQuotes(src: string): string[] {
+  const hits: string[] = []
+  for (const q of src.matchAll(/(?<=[\s=(])'[^'\n]*'/g))
+    if (/(?<![A-Za-z_])[A-Z]{4,}(?![A-Za-z_])/.test(q[0])) hits.push(q[0])
+  return hits
+}
+
+test('capsInQuotes flags an all-caps placeholder anywhere in a quoted span', () => {
+  for (const t of [
+    "gh api 'repos/OWNER/REPO/x'",
+    "wget --post-data='query=PROMQL'",
+    "gh pr list --search 'FAILING in:body'",
+    "x --header='X-Scope-OrgID: TENANT'",
+    "x 'OWNER/REPO'",
+  ])
+    expect([t, capsInQuotes(t).length]).toEqual([t, 1])
+})
+
+test('capsInQuotes passes header names, env names and the <word> form', () => {
+  for (const t of [
+    "wget --header='X-Scope-OrgID: <tenant>' --post-data='query=<promql>' 'http://h'",
+    "gh api 'repos/<owner>/<repo>/dependabot/alerts?state=open'",
+    "x 'FACTORY_HOME' 'Authorization: Bearer <t>' 'Content-Type: application/json'",
+    "the attacker's diff, a 'GET'",
+  ])
+    expect([t, capsInQuotes(t)]).toEqual([t, []])
+})
+
 test('a factory prompt writes a quoted placeholder as <word>, never as an all-caps word', () => {
-  for (const f of ['lifecycle', 'ship', 'sweeps', 'release']) {
-    const src = readFileSync(join(root, 'factories', f + '.ts'), 'utf8')
-    expect([f, /(?:='|\s')(?:[A-Za-z-]+: )?[A-Z_]{4,}(?:[ '/])/.exec(src)?.[0] ?? '']).toEqual([f, ''])
-  }
+  for (const f of ['lifecycle', 'ship', 'sweeps', 'release'])
+    expect([f, capsInQuotes(readFileSync(join(root, 'factories', f + '.ts'), 'utf8'))]).toEqual([f, []])
+})
+
+test('the advisories sweep quotes the dependabot path with <owner>/<repo>', () => {
+  expect(readFileSync(join(root, 'factories', 'sweeps.ts'), 'utf8')).toContain(
+    "'repos/<owner>/<repo>/dependabot/alerts?state=open'",
+  )
 })
 
 test('each gh pr create and gh pr review in a factory prompt names a body file', () => {
