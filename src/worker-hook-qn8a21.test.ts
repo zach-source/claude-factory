@@ -516,6 +516,12 @@ describe('qn8a.122 bounded worker cache copy', () => {
     ).toBeDefined())
   test('denies a root with a space', () =>
     expect(run(`cp -R ${H}${MC} /w/a b${MC}`, { root: '/w/a b', hd: H })).toBeDefined())
+  test.each([
+    ['/w/../acme', H],
+    ['/w/./acme', H],
+  ])('denies a dot component in root %s with hookDir %s', (r, h) =>
+    expect(run(`cp -R ${h}${MC} ${r}${MC}`, { root: r, hd: h })).toBeDefined(),
+  )
   test('denies a hookDir with a plus', () =>
     expect(run(`cp -R /f/a+b${MC} ${D}`, { root: ROOT, hd: '/f/a+b' })).toBeDefined())
   test('keeps allowing the cache copy when root equals hookDir', () =>
