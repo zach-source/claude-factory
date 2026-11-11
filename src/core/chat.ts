@@ -62,7 +62,7 @@ export function runApproved(c: Parameters<Port['chatRun']>[0]): Promise<{ code: 
     })
     child.once('close', code => {
       clearTimeout(timer)
-      resolve({ code: timedOut ? 124 : (code ?? 127), out })
+      resolve({ code: timedOut ? 124 : (code ?? 128), out })
     })
   })
 }

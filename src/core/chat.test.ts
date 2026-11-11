@@ -523,6 +523,16 @@ test('runApproved returns the exit code and both output streams', async () => {
   for (const text of ['out', 'err', '[]']) expect(r.out).toContain(text)
 })
 
+test('runApproved reports a signal exit as code 128', async () => {
+  const r = await runApproved({
+    command: 'kill -TERM $$',
+    cwd: home,
+    env: { PATH: process.env.PATH },
+    timeoutMs: 2000,
+  })
+  expect(r.code).toBe(128)
+})
+
 test('runApproved keeps the last 4000 characters', async () => {
   const r = await runApproved({
     command: "printf 'a%.0s' $(seq 2000); printf 'b%.0s' $(seq 4000)",
