@@ -131,6 +131,9 @@ describe('homeReason', () => {
     `git diff ${CLI}\ngrep x ${CLI}`,
     `cd /abs/wt; git diff origin/main...HEAD -- ${CLI} ${WRK}; echo ===X; grep -n "a\\|b" ${CLI} | head -40`,
     `ls x >/dev/null || cat ${CLI}`,
+    // claude-factory-3ytgs: a grep pipeline of a real triage run
+    `grep -o "helm/[^ ]*" ${CLI} | sort | uniq -c`,
+    `grep -n x ${CLI} | cut -c1-80 | tr a b | sort -u`,
   ])('allows a read-only command that names a script: %s', cmd =>
     expect(homeReason(cmd, bad, H)).toBeUndefined(),
   )
@@ -140,6 +143,8 @@ describe('homeReason', () => {
     `git \\\n diff ${CLI}`,
     `git diff ${CLI} &> /dev/null`,
     `(cd /abs/wt && git diff ${CLI})`,
+    `grep x ${CLI} | sort --compress-program=${CLI}`,
+    `sort '--compress-program' ${CLI} ${CLI}`,
   ])('denies a read command outside the one-command grammar: %s', cmd =>
     expect(homeReason(cmd, bad, H)).toBe(HOME_REASON),
   )
