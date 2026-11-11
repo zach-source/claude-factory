@@ -41,10 +41,15 @@ jobs:
           python-version: '3.12'
       - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
       - name: install zsh (src/cli.test.ts spawns it)
-        # the runner's default mirror (apt-mirrors.txt) can fail to resolve; then the step uses archive.ubuntu.com
+        # When the runner cannot resolve the Ubuntu mirrors (2026-11-11), the step uses the image's own PostgreSQL
+        # and a static zsh from a pinned GitHub release, checked by its sha256.
         run: |
-          inst() { sudo apt-get update && sudo apt-get install -y zsh postgresql; }
-          inst || { echo http://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt; inst; }
+          sudo apt-get update && sudo apt-get install -y zsh postgresql && exit 0
+          ls -d /usr/lib/postgresql/*/bin
+          curl -fsSLo /tmp/zsh.tgz https://github.com/romkatv/zsh-bin/releases/download/v6.1.1/zsh-5.8-linux-x86_64.tar.gz
+          echo '6df668fb6e9a12874e0d80518d582f2e99e512d4a4532fa73d938360aaddc838  /tmp/zsh.tgz' | sha256sum -c
+          sudo mkdir -p /opt/zsh && sudo tar -xzf /tmp/zsh.tgz -C /opt/zsh
+          echo /opt/zsh/bin >> "$GITHUB_PATH"
       - name: put the postgres bin dir on PATH (src/pg-scratch.test.ts needs initdb, pg_ctl, psql)
         run: echo "$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)" >> "$GITHUB_PATH"
       - name: install gitleaks 8.30.1 (src/homebackup.ts scans the backup with it; the manager image has the same version)
