@@ -259,7 +259,7 @@ test('u509 snapshot scope matrix', () => {
     'bom.md': `${bom}---\nsummary: s\nrig: acme\n---\nbody\n`,
     'shared.md': '---\nsummary: s\n---\nshared\n',
   }
-  const sentinel = parse('x.md', bad.indented).rig
+  const sentinel = parse('x.md', bad.indented ?? '').rig
   for (const rig of ['acme', undefined, sentinel]) {
     const dir = tmp('u509')
     mkdirSync(join(dir, 'ci'))

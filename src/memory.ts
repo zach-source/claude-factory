@@ -90,7 +90,8 @@ export const parse = (path: string, text: string): Note => {
     [...(m?.[1] ?? '').matchAll(/^(\w+):[ \t]*(.*)$/gm)].map(([, k, v]) => [k, v]),
   )
   const decl = (m?.[1] ?? src).split('\n').filter(l => RIG_LIKE.test(l))
-  if (decl.length > 1 || (decl.length === 1 && !(m && /^rig:[ \t]*\S/.test(decl[0] ?? '')))) meta.rig = INVALID_RIG
+  if (decl.length > 1 || (decl.length === 1 && !(m && /^rig:[ \t]*\S/.test(decl[0] ?? ''))))
+    meta.rig = INVALID_RIG
   const body = src.slice(m?.[0].length ?? 0).trim()
   return {
     path,
