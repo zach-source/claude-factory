@@ -3934,3 +3934,30 @@ test('serve records resumed: true for a cloned repo, and survives an unwritable 
     process.env = saved
   }
 })
+
+test('q0dg: managerEgress and the rig Dolt URL refuse a wildcard or non-plain host', () => {
+  const bad = ['*', '*.svc.cluster.local', '%2A.svc', 'a*b.svc']
+  for (const h of bad) {
+    for (const [k, proto] of [
+      ['FACTORY_AX_MANAGER_AX_SERVER', 'https'],
+      ['FACTORY_AX_MANAGER_AX_SERVER', 'http'],
+      ['FACTORY_AX_MANAGER_ROUTER', 'http'],
+      ['FACTORY_AX_MANAGER_BROKER', 'http'],
+    ]) {
+      expect(() => ax.managerEgress({ [k]: proto + '://' + h + ':8443' })).toThrow(k)
+    }
+    const url = 'https://' + h + '/acme/x'
+    expect(() => ax.managerEgress({}, [{ beadsRemote: { url } }])).toThrow('beadsRemote')
+  }
+  expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'https://ax.example.com:8443' })).toContainEqual(
+    expect.objectContaining({ hosts: ['ax.example.com'], key: 'AX_AUTH' }),
+  )
+  expect(ax.managerEgress({ FACTORY_AX_MANAGER_BROKER: 'http://b.example.svc:8080' })).toContainEqual({
+    hosts: ['b.example.svc'],
+    port: 8080,
+    http: true,
+  })
+  expect(ax.managerEgress({}, [{ beadsRemote: { url: 'https://dolt.example.com/x' } }])).toContainEqual(
+    expect.objectContaining({ hosts: ['dolt.example.com'], key: 'DOLT_BASIC' }),
+  )
+})
