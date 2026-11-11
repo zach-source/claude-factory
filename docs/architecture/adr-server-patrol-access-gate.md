@@ -137,3 +137,11 @@ After `bun install`, `bun test src/steps.test.ts` passed: 27 tests, 0 failures, 
 The formatter passed for `src/steps.ts`, `src/steps.test.ts`, and this ADR.
 The fetched `origin/main` had no commits beyond HEAD `f81e20b0`.
 T2 and T3 remain open. The full gate and AC1 through AC3 and AC5 through AC7 remain unverified.
+
+## Test-command access check on 2026-11-11
+
+The next pass requested a manager correction for the prior test-command denial.
+No correction arrived before its report. The pass did not retry the denied command.
+`git merge origin/main` reported no new commits.
+After `bun install`, `bun test src/steps.test.ts` passed: 27 tests, 0 failures, 183 assertions.
+T2 and T3 still need authorized test-command access. This checkpoint adds no behavior change.
