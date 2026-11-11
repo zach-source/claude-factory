@@ -17,6 +17,7 @@ import {
   unsetSetting,
 } from './settings'
 import { tokenCommand } from './claude-token'
+import { writeFresh } from './write-fresh'
 import { buildImage, IMAGE_KEY, type Target } from './image'
 import {
   appendFileSync,
@@ -556,7 +557,7 @@ const tickError = (id: string) =>
   existsSync(tickErrorFile(id)) ? readFileSync(tickErrorFile(id), 'utf8').trim() : undefined
 const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, 'utf8'))
 /** written and fsynced: a report or snapshot outlives a power cut, not just a crash */
-function durable(path: string, text: string, flag: 'w' | 'a') {
+function durable(path: string, text: string, flag: 'a') {
   const fd = openSync(path, flag)
   try {
     writeSync(fd, text)
@@ -566,8 +567,7 @@ function durable(path: string, text: string, flag: 'w' | 'a') {
   }
 }
 export function writeJson(path: string, value: unknown) {
-  durable(`${path}.tmp`, JSON.stringify(value, null, 2), 'w')
-  renameSync(`${path}.tmp`, path) // atomic: a reader never sees half a snapshot
+  writeFresh(path, JSON.stringify(value, null, 2)) // atomic: a reader never sees half a snapshot
 }
 /** `factory manager --ax [args]`: run the manager as the long-lived AX task (claude-factory-192.2) */
 async function launchAxManager(args: string[]) {

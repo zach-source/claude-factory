@@ -3,6 +3,7 @@ import {
   chmodSync,
   existsSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -13,6 +14,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { writeJson } from './cli'
+import { writeFresh } from './write-fresh'
 
 const dirs: string[] = []
 const fresh = () => {
@@ -46,4 +48,24 @@ test('e0qu AC4 symlink at the temp name: the victim keeps its text', () => {
   expect(readFileSync(victim, 'utf8')).toBe('keep')
   expect(existsSync(`${f}.tmp`)).toBe(false)
   expect(JSON.parse(readFileSync(f, 'utf8'))).toEqual({ a: 1 })
+})
+
+test('e0qu AC7 a directory at the temp name fails closed', () => {
+  const d = fresh()
+  const f = join(d, 'x.json')
+  writeFileSync(f, 'old')
+  mkdirSync(`${f}.tmp`)
+  expect(() => writeFresh(f, 'new')).toThrow()
+  expect(readFileSync(f, 'utf8')).toBe('old')
+  expect(lstatSync(`${f}.tmp`).isDirectory()).toBe(true)
+})
+
+test('e0qu AC8 a fresh write has mode 0600, leaves no temp file and a second write replaces the text', () => {
+  const d = fresh()
+  const f = join(d, 'y.json')
+  writeFresh(f, 'one')
+  expect(statSync(f).mode & 0o777).toBe(0o600)
+  expect(existsSync(`${f}.tmp`)).toBe(false)
+  writeFresh(f, 'two')
+  expect(readFileSync(f, 'utf8')).toBe('two')
 })
