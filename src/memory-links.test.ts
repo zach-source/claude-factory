@@ -511,3 +511,38 @@ test('snapshot and walk skip a unix socket named like a note', async () => {
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('a link planted after the last dropLinks is harmless until the next one (claude-factory-fkw4 item 3)', async () => {
+  const { root, dir, secret } = linkStore()
+  const outside = join(root, 'outside')
+  mkdirSync(outside)
+  writeFileSync(join(outside, 'leak.md'), `---\nsummary: ${MARKER}\n---\n${MARKER}\n`)
+  writeFileSync(join(dir, 'topic', 'ok.md'), '---\nsummary: plain note\n---\nbody\n')
+  const before = readFileSync(secret, 'utf8')
+  expect(dropLinks(dir)).toEqual([])
+  symlinkSync(secret, join(dir, '.usage.jsonl'))
+  symlinkSync(secret, join(dir, '.renames.jsonl'))
+  rmSync(join(dir, 'inbox'), { recursive: true })
+  symlinkSync(outside, join(dir, 'inbox'))
+  symlinkSync(outside, join(dir, 'topic2'))
+  const seen = [
+    JSON.stringify([...usage(dir)]),
+    resolvePath(dir, 'topic/a.md'),
+    JSON.stringify(walk(dir)),
+    JSON.stringify(await search(dir, 'zqsecret')),
+  ]
+  const out = join(root, 'snap.tgz')
+  snapshot(dir, undefined, out)
+  expect(seen.join('')).not.toContain(MARKER)
+  expect(Bun.spawnSync(['tar', '-xzOf', out]).stdout.toString()).not.toContain(MARKER)
+  expect(() => use(dir, ['topic/a.md'], 'helped')).toThrow(/ELOOP/)
+  expect(() => add(dir, { summary: 's', body: 'b' })).toThrow(/ELOOP/)
+  expect(readdirSync(outside)).toEqual(['leak.md'])
+  expect(readFileSync(secret, 'utf8')).toBe(before)
+  expect(
+    dropLinks(dir)
+      .map(l => l.path)
+      .sort(),
+  ).toEqual(['.renames.jsonl', '.usage.jsonl', 'inbox', 'topic2'])
+  rmSync(root, { recursive: true, force: true })
+})

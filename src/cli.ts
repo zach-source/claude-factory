@@ -6695,6 +6695,8 @@ async function dream() {
     }
     const gitPre = gitDirPre(MEMORY)
     if ('why' in gitPre) return refuse(gitPreLine('dream', gitPre.why))
+    // ponytail: spawnSync kills only the direct child, so a codex grandchild can plant a link after the last dropLinks.
+    // The memory readers skip a link and the writers refuse it, and the next dream removes it. Upgrade path: spawn in its own process group and kill the group.
     // claude: edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = codexHome
       ? Bun.spawnSync(
