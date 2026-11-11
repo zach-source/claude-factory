@@ -6093,7 +6093,16 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
   try {
     const steps = [old ? ['read-tree', old] : ['read-tree', '--empty']]
     // deletes first: a directory that becomes a file needs its entries gone before the add
-    for (const e of [...keep.filter(e => e.status === 'D'), ...keep.filter(e => e.status !== 'D')])
+    const adds = keep.filter(e => e.status !== 'D')
+    for (const e of keep.filter(e => e.status === 'D')) steps.push(['update-index', '--force-remove', '--', e.path])
+    // a tracked file that becomes a directory above an added path: its entry stays in HEAD's index
+    const up = new Set<string>()
+    for (const e of adds) {
+      const parts = e.path.split('/')
+      for (let i = 1; i < parts.length; i++) up.add(parts.slice(0, i).join('/'))
+    }
+    for (const a of up) steps.push(['update-index', '--force-remove', '--', a])
+    for (const e of adds)
       steps.push(
         e.status === 'D'
           ? ['update-index', '--force-remove', '--', e.path]

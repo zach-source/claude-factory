@@ -858,11 +858,11 @@ test('AC4 a refused rename does not commit the delete of the old path', () => {
 })
 
 /** run the exported commitWiki() in a child on the temp home; `shim` puts a git wrapper first on PATH */
-function commitPass(summary: string, shim = '') {
+function commitPass(summary: string, shim = '', paths?: string[]) {
   const script = join(dir, 'commit.ts')
   writeFileSync(
     script,
-    `import { commitWiki } from '${join(import.meta.dir, 'cli')}'\nprocess.exit(commitWiki('p', ${JSON.stringify(summary)}) ? 0 : 1)\n`,
+    `import { commitWiki } from '${join(import.meta.dir, 'cli')}'\nprocess.exit(commitWiki('p', ${JSON.stringify(summary)}, undefined, ${JSON.stringify(paths)}) ? 0 : 1)\n`,
   )
   const sbin = join(dir, 'shim')
   mkdirSync(sbin, { recursive: true })
@@ -940,6 +940,22 @@ test('cr8o a directory that becomes a page file is committed', () => {
   const files = git('ls-files').split('\n')
   expect(files).toContain('x.md')
   expect(files).not.toContain('x.md/y.md')
+})
+
+test('cr8o a file that becomes a directory above a path is committed', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  writeFileSync(join(wiki(), 'rigs'), 'x\n')
+  person('rigs file')
+  const base = commits()
+  rmSync(join(wiki(), 'rigs'))
+  mkdirSync(join(wiki(), 'rigs'))
+  writeFileSync(join(wiki(), 'rigs', 'a.md'), page('topic', 'a'))
+  expect(commitPass('x', '', ['rigs/a.md']).exitCode).toBe(0)
+  expect(commits()).toBe(base + 1)
+  expect(git('ls-tree', '-r', '--name-only', 'HEAD').split('\n')).toContain('rigs/a.md')
+  expect(git('ls-tree', '-r', '--name-only', 'HEAD').split('\n')).not.toContain('rigs')
+  expect(git('diff', '--cached', '--name-only')).toBe('')
 })
 
 test('cr8o a refused file over a directory does not commit the directory delete', () => {
