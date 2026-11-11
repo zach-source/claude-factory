@@ -15,6 +15,7 @@ const showErr = join(dir, 'show.err')
 const failShow = join(dir, 'fail-show')
 const failCreate = join(dir, 'fail-create')
 const failComment = join(dir, 'fail-comment')
+const descriptionFile = join(dir, 'description.txt')
 const repoA = join(dir, 'acme-a')
 const repoB = join(dir, 'acme-b')
 
@@ -45,7 +46,7 @@ function setup(source: unknown = [{ id: 'acme-1' }], fail?: string) {
       `printf '%s|%s|%s\\n' "$PWD" "$BEADS_ACTOR" "$(printf '%s' "$*" | tr '\\n' ' ')" >> '${calls}'`,
       'case "$1" in',
       `  show) if [ -e '${failShow}' ]; then printf '%s' '{"error":"not found"}'; cat '${showErr}' >&2; exit 1; fi; cat '${showFile}';;`,
-      `  create) if [ -e '${failCreate}' ]; then echo 'create boom' >&2; exit 1; fi; printf '%s' 'acme-b-9';;`,
+      `  create) if [ -e '${failCreate}' ]; then echo 'create boom' >&2; exit 1; fi; printf '%s' "$5" > '${descriptionFile}'; printf '%s' 'acme-b-9';;`,
       `  comment) if [ -e '${failComment}' ]; then echo 'comment boom' >&2; exit 1; fi;;`,
       "  list) printf '%s' '[]';;",
       '  *) exit 0;;',
@@ -397,4 +398,47 @@ test('file-elsewhere refuses a control character in a title or a description wit
   expect(creates()[0]).toContain('line two\tend')
   expect(factory([...FROM, '--title', 't', '--description-file', txt('ok', text)]).code).toBe(0)
   expect(creates()).toHaveLength(2)
+})
+
+test.each([0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x2028, 0x2029])(
+  'k173 AC1: file-elsewhere refuses U+%s before any bd call',
+  point => {
+    setup()
+    const char = String.fromCodePoint(point)
+    const code = `U+${point.toString(16).toUpperCase()}`
+    for (const value of [`a${char}b`, `${char}safe`, `safe${char}`]) {
+      for (const field of ['title', 'description']) {
+        for (const file of [false, true]) {
+          const args = [...FROM, '--title', 'safe', '--description', 'safe']
+          const at = args.indexOf(`--${field}`)
+          args[at] += file ? '-file' : ''
+          args[at + 1] = file ? txt('unsafe.txt', value) : value
+          const r = factory(args)
+          expect([code, field, file, r.code]).toEqual([code, field, file, 1])
+          expect(lines()).toHaveLength(0)
+          expect(r.err).toContain(code)
+          expect(/[\u202a-\u202e\u2066-\u2069\u2028\u2029]/u.test(r.out + r.err)).toBe(false)
+        }
+      }
+    }
+  },
+)
+
+test('k173 AC3: file-elsewhere preserves safe Unicode and description whitespace', () => {
+  setup()
+  const safe = 'Café שלום 👩‍💻'
+  const description = `${safe}\nline\tend`
+  for (const file of [false, true]) {
+    expect(
+      factory([
+        ...FROM,
+        file ? '--title-file' : '--title',
+        file ? txt('safe-title', `${safe}\n`) : safe,
+        file ? '--description-file' : '--description',
+        file ? txt('safe-description', `${description}\n`) : description,
+      ]).code,
+    ).toBe(0)
+    expect(creates().at(-1)).toContain(`--title ${safe} -d ${safe} line\tend`)
+    expect(readFileSync(descriptionFile, 'utf8')).toBe(`${description}\n\nFiled from acme-a:acme-1.`)
+  }
 })
