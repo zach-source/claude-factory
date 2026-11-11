@@ -48,7 +48,7 @@ test('humanLines treats an unknown author as a person and fails closed', () => {
   expect(humanLines(big, after, F).length).toBe(2100)
 })
 
-const H = (e: string, d: string) => `\x01${e}\x01${d}`
+const H = (e: string, d: string, sha?: string) => `\x01${e}\x01${d}${sha === undefined ? '' : `\x01${sha}`}`
 test('tombstones keeps the page paths that a person deleted, with the newest date', () => {
   const log = [
     H(P, '2026-11-02T10:00:00+00:00'),
@@ -66,15 +66,19 @@ test('tombstones keeps the page paths that a person deleted, with the newest dat
     'D\ta/../x.md',
     'D\tnotes.txt',
   ].join('\n')
-  expect(tombstones(log, F)).toEqual([
+  expect(tombstones(log, F, () => true)).toEqual([
     { path: 'solutions/a.md', at: '2026-11-02T10:00:00+00:00' },
     { path: 'b.md', at: '2026-11-02T10:00:00+00:00' },
   ])
-  expect(tombstones('', F)).toEqual([])
+  expect(tombstones('', F, () => true)).toEqual([])
   expect(
-    tombstones(`${H(P, 'junk')}\nD\tb.md\n${H(P, '2026-11-01T10:00:00Z')}\x01x\x01y\nD\tc.md\n`, F),
+    tombstones(
+      `${H(P, 'junk')}\nD\tb.md\n${H(P, '2026-11-01T10:00:00Z')}\x01x\x01y\nD\tc.md\n`,
+      F,
+      () => true,
+    ),
   ).toEqual([])
-  expect(tombstones('D\tb.md\n', F)).toEqual([])
+  expect(tombstones('D\tb.md\n', F, () => true)).toEqual([])
 })
 
 const D1 = '2026-11-01T10:00:00+00:00'
@@ -83,7 +87,7 @@ const D2 = '2026-11-03T10:00:00+00:00'
 const ev = (...x: [string, string, string][]) =>
   [...x]
     .reverse()
-    .map(([e, d, l]) => `${H(e, d)}\n${l}`)
+    .map(([e, d, l], i) => `${H(e, d, `s${i}`)}\n${l}`)
     .join('\n')
 test('tombstones lifts an older person delete when a newer person add follows', () => {
   const rows: [string, string, { path: string; at: string }[]][] = [
@@ -120,18 +124,21 @@ test('tombstones lifts an older person delete when a newer person add follows', 
       [{ path: 'b.md', at: D1 }],
     ],
   ]
-  for (const [name, log, want] of rows) expect([name, tombstones(log, F)]).toEqual([name, want])
+  for (const [name, log, want] of rows) expect([name, tombstones(log, F, () => true)]).toEqual([name, want])
 })
 
 test('tombstones ignores every line outside the A and D grammar', () => {
-  const head = `${H(P, D1)}\n`
+  const head = `${H(P, D1, 'd')}\n`
   for (const l of ['b.md', 'M\tb.md', 'R100\ta.md\tb.md', 'D\t"q\\303.md"', 'D b.md', 'd\tb.md'])
-    expect([l, tombstones(head + l, F)]).toEqual([l, []])
-  expect(tombstones(`${head}D\tb.md`, F)).toEqual([{ path: 'b.md', at: D1 }])
+    expect([l, tombstones(head + l, F, () => true)]).toEqual([l, []])
+  expect(tombstones(`${head}D\tb.md`, F, () => true)).toEqual([{ path: 'b.md', at: D1 }])
   const tail = `\n${head}D\tb.md`
   for (const l of ['M\tb.md', 'a\tb.md', 'A b.md', 'b.md'])
-    expect([l, tombstones(`${H(P, A1)}\n${l}${tail}`, F)]).toEqual([l, [{ path: 'b.md', at: D1 }]])
-  expect(tombstones(`${H(P, A1)}\nA\tb.md${tail}`, F)).toEqual([])
+    expect([l, tombstones(`${H(P, A1, 'a')}\n${l}${tail}`, F, () => true)]).toEqual([
+      l,
+      [{ path: 'b.md', at: D1 }],
+    ])
+  expect(tombstones(`${H(P, A1, 'a')}\nA\tb.md${tail}`, F, () => true)).toEqual([])
 })
 
 test('flagLine masks a token and keeps one line of at most 200 characters', () => {
@@ -146,5 +153,19 @@ test('tombstones keeps a person delete that is not an ancestor of the newest per
   const log = `${H(P, A1)}\x01aaa\nA\tb.md\n${H(P, D1)}\x01ddd\nD\tb.md\n`
   expect(tombstones(log, F, () => true)).toEqual([])
   expect(tombstones(log, F, (d, a) => [d, a].join() !== 'ddd,aaa')).toEqual([{ path: 'b.md', at: D1 }])
-  expect(tombstones(log, F)).toEqual([])
+})
+
+test('tombstones fails closed when a sha is missing or the delete is not an ancestor', () => {
+  const D = (sha?: string) => `${H(P, D1, sha)}\nD\tb.md`
+  const A = (sha?: string) => `${H(P, A1, sha)}\nA\tb.md`
+  const keep = [{ path: 'b.md', at: D1 }]
+  const rows: [string, string, () => boolean, { path: string; at: string }[]][] = [
+    ['no sha on the add', `${A()}\n${D('d')}`, () => true, keep],
+    ['empty sha on the add', `${A('')}\n${D('d')}`, () => true, keep],
+    ['no sha on the delete', `${A('a')}\n${D()}`, () => true, keep],
+    ['not an ancestor', `${A('a')}\n${D('d')}`, () => false, keep],
+    ['ancestor, both shas', `${A('a')}\n${D('d')}`, () => true, []],
+    ['add only, no sha', A(), () => true, []],
+  ]
+  for (const [name, log, cb, want] of rows) expect([name, tombstones(log, F, cb)]).toEqual([name, want])
 })
