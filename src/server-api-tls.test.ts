@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { main as clientMain } from './client'
@@ -108,7 +108,12 @@ const cli = async (url: string, home: string, cmd: string, args: string[] = []) 
  * Bun's own TLS client is not a safe test client. In one process it can send a certificate other than the one named,
  * so a stranger row passes or fails by chance. An openssl child process has no such state.
  */
-const raw = async (port: number, who?: { cert: string; key: string }, headers = '') => {
+const raw = async (
+  port: number,
+  who?: { cert: string; key: string },
+  headers = '',
+  request = 'GET /v1/status HTTP/1.1\r\nHost: localhost\r\n',
+) => {
   const p = Bun.spawn(
     [
       ...['openssl', 's_client', '-connect', `localhost:${port}`, '-servername', 'localhost'],
@@ -116,7 +121,7 @@ const raw = async (port: number, who?: { cert: string; key: string }, headers = 
       ...(who ? ['-cert', who.cert, '-key', who.key] : []),
     ],
     {
-      stdin: new Blob([`GET /v1/status HTTP/1.1\r\nHost: localhost\r\n${headers}Connection: close\r\n\r\n`]),
+      stdin: new Blob([`${request}${headers}Connection: close\r\n\r\n`]),
       stdout: 'pipe',
       stderr: 'ignore',
       timeout: 5000,
@@ -131,6 +136,30 @@ const pair = (dir: string, name = 'person') => ({
 })
 
 describe('mTLS on the client port', () => {
+  test('CN=manager is the manager role: 200 on status, 403 on halt; another CN is a person', async () => {
+    const t = start()
+    const d = tmp()
+    const ssl = (...a: string[]) => {
+      const r = Bun.spawnSync(['openssl', ...a], { cwd: d })
+      if (r.exitCode !== 0) throw new Error(r.stderr.toString().slice(0, 200))
+    }
+    writeFileSync(join(d, 'mgr.ext'), 'extendedKeyUsage=clientAuth\nbasicConstraints=CA:FALSE\n')
+    ssl('ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', 'mgr.key')
+    ssl('req', '-new', '-key', 'mgr.key', '-subj', '/CN=manager', '-out', 'mgr.csr')
+    ssl(
+      ...['x509', '-req', '-in', 'mgr.csr', '-CA', join(A, 'ca.crt'), '-CAkey', join(A, 'ca.key')],
+      ...['-CAcreateserial', '-days', '2', '-sha256', '-extfile', 'mgr.ext'],
+      ...['-out', 'mgr.crt'],
+    )
+    const manager = pair(d, 'mgr')
+    const halt =
+      'POST /v1/halt HTTP/1.1\r\nHost: localhost\r\ncontent-type: application/json\r\n' +
+      'idempotency-key: halt-key-0001\r\ncontent-length: 0\r\n'
+    expect(await raw(t.s.clientPort!, manager)).toBe('200')
+    expect(await raw(t.s.clientPort!, pair(A))).toBe('200')
+    expect(await raw(t.s.clientPort!, manager, '', halt)).toBe('403')
+    expect(t.calls).toEqual([['status'], ['status']])
+  })
   test('a person cert reaches the handler through client.main', async () => {
     const t = start()
     const r = await cli(t.url, laptop(A, A), 'status')

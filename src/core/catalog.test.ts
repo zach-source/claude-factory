@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  allowed,
   CATALOG,
   CATALOG_VERSION,
   fieldOk,
@@ -180,12 +181,20 @@ describe('CATALOG', () => {
   test('rights map as before', () => {
     for (const o of CATALOG) {
       const get = o.route.method === 'GET' || o.name === 'guard.check'
-      expect(o.rights).toBe(get ? 'read' : 'owner')
+      expect(o.rights).toBe(
+        get ? 'read' : ['factory.halt', 'gc.run', 'chat.send'].includes(o.name) ? 'owner' : 'manager',
+      )
       expect(o.mutates).toBe(!get)
       expect(o.long).toBe(o.name === 'chat.send')
       expect(o.since).toBe(1)
     }
     expect(CATALOG_VERSION).toBe(1)
+  })
+  test('allowed: the manager role cannot call an owner operation', () => {
+    expect(allowed('owner', 'manager')).toBe(false)
+    expect(allowed('owner', 'person')).toBe(true)
+    expect(allowed('manager', 'manager')).toBe(true)
+    expect(allowed('read', 'manager')).toBe(true)
   })
   test('the chat operations', () => {
     const send = CATALOG.find(o => o.name === 'chat.send')!

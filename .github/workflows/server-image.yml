@@ -1,0 +1,73 @@
+name: server-image
+
+# This workflow builds Dockerfile.server (specs/010-server-pod, research R1). On a pull
+# request, it builds the image and pushes nothing. On main, it pushes
+# ghcr.io/<owner>/factory-server with the tags "sha-<commit>" and "latest", and it prints the digest.
+# A deploy manifest must use the digest, not a tag.
+on:
+  pull_request:
+    paths:
+      [
+        Dockerfile.server,
+        .github/workflows/server-image.yml,
+        src/**,
+        bin/**,
+        factories/**,
+        mod/**,
+        package.json,
+        bun.lock,
+      ]
+  push:
+    branches: [main]
+    paths:
+      [
+        Dockerfile.server,
+        .github/workflows/server-image.yml,
+        src/**,
+        bin/**,
+        factories/**,
+        mod/**,
+        package.json,
+        bun.lock,
+      ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server-image-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  image:
+    name: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: build, and push on main
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: Dockerfile.server
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/factory-server:sha-${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/factory-server:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: print the digest
+        run: echo "factory-server@${{ steps.build.outputs.digest }}" | tee -a "$GITHUB_STEP_SUMMARY"
