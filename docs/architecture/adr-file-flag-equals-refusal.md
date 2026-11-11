@@ -182,3 +182,19 @@ After that commit, require green CI on the new head before implement reports rea
 The task fits one 120-minute pass. If CI exceeds that time, report blocked on PR #861.
 Verify checks the final head. Security reviews the merge resolution and any later code delta.
 No new feature, external bead, owner action, or live read is part of this task.
+
+## Final evidence
+
+Code head: b797fc87. It contains origin/main.
+Command: the five-file command in AC7.
+Result on the branch: 295 pass, 5 fail.
+The same 5 tests fail on a clean origin/main worktree with the same command: 257 pass, 5 fail.
+So the branch adds no failure.
+
+- text-file-flags: "memory add --body-file stores the file text as the body (AC2)". It fails with ECONNRESET in the VM.
+- remote: "memory search --from logs shown with the run and station; without it, no by".
+- remote: "a VM memory search says why it found nothing > row d".
+- remote: "an ax launch searches the laptop memory once and puts the top notes in the brief".
+- remote: "an AX-rig run with herdr failing (claude-factory-xbzd S1) > an AX rig's herdr-runner station reopens its worktree through herdr worktree open".
+
+CI on the exact head runs the full suite. No predicate changed, so no mutation ran again.
