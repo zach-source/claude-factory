@@ -926,6 +926,22 @@ test('commitWiki does not commit over a person commit made during the pass', () 
   expect(wikiLog()).toContain('wiki: HEAD moved, nothing committed')
 })
 
+test('cr8o a directory that becomes a page file is committed', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  mkdirSync(join(wiki(), 'x.md'))
+  writeFileSync(join(wiki(), 'x.md', 'y.md'), page('topic', 'y'))
+  expect(commitPass('x').exitCode).toBe(0)
+  const base = commits()
+  rmSync(join(wiki(), 'x.md'), { recursive: true })
+  writeFileSync(join(wiki(), 'x.md'), page('topic', 'x'))
+  expect(commitPass('x').exitCode).toBe(0)
+  expect(commits()).toBe(base + 1)
+  const files = git('ls-files').split('\n')
+  expect(files).toContain('x.md')
+  expect(files).not.toContain('x.md/y.md')
+})
+
 test('cr8o init does not commit a page a person staged', () => {
   setup()
   expect(factory(['wiki', 'init']).code).toBe(0)
