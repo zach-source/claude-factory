@@ -142,3 +142,22 @@ test('applyTiers removes no short note when .archive is a link', () => {
   expect(existsSync(note)).toBe(true)
   expect(readdirSync(outside).length).toBe(0)
 })
+
+test('applyTiers reads the logs strict: a link throws and LONG.md stays', () => {
+  for (const log of ['.usage.jsonl', '.renames.jsonl']) {
+    seed([entry('keep')])
+    // 5 short notes over a cap of 3: the 10 day old one merges, and a merge reads the rename log
+    for (let i = 0; i < 5; i++)
+      writeFileSync(
+        join(dir, 'beads', `n${i}.md`),
+        `---\nsummary: note ${i}\nfrom: r1/x\nat: ${at(i ? 1 : 10)}\n---\nbody ${i}\n`,
+      )
+    const seedText = readFileSync(longFile, 'utf8')
+    const outside = join(root, 'outside-log')
+    writeFileSync(outside, '')
+    rmSync(join(dir, log), { force: true })
+    symlinkSync(outside, join(dir, log))
+    expect(() => applyTiers(dir, { now: NOW, topicCap: 3 })).toThrow(/ELOOP/)
+    expect(readFileSync(longFile, 'utf8')).toBe(seedText)
+  }
+})

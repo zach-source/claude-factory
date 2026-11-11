@@ -577,7 +577,8 @@ const hashOf = (text: string) => createHash('sha1').update(text).digest('hex')
 /** the notes' vectors, embedding only what changed since the last search */
 async function vectors(dir: string, all: Note[], text = textOf, name = '.index.json') {
   const file = join(dir, name)
-  const old: Index = existsSync(file) ? JSON.parse(readStore(dir, file)) : { model: MODEL, vecs: {} }
+  const oldText = tryRead(dir, file)
+  const old: Index = oldText !== null ? JSON.parse(oldText) : { model: MODEL, vecs: {} }
   const prev = old.model === MODEL ? old.vecs : {}
   const stale = all.filter(n => prev[n.path]?.hash !== hashOf(text(n)))
   const fresh = await embed(stale.map(text))
@@ -824,12 +825,10 @@ export async function evaluate(dir: string, cases: EvalCase[], limit = 5): Promi
 /** where the fixed query set lives: committed to the memory's own git repo, so it tracks the store it tests */
 export const evalFile = (dir: string) => join(dir, '.eval.jsonl')
 export const readEvalCases = (dir: string): EvalCase[] =>
-  existsSync(evalFile(dir))
-    ? readStore(dir, evalFile(dir))
-        .split('\n')
-        .filter(Boolean)
-        .map(line => JSON.parse(line))
-    : []
+  (tryRead(dir, evalFile(dir)) ?? '')
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line))
 
 /** the matches, not the filler: what scores near the best and above the floor */
 export const close = <T extends { score: number }>(ranked: T[], limit: number) =>
@@ -1145,12 +1144,22 @@ export const tally = (lines: string[], renamed: Record<string, string> = {}) => 
     })
   return result
 }
-const usageFileLines = (dir: string) =>
-  existsSync(usageFile(dir)) ? readStore(dir, usageFile(dir)).split('\n') : []
-export const usage = (dir: string, renamed?: Record<string, string>) => tally(usageFileLines(dir), renamed)
+/** the lines of a log. A reader skips a link, a FIFO or a missing file. A writer that computes store data from the log reads it strict: only a missing file is empty, so a link makes it throw and no count is dropped (claude-factory-fkw4) */
+const readLog = (dir: string, f: string, strict: boolean) => {
+  if (!strict) return (tryRead(dir, f) ?? '').split('\n')
+  try {
+    return readStore(dir, f).split('\n')
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw e
+  }
+}
+const usageFileLines = (dir: string, strict: boolean) => readLog(dir, usageFile(dir), strict)
+export const usage = (dir: string, renamed?: Record<string, string>, strict = false) =>
+  tally(usageFileLines(dir, strict), renamed)
 /** each note's usage events, oldest line first, for activation() */
-export const usageEvents = (dir: string, renamed?: Record<string, string>) =>
-  new Map([...tallyRaw(usageFileLines(dir), renamed)].map(([path, t]) => [path, t.events]))
+export const usageEvents = (dir: string, renamed?: Record<string, string>, strict = false) =>
+  new Map([...tallyRaw(usageFileLines(dir, strict), renamed)].map(([path, t]) => [path, t.events]))
 
 /**
  * A note's path: a short note's file, a LONG.md entry's `#id`, or a CORE.md bullet's `#<hash>`
@@ -1213,8 +1222,8 @@ export function supersede(dir: string, oldPath: string, newPath: string): { mark
 
 const renamesFile = (dir: string) => join(dir, '.renames.jsonl')
 /** every rename a dream or a tiering pass has ever made, oldest first: old path -> its newest known path */
-function renameLog(dir: string): Record<string, string> {
-  const lines = existsSync(renamesFile(dir)) ? readStore(dir, renamesFile(dir)).split('\n') : []
+function renameLog(dir: string, strict: boolean): Record<string, string> {
+  const lines = readLog(dir, renamesFile(dir), strict)
   const map: Record<string, string> = {}
   for (const line of lines.filter(Boolean)) {
     const r: { old: string; new: string } = JSON.parse(line)
@@ -1224,7 +1233,7 @@ function renameLog(dir: string): Record<string, string> {
 }
 /** where a note lives now, following a rename chain (a -> b -> c) to its last link */
 export function resolvePath(dir: string, path: string, extra: Record<string, string> = {}): string {
-  const map = { ...renameLog(dir), ...extra }
+  const map = { ...renameLog(dir, false), ...extra }
   let p = path
   for (const seen = new Set<string>(); map[p] && map[p] !== p && !seen.has(p);) {
     seen.add(p)
@@ -1247,9 +1256,9 @@ export function compact(dir: string, renamed: Record<string, string>, now = Date
         .map(([old, to]) => `${JSON.stringify({ old, new: to })}\n`)
         .join(''),
     )
-  const log = renameLog(dir)
-  const resolved = Object.fromEntries([...new Set(Object.keys(log))].map(k => [k, resolvePath(dir, k)]))
-  const lines = existsSync(usageFile(dir)) ? readStore(dir, usageFile(dir)).split('\n') : []
+  const log = renameLog(dir, true)
+  const resolved = Object.fromEntries([...new Set(Object.keys(log))].map(k => [k, resolvePath(dir, k, log)]))
+  const lines = usageFileLines(dir, true)
   const kept = [...tallyRaw(lines, resolved, okOf).values()].filter(t => noteExists(dir, t.path))
   writeStore(
     dir,
@@ -1809,8 +1818,8 @@ export function applyTiers(
 ) {
   const now = opts.now ?? Date.now()
   const { notes } = walk(dir)
-  const uses = usage(dir)
-  const events = usageEvents(dir)
+  const uses = usage(dir, undefined, true)
+  const events = usageEvents(dir, undefined, true)
   const historyDays = usageHistoryDays(now, uses)
   const archiveCap = opts.archiveCap ?? envArchiveCap()
   const topicCap = opts.topicCap ?? envTopicCap()
@@ -1926,7 +1935,7 @@ export function applyTiers(
       const existing = rawText !== null ? parseLong(rawText) : []
       // a fresh id must not collide with an id a rename log or another entry's aliases already claim
       // for this topic: either would send its usage to the wrong entry (claude-factory-59r.18)
-      const renames = renameLog(dir)
+      const renames = renameLog(dir, true)
       const takenPrefix = `${topic}/LONG.md#`
       const taken = new Set<string>([
         ...existing.map(e => e.id),

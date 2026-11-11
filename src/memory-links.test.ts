@@ -15,6 +15,11 @@ import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import {
   add,
+  compact,
+  readEvalCases,
+  resolvePath,
+  usage,
+  usageEvents,
   inDir,
   coreNotes,
   corpus,
@@ -381,3 +386,35 @@ test('walk and snapshot give no outside text while a second process swaps a topi
   expect(process.cwd()).toBe(before)
   rmSync(root, { recursive: true, force: true })
 }, 60000)
+
+test('the log readers skip a link, a FIFO and a missing file, and throw on EACCES (claude-factory-fkw4 R1)', () => {
+  const { root, dir, secret } = linkStore()
+  writeFileSync(join(dir, 'topic', 'ok.md'), '---\nsummary: plain note\n---\nbody\n')
+  for (const f of ['.usage.jsonl', '.renames.jsonl', '.index.json', '.eval.jsonl'])
+    symlinkSync(secret, join(dir, f))
+  expect(usage(dir).size).toBe(0)
+  expect(usageEvents(dir).size).toBe(0)
+  expect(resolvePath(dir, 'a/b.md')).toBe('a/b.md')
+  expect(readEvalCases(dir)).toEqual([])
+  rmSync(join(dir, '.usage.jsonl'))
+  expect(Bun.spawnSync(['mkfifo', join(dir, '.usage.jsonl')]).exitCode).toBe(0)
+  expect(usage(dir).size).toBe(0)
+  rmSync(join(dir, '.usage.jsonl'))
+  writeFileSync(join(dir, '.usage.jsonl'), '', { mode: 0 })
+  if (process.getuid?.() !== 0) expect(() => usage(dir)).toThrow(/EACCES/)
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('compact reads the logs strict: a link throws and the usage log stays', () => {
+  const { root, dir, secret } = linkStore()
+  const usageText = `${JSON.stringify({ path: 'topic/a.md', shown: 1, helped: 1, at: 1 })}\n`
+  writeFileSync(join(dir, '.usage.jsonl'), usageText)
+  symlinkSync(secret, join(dir, '.renames.jsonl'))
+  expect(() => compact(dir, {})).toThrow(/ELOOP/)
+  expect(readFileSync(join(dir, '.usage.jsonl'), 'utf8')).toBe(usageText)
+  rmSync(join(dir, '.renames.jsonl'))
+  rmSync(join(dir, '.usage.jsonl'))
+  symlinkSync(secret, join(dir, '.usage.jsonl'))
+  expect(() => compact(dir, {})).toThrow(/ELOOP/)
+  rmSync(root, { recursive: true, force: true })
+})
