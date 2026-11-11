@@ -106,7 +106,7 @@ test('the AX fixtures ignore inherited worker and Beads settings', () => {
       'test',
       import.meta.filename,
       '-t',
-      '^the worker briefs once|^syncBeads recovers a real bd',
+      '^the worker briefs once|^the AX fixture clears inherited settings',
     ],
     {
       env: {
@@ -120,6 +120,11 @@ test('the AX fixtures ignore inherited worker and Beads settings', () => {
     },
   )
   expect(p.exitCode, p.stderr.toString()).toBe(0)
+})
+
+test('the AX fixture clears inherited settings before any test', () => {
+  for (const key of ['FACTORY_HARNESS', 'FACTORY_REPO', 'FACTORY_BEADS_REMOTE', 'BEADS_DIR'])
+    expect(process.env[key]).toBeUndefined()
 })
 
 test('the AX fixtures ignore inherited service tasks', () => {

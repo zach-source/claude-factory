@@ -7,6 +7,8 @@ The person's clients call this API: the console (the `mod` plugin), the factory 
 - HTTPS with mutual TLS on port 8444 of the `factory` Service. This port accepts only a client certificate from the person CA. A connection that completes the TLS handshake is the person (research R2).
 - `factory cert person` issues the certificate once. The person keeps it on the laptop in `~/.config/factory/`.
 - The server does not accept worker tokens on this port.
+- The dormant patrol API uses a separate identity and listener. See [the patrol ADR](../../../docs/architecture/adr-patrol-api-identity-lease.md).
+  Only tests construct that listener. It permits scoped metadata and remote leases. It denies worker mail and owner operations.
 - The laptop reaches the Service through the cluster gateway on the LAN. The client sets the server address in `FACTORY_SERVER`. When `FACTORY_SERVER` is not set, the CLI works on the local factory home as it does today. This is the way back (FR-016).
 
 ## Read endpoints
