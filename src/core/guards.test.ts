@@ -16,6 +16,7 @@ test('server Bash accepts only literal commands and safe paths', () => {
     mkdirSync(join(cwd, 'repo'))
     writeFileSync(join(cwd, 'source'), '')
     symlinkSync('/etc', join(cwd, 'link'))
+    symlinkSync('loop', join(cwd, 'loop'))
     const denied = [
       'printenv AX_AUTH_TOKEN',
       'bun x.ts',
@@ -36,6 +37,11 @@ test('server Bash accepts only literal commands and safe paths', () => {
       'factory queue repo',
       'factory queue ../x',
       'factory start',
+      'cat status',
+      'factory',
+      'factory start lifecycle',
+      'factory start lifecycle widget goal extra',
+      'factory start lifecycle@plan@extra widget',
       'factory queue',
       'factory status; cat k',
       'factory status > x',
@@ -104,6 +110,8 @@ test('server Bash accepts only literal commands and safe paths', () => {
     )
     expect(serverBashReason('factory status', '/', '/cli')).toBe(SECRET_PATH_REASON)
     expect(serverBashReason('factory status', 'relative', '/cli')).toBe(SECRET_PATH_REASON)
+    expect(serverBashReason('factory status', join(cwd, 'loop'), '/cli')).toBe(SECRET_PATH_REASON)
+    expect(serverBashReason('factory status', undefined, '/cli')).toBe(SECRET_PATH_REASON)
   } finally {
     rmQuiet(cwd, { recursive: true, force: true })
   }
