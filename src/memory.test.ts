@@ -2409,3 +2409,230 @@ test('bareValueFlag names the first value flag with no value (claude-factory-sva
   expect(bareValueFlag([], f)).toBeUndefined()
   expect(bareValueFlag(['--other', '--rig', 'a'], f)).toBeUndefined()
 })
+
+// claude-factory-u509: a rig declaration must be unique and canonical, or the note fails closed
+const U509_VEC = [1, 0]
+const u509Ranked = (text: string, rig?: string, path = 'ci/case.md') => {
+  const calls = { vec: 0, topic: 0, act: 0 }
+  const found = rank(
+    [parse(path, text)],
+    () => (calls.vec++, U509_VEC),
+    () => (calls.topic++, U509_VEC),
+    U509_VEC,
+    rig,
+    () => (calls.act++, 0),
+  )
+  return { found, calls }
+}
+
+test('u509 parse scope matrix', () => {
+  const rows: Record<string, string> = {
+    crlf: '---\r\nsummary: s\r\nrig: other\r\n---\r\nbody\r\n',
+    bom: '﻿---\nsummary: s\nrig: other\n---\nbody\n',
+    bomCrlf: '﻿---\r\nsummary: s\r\nrig: other\r\n---\r\nbody',
+    mixed: '---\nsummary: s\r\nrig: other\n---\r\nbody',
+    eof: '---\nsummary: s\nrig: other\n---',
+  }
+  for (const [name, text] of Object.entries(rows)) {
+    expect(parse('ci/a.md', text).rig, name).toBe('other')
+    expect(u509Ranked(text, 'acme').found, name).toHaveLength(0)
+    expect(u509Ranked(text, 'other').found, name).toHaveLength(1)
+  }
+  const bad: Record<string, string> = {
+    indented: '---\nsummary: s\n rig: other\n---\nbody',
+    capital: '---\nsummary: s\nRig: other\n---\nbody',
+    noHeader: 'plain note\nrig: other\n',
+    duplicate: '---\nsummary: s\nrig: other\nrig: acme\n---\nbody',
+  }
+  for (const [name, text] of Object.entries(bad)) expect(u509Ranked(text, 'acme').found, name).toHaveLength(0)
+  expect(u509Ranked('---\nsummary: s\nrig: acme\n---\nbody', 'acme').found).toHaveLength(1)
+  expect(u509Ranked('---\nsummary: s\nrig: other\n---\nbody', 'acme').found).toHaveLength(0)
+  expect(u509Ranked('---\nsummary: s\n---\nbody', 'acme').found).toHaveLength(1)
+  expect(u509Ranked('legacy plain note', 'acme').found).toHaveLength(1)
+})
+
+test('u509 ambiguous scope is closed', () => {
+  const bad: Record<string, string> = {
+    tab: '---\nsummary: s\n\trig: other\n---\nbody',
+    mixedCase: '---\nsummary: s\nRIG: other\n---\nbody',
+    spaceBeforeColon: '---\nsummary: s\nrig : other\n---\nbody',
+    equalDuplicates: '---\nsummary: s\nrig: acme\nrig: acme\n---\nbody',
+    reverseDuplicates: '---\nsummary: s\nrig: acme\nrig: other\n---\nbody',
+    mixedDuplicates: '---\nsummary: s\nrig: acme\n Rig: acme\n---\nbody',
+    empty: '---\nsummary: s\nrig:\n---\nbody',
+    whitespace: '---\nsummary: s\nrig:   \n---\nbody',
+    noClose: '---\nsummary: s\nrig: acme\nbody',
+    deepNoHeader: `${'pad\n'.repeat(100)}rig: acme\n`,
+    bareCr: '---\nrig: other\rrig: acme\n---\nbody',
+    lineSep: '---\nrig: other\u2028rig: acme\n---\nbody',
+    paraSep: '---\nrig: other\u2029rig: acme\n---\nbody',
+  }
+  for (const [name, text] of Object.entries(bad)) {
+    const sentinel = parse('ci/a.md', text).rig
+    expect(sentinel, name).toBeTruthy()
+    for (const rig of ['acme', 'other', undefined, sentinel]) {
+      const { found, calls } = u509Ranked(text, rig)
+      expect(found, `${name} ${rig}`).toHaveLength(0)
+      expect(calls, name).toEqual({ vec: 0, topic: 0, act: 0 })
+    }
+  }
+  expect(u509Ranked('---\nsummary: s\nrig: acme\n---\nrig: other\nRig: x', 'acme').found).toHaveLength(1)
+  expect(parse('a.md', '---\nsummary: s\nrig: acme\n---\nrig: other').rig).toBe('acme')
+})
+
+test('u509 legacy delimiter is an LF line, not CR, LS or PS', () => {
+  for (const sep of ['\r', ' ', ' '])
+    for (const d of ['---', '--- ', '---x', '----']) {
+      const text = `---\n---\nx${sep}${d}\nrig: other\n---\nbody`
+      expect(parse('ci/a.md', text).rig, JSON.stringify(text)).toBeTruthy()
+      for (const rig of ['acme', 'other', undefined, parse('ci/a.md', text).rig])
+        for (const path of ['ci/case.md', 'ci/README.md']) {
+          const { found, calls } = u509Ranked(text, rig, path)
+          expect(found, `${path} ${rig}`).toHaveLength(0)
+          expect(calls, `${path} ${rig}`).toEqual({ vec: 0, topic: 0, act: 0 })
+        }
+    }
+})
+
+test('u509 writer compatibility', () => {
+  const n = {
+    summary: 'sum',
+    rig: 'acme',
+    from: 'a/x, b/y',
+    at: '2026-01-01',
+    kind: 'fact' as const,
+    until: 'acme-abc1',
+    superseded: 'ci/old.md',
+    body: 'text\n## heading\nrig: other\nmore',
+  }
+  const p = parse('ci/a.md', format(n))
+  expect({ ...p, path: undefined }).toEqual({ ...n, path: undefined })
+  const shared = { summary: 'sh', body: '## h\nbody' }
+  const s = parse('ci/b.md', format(shared))
+  expect(s.rig).toBeUndefined()
+  expect(s.body).toBe(shared.body)
+  const entries = [
+    { id: 'aaaaaaaa', summary: 'one', rig: 'acme', body: '## inner\nx' },
+    { id: 'bbbbbbbb', summary: 'two', rig: 'other', body: 'y' },
+  ]
+  expect(parseLong(formatLong(entries)).map(e => [e.rig, e.body])).toEqual([
+    ['acme', '## inner\nx'],
+    ['other', 'y'],
+  ])
+})
+
+test('u509 empty header keeps shared scope and body isolation', () => {
+  const bom = '\uFEFF'
+  const shared: Record<string, string> = {
+    lf: '---\n---\nrig: other\n',
+    crlf: '---\r\n---\r\nrig: other\r\n',
+    bom: `${bom}---\n---\nrig: other\n`,
+    mixed: '---\r\n---\nrig: other\n',
+    eof: '---\n---',
+    laterDelimiter: '---\n---\nbody\n---\nrig: other\n---\n',
+    capital: '---\n---\nRig: other\n',
+    indented: '---\n---\n rig: other\n',
+    duplicate: '---\n---\nrig: other\nrig: acme\n',
+    bomCrlfDuplicate: `${bom}---\r\n---\r\nrig: other\r\nrig: acme\r\n`,
+  }
+  for (const [name, text] of Object.entries(shared)) {
+    expect(parse('ci/a.md', text).rig, name).toBeUndefined()
+    expect(u509Ranked(text, 'acme').found, name).toHaveLength(1)
+  }
+  expect(parse('ci/a.md', shared.lf ?? '').body).toBe('rig: other')
+})
+
+test('u509 empty header then a rig block closed by a later delimiter fails closed', () => {
+  const bom = '﻿'
+  const rows: Record<string, string> = {
+    lf: '---\n---\nrig: other\n---\nbody',
+    crlf: '---\r\n---\r\nrig: other\r\n---\r\nbody',
+    bom: `${bom}---\n---\nrig: other\n---\nbody`,
+    mixed: '---\r\n---\nrig: other\r\n---\nbody',
+    eof: '---\n---\nrig: other\n---',
+    capital: '---\n---\nRig: other\n---\nbody',
+    canonicalAcme: '---\n---\nrig: acme\n---\nbody',
+  }
+  const sentinel = parse('x.md', rows.lf ?? '').rig
+  for (const [name, text] of Object.entries(rows)) {
+    expect(parse('ci/a.md', text).rig, name).toBe(sentinel)
+    for (const rig of ['acme', 'other', undefined, sentinel])
+      expect(u509Ranked(text, rig).found, `${name} ${rig}`).toHaveLength(0)
+  }
+})
+
+// AC6: the empty header exception, across line ends and query rigs (rank; snapshot rows are in memory-snapshot.test.ts)
+test('u509 empty header exception matrix', () => {
+  let flip = 0
+  const ends: Record<string, (s: string) => string> = {
+    lf: s => s,
+    crlf: s => s.replace(/\n/g, '\r\n'),
+    mixed: s => s.replace(/\n/g, () => (flip++ % 2 ? '\r\n' : '\n')),
+    bomLf: s => `﻿${s}`,
+    bomCrlf: s => `﻿${s.replace(/\n/g, '\r\n')}`,
+  }
+  const denied: Record<string, string> = {
+    canonicalOther: '---\n---\nrig: other\n---\nbody',
+    canonicalAcme: '---\n---\nrig: acme\n---\nbody',
+    capital: '---\n---\nRig: other\n---\nbody',
+    indented: '---\n---\n rig: other\n---\nbody',
+    blank: '---\n---\nrig:\n---\nbody',
+    duplicate: '---\n---\nrig: other\nrig: acme\n---\nbody',
+    delimiterAtEof: '---\n---\nrig: other\n---',
+    delimiterNewline: '---\n---\nrig: other\n---\n',
+    spaceAfter: '---\n---\nrig: other\n--- \nbody',
+    dashX: '---\n---\nrig: other\n---x\nbody',
+    fourDashes: '---\n---\nrig: other\n----\nbody',
+  }
+  const shared: Record<string, string> = {
+    eofEmpty: '---\n---',
+    noDelimiter: '---\n---\nrig: other\n',
+    noDelimiterDup: '---\n---\nrig: other\nrig: acme\n',
+    afterDelimiter: '---\n---\nbody\n---\nrig: other\n---\n',
+    spaceBefore: '---\n---\nrig: other\n ---\nbody',
+  }
+  const sentinel = parse('x.md', denied.canonicalOther ?? '').rig
+  for (const [en, conv] of Object.entries(ends)) {
+    for (const [name, text] of Object.entries(denied)) {
+      const t = conv(text)
+      expect(parse('ci/a.md', t).rig, `${en} ${name}`).toBe(sentinel)
+      for (const rig of ['acme', 'other', undefined, sentinel]) {
+        for (const path of ['ci/case.md', 'ci/README.md']) {
+          const { found, calls } = u509Ranked(t, rig, path)
+          expect(found, `${en} ${name} ${rig} ${path}`).toHaveLength(0)
+          expect(calls, `${en} ${name} ${path}`).toEqual({ vec: 0, topic: 0, act: 0 })
+        }
+      }
+    }
+    for (const [name, text] of Object.entries(shared)) {
+      const t = conv(text)
+      expect(parse('ci/a.md', t).rig, `${en} ${name}`).toBeUndefined()
+      for (const rig of ['acme', 'other', undefined, sentinel])
+        for (const path of ['ci/case.md', 'ci/README.md'])
+          expect(u509Ranked(t, rig, path).found, `${en} ${name} ${rig} ${path}`).toHaveLength(1)
+    }
+    // populated header: body declarations never change scope; same result as a bare populated header
+    const bodies = [
+      'rig: other',
+      'rig: acme',
+      'Rig: other',
+      ' rig: other',
+      'rig:',
+      'rig: other\nrig: acme',
+      'x\n---\nrig: other\n---\ny',
+      '',
+    ]
+    for (const hdr of ['summary: s\nrig: acme', 'summary: s']) {
+      const scoped = hdr.includes('rig:')
+      for (const body of bodies) {
+        const t = conv(`---\n${hdr}\n---\n${body}`)
+        expect(parse('ci/a.md', t).rig, `${en} ${hdr} ${body}`).toBe(scoped ? 'acme' : undefined)
+        for (const rig of ['acme', 'other', undefined, sentinel])
+          for (const path of ['ci/case.md', 'ci/README.md']) {
+            const want = !scoped || rig === 'acme' || rig === undefined ? 1 : 0
+            expect(u509Ranked(t, rig, path).found, `${en} ${hdr} ${body} ${rig} ${path}`).toHaveLength(want)
+          }
+      }
+    }
+  }
+})
