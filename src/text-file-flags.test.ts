@@ -221,13 +221,15 @@ test('9ydy AC2/AC3: mail refuses a word that starts with --text-file=; a longer 
     ['--wake', '--text-file=/x/ok.md'],
     ['--wake', '--text-file='],
     ['hello', '--text-file=/x/ok.md'],
+    ['hello', '--text-file='],
+    ['--wake', 'hello', '--text-file=/x/ok.md'],
     ['--wake', 'hello', '--text-file='],
   ]) {
     const r = factory(['mail', 'r9', 'manager', ...rest], {}, wt)
     expect([rest, r.code]).toEqual([rest, 1])
     expect(r.err).toContain('usage: factory mail')
+    expect(events().filter(e => e.type === 'MAIL')).toHaveLength(0)
   }
-  expect(events().filter(e => e.type === 'MAIL')).toHaveLength(0)
   for (const t of ['x--text-file=y', 'use --text-file=y']) {
     expect(factory(['mail', 'r9', 'manager', t]).code).toBe(0)
     expect(events().at(-1).text).toBe(t)
