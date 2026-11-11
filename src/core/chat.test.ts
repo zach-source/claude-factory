@@ -352,7 +352,7 @@ test('approve: the core runs the exact command before the model, once', async ()
     return ok()
   })
   const ctx = ctxOf(m.chatModel, { PATH: '/bin', FACTORY_MAIN_CHAT: '1', FACTORY_ALLOW: 'x' }, r.chatRun)
-  const sent = await send(ctx, { id: 'c', text: 'yes', front: 'web', approve: 't2' })
+  const sent = await send(ctx, { id: 'c', text: 'yes', front: 'web', approve: 't2', command: ASK })
   expect(sent.code).toBe(0)
   expect(order).toEqual(['run', 'model'])
   expect(r.calls).toEqual([
@@ -365,7 +365,7 @@ test('approve: the core runs the exact command before the model, once', async ()
   expect(lines('c').at(-2)).toMatchObject({ text: 'yes', approve: 't2' })
   expect(shown('c').turns.at(-1)!.ran).toEqual({ id: 't2', command: ASK, code: 3, out: 'result' })
   expect(existsSync(join(marker(), 't2'))).toBe(true)
-  const again = await send(ctx, { id: 'c', text: 'yes', front: 'web', approve: 't2' })
+  const again = await send(ctx, { id: 'c', text: 'yes', front: 'web', approve: 't2', command: ASK })
   expect(again.err).toContain(REFUSED + 'the last manager turn has no ask t2')
   expect(r.calls).toHaveLength(1)
   await send(ctx, { id: 'c', text: 'next', front: 'web' })
@@ -395,8 +395,37 @@ test('approve: equal questions do not select another command', async () => {
     text: 'yes',
     front: 'web',
     approve: 't3',
+    command: M,
   })
   expect(r.calls.map(c => c.command)).toEqual([M])
+})
+
+test('approve: a command that changed after show, or no shown command, is refused', async () => {
+  const L = '/repo/bin/factory decide lifecycle-abc ship "' + 'a'.repeat(400) + '"'
+  const M = L.slice(0, -2) + 'b"'
+  expect(askOf(L)).toBe(askOf(M))
+  for (const shownText of [L, undefined]) {
+    seed('c', [mgr('s-1', askRow('t2', L))])
+    const seen = shownText
+    // a model turn replaces the stored command, with the same id and question
+    seed('c', [
+      mgr('s-1', { commands: [{ id: 't2', command: M }], asks: [{ id: 't2', question: askOf(L) }] }),
+    ])
+    const before = raw('c')
+    const m = fakeModel()
+    const r = fakeRun()
+    const sent = await send(ctxOf(m.chatModel, {}, r.chatRun), {
+      id: 'c',
+      text: 'yes',
+      front: 'web',
+      approve: 't2',
+      command: seen,
+    })
+    expect(sent.err).toContain(REFUSED + 'the command differs from the one shown')
+    expect([m.calls.length, r.calls.length]).toEqual([0, 0])
+    expect(raw('c')).toBe(before)
+    expect(existsSync(marker())).toBe(false)
+  }
 })
 
 test('approve: denied and allowed commands refuse approval', async () => {
@@ -413,6 +442,7 @@ test('approve: denied and allowed commands refuse approval', async () => {
       text: 'yes',
       front: 'web',
       approve: 't3',
+      command: command,
     })
     expect(sent.err).toContain(REFUSED + reason)
     expect([m.calls.length, r.calls.length]).toEqual([0, 0])
@@ -449,6 +479,7 @@ test('approve: bad ids are refused with no side effect', async () => {
       text: 'yes',
       front: 'web',
       approve,
+      command: ASK,
     })
     expect(sent.code).toBe(1)
     expect(sent.err).toContain(REFUSED)
@@ -461,8 +492,15 @@ test('approve: bad ids are refused with no side effect', async () => {
   const m = fakeModel()
   const r = fakeRun()
   expect(
-    (await send(ctxOf(m.chatModel, {}, r.chatRun), { id: 'n', text: 'yes', front: 'web', approve: 't2' }))
-      .code,
+    (
+      await send(ctxOf(m.chatModel, {}, r.chatRun), {
+        id: 'n',
+        text: 'yes',
+        front: 'web',
+        approve: 't2',
+        command: ASK,
+      })
+    ).code,
   ).toBe(1)
   expect([m.calls.length, r.calls.length]).toEqual([0, 0])
   expect(existsSync(join(home, 'conversations'))).toBe(false)
@@ -483,6 +521,7 @@ test('approve: malformed stored entries are refused', async () => {
       text: 'yes',
       front: 'web',
       approve: 't2',
+      command: ASK,
     })
     expect([sent.code, sent.err.startsWith(REFUSED)]).toEqual([1, true])
     expect([m.calls.length, r.calls.length]).toEqual([0, 0])
@@ -508,6 +547,7 @@ test('approve: a used marker and a failed marker directory refuse before the per
       text: 'yes',
       front: 'web',
       approve: 't2',
+      command: ASK,
     })
     expect(sent.err).toContain(REFUSED + reason)
     expect([m.calls.length, r.calls.length]).toEqual([0, 0])
@@ -527,13 +567,15 @@ test('approve: run and model errors retain the result and marker', async () => {
       return ok()
     })
     const ctx = ctxOf(m.chatModel, {}, r.chatRun)
-    await send(ctx, { id: fail, text: 'yes', front: 'web', approve: 't2' })
+    await send(ctx, { id: fail, text: 'yes', front: 'web', approve: 't2', command: ASK })
     const ran = shown(fail).turns.at(-1)!.ran
     expect(ran?.code).toBe(fail === 'run' ? 127 : 0)
     expect(ran?.out).toContain(fail === 'run' ? 'boom' : 'done')
     expect(m.calls).toHaveLength(1)
     expect(existsSync(join(marker(fail), 't2'))).toBe(true)
-    expect((await send(ctx, { id: fail, text: 'again', front: 'web', approve: 't2' })).code).toBe(1)
+    expect(
+      (await send(ctx, { id: fail, text: 'again', front: 'web', approve: 't2', command: ASK })).code,
+    ).toBe(1)
     expect(r.calls).toHaveLength(1)
   }
 })

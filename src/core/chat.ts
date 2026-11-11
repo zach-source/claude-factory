@@ -115,8 +115,8 @@ const append = (path: string, t: Turn) => {
 
 const isObj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object'
 
-/** the command that the person approves: the ask `id` of the last manager turn; throws a refusal */
-function approved(turns: Turn[], id: string): string {
+/** the command that the person approves: the ask `id` of the last manager turn, only if it equals the `shown` text that the person saw; throws a refusal */
+function approved(turns: Turn[], id: string, shown: string | undefined): string {
   if (!CONVERSATION.test(id)) throw new Error('the approval is refused: bad id')
   const last = turns.filter(t => t.who === 'manager').at(-1)
   if (!last) throw new Error('the approval is refused: the conversation has no manager turn')
@@ -126,6 +126,7 @@ function approved(turns: Turn[], id: string): string {
   const cmd = list(last.commands).find(e => e.id === id && typeof e.command === 'string')
   if (!cmd) throw new Error(`the approval is refused: the last manager turn has no command ${id}`)
   const command = cmd.command as string
+  if (shown !== command) throw new Error('the approval is refused: the command differs from the one shown')
   const v = check(command, 'manager')
   if (v.decision === 'deny') throw new Error('the approval is refused: the command is denied')
   if (v.decision === 'allow') throw new Error('the approval is refused: the command needs no approval')
@@ -136,7 +137,7 @@ function approved(turns: Turn[], id: string): string {
 
 export function send(
   ctx: Ctx,
-  a: { id: string; text: string; front: Front; approve?: string },
+  a: { id: string; text: string; front: Front; approve?: string; command?: string },
 ): Promise<RunResult> {
   return inProc(async print => {
     refuseWorker(ctx.env, 'chat', true)
@@ -144,7 +145,7 @@ export function send(
     const turn = async (): Promise<Turn> => {
       const turns = readTurns(path)
       const session = sessionOf(turns)
-      const command = a.approve === undefined ? undefined : approved(turns, a.approve)
+      const command = a.approve === undefined ? undefined : approved(turns, a.approve, a.command)
       mkdirSync(join(ctx.home, 'conversations'), { recursive: true })
       // ponytail: model code with the person certificate can approve through the client port.
       // Upgrade: sandbox or client-port rights (claude-factory-xrbpw, aya5.6).

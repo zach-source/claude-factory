@@ -198,6 +198,7 @@ describe('CATALOG', () => {
       ['text', 'text', true, undefined],
       ['front', 'enum', true, ['cli', 'web', 'claude-mod', 'herdr-mod']],
       ['approve', 'id', false, undefined],
+      ['command', 'text', false, undefined],
     ])
     expect(readBody(send, { id: 'c' }, { text: 'x', front: 'web', approve: 'toolu_01A' })).toMatchObject({
       approve: 'toolu_01A',
