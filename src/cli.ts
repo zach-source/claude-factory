@@ -8169,18 +8169,27 @@ async function tick(isPatrol = false) {
     release()
     // FACTORY_NO_KICK=1 (tests): a detached pass would recreate a removed home
     if (process.env.FACTORY_NO_KICK !== '1' && (rigs().length || runIds().length)) {
-      kickBeads() // claims keep their heartbeat while halted; dispatch checks for itself
-      if (!halted()) kickDream()
-      if (!halted()) kickWatch()
-      if (!halted()) kickSync()
-      kickDevenv()
-      kickConfigSync()
-      kickSelfUpdate()
-      kickGc()
-      kickGcWorktrees()
-      kickSweeps()
+      // a kick can throw (stamp EACCES or ENOSPC): log one line, so the later kicks still run
+      const safe = <T>(name: string, kick: () => T): T | undefined => {
+        try {
+          return kick()
+        } catch (e) {
+          console.error(`tick: ${name} failed: ${(e as Error).message}`)
+        }
+      }
+      safe('kickBeads', kickBeads) // claims keep their heartbeat while halted; dispatch checks for itself
+      if (!halted()) safe('kickDream', kickDream)
+      if (!halted()) safe('kickWatch', kickWatch)
+      if (!halted()) safe('kickSync', kickSync)
+      safe('kickDevenv', kickDevenv)
+      safe('kickConfigSync', kickConfigSync)
+      safe('kickSelfUpdate', kickSelfUpdate)
+      safe('kickGc', kickGc)
+      safe('kickGcWorktrees', kickGcWorktrees)
+      safe('kickSweeps', kickSweeps)
       // one wiki pass in each tick, so refresh and groom never race for wiki.lock; a halt gets refresh only
-      if (!kickWiki('refresh', 30) && !halted()) kickWiki('groom', 24 * 60)
+      if (!safe('kickWiki', () => kickWiki('refresh', 30)) && !halted())
+        safe('kickWiki', () => kickWiki('groom', 24 * 60))
     }
   }
 }
