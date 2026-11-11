@@ -518,6 +518,7 @@ const pem = (body: string) =>
   ['-----END RSA', 'PRIVATE KEY-----'].join(' ')
 const akia = 'AKIA' + 'Z'.repeat(16)
 const awsSecret = 'wJalrXUtnFEMI' + 'K7MDENGbPxRfiCY' + 'EXAMPLEKEY'
+const K = awsSecret + 'zq'
 const lead = (s: string) =>
   writePrompt([{ beads: [{ ...wb('a', 1, u(1)), comments: [s] }], prs: [] }], [], [])
 
@@ -537,11 +538,39 @@ test.each<[string, string, string]>([
   ['Basic after odd char', 'Authorization: Basic dXNlcjpw!cGFzc3dvcmQ=zzzzzz', 'cGFzc3dvcmQ'],
   ['URL password with raw @', 'dsn postgres://app:p@ssw0rdTail@db.internal:5432/x', 'ssw0rdTail'],
   ['glpat with dot tail', 'tok ' + ['glpat', 'abcdefghij0123456789xyz.01.tAiL12345'].join('-'), 'tAiL12345'],
+  ['URL token', 'git https://' + 'a'.repeat(24) + '@host/p', 'a'.repeat(24)],
+  ['AWS secret by name', 'aws_secret_access_key = ' + K, K],
+  [
+    'PGP block',
+    ['-----BEGIN PGP', 'PRIVATE KEY BLOCK-----'].join(' ') + '\nlQOYBF' + 'zqBodyTail123',
+    'zqBodyTail123',
+  ],
+  [
+    'PEM end only',
+    'MIIBOgIBAAJBAKj34' + 'zqTail\n' + ['-----END RSA', 'PRIVATE KEY-----'].join(' '),
+    'zqTail',
+  ],
+  ['empty URL user', 'redis://:' + 'zqPass' + 'word12@cache:6379', 'zqPassword12'],
+  ['gldt with dot tail', 'tok ' + ['gldt', 'abcdefghij0123456789xyz.01.tAiL12345'].join('-'), 'tAiL12345'],
+  ['empty URL user, raw @', 'redis://:' + 'zqP' + '@ss' + 'Tail@cache:6379', 'ssTail'],
 ])('AC6 mask %s', (_n, text, secret) => {
   const t = lead(text)
   expect(t).not.toContain(secret)
   expect(t).toContain('***')
   expect(scanPages([{ path: 'p.md', text: `---\nkind: topic\ntitle: T\n---\n${t}` }])).toEqual([])
+})
+
+test('9u12: mask returns in under 1 s on 1 MiB', () => {
+  const inputs = [
+    '://:a@'.repeat(174_763),
+    ('gldt-' + 'a.'.repeat(9) + ' ').repeat(43_690),
+    ['-----BEGIN PGP', 'PRIVATE KEY BLOCK'].join(' ').repeat(32_768),
+  ]
+  for (const s of inputs) {
+    const t = performance.now()
+    lead(s)
+    expect(performance.now() - t).toBeLessThan(1000)
+  }
 })
 
 test('AC6 mask leaves a URL with @ in the path', () => {
