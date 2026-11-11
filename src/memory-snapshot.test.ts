@@ -270,6 +270,9 @@ test('u509 snapshot scope matrix', () => {
     'shared.md': '---\nsummary: s\n---\nshared\n',
     'legacy.md': 'legacy shared note\n',
     'emptyHeader.md': '---\n---\nrig: other\n',
+    'emptyCapital.md': '---\n---\nRig: other\n',
+    'emptyIndented.md': '---\r\n---\r\n rig: other\r\n',
+    'emptyDup.md': `${bom}---\n---\nrig: other\nrig: acme\n`,
     'bodyRig.md': '---\nsummary: s\nrig: acme\n---\nrig: other\nRig: x\n',
   }
   const sentinel = parse('x.md', bad.indented ?? '').rig
@@ -303,6 +306,9 @@ test('u509 snapshot scope matrix', () => {
       'ci/shared.md',
       'ci/legacy.md',
       'ci/emptyHeader.md',
+      'ci/emptyCapital.md',
+      'ci/emptyIndented.md',
+      'ci/emptyDup.md',
     ])
     for (const f of readdirSync(join(x, 'ci')).map(f => `ci/${f}`)) expect(kept, `${rig} ${f}`).toContain(f)
     for (const f of kept) expect(readFileSync(join(x, f))).toEqual(readFileSync(join(dir, f)))

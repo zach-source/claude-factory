@@ -2513,6 +2513,10 @@ test('u509 empty header keeps shared scope and body isolation', () => {
     mixed: '---\r\n---\nrig: other\n',
     eof: '---\n---',
     laterDelimiter: '---\n---\nbody\n---\nrig: other\n---\n',
+    capital: '---\n---\nRig: other\n',
+    indented: '---\n---\n rig: other\n',
+    duplicate: '---\n---\nrig: other\nrig: acme\n',
+    bomCrlfDuplicate: `${bom}---\r\n---\r\nrig: other\r\nrig: acme\r\n`,
   }
   for (const [name, text] of Object.entries(shared)) {
     expect(parse('ci/a.md', text).rig, name).toBeUndefined()
