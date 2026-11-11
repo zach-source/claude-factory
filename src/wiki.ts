@@ -559,16 +559,17 @@ export function humanLines(blameBefore: string, after: string, factoryEmail: str
 }
 
 /**
- * Deleted pages by a person, from `git log --diff-filter=AD --no-renames --name-status --format=%x01%ae%x01%aI`.
+ * Deleted pages by a person, from `git log --topo-order --diff-filter=AD --no-renames --name-status --format=%x01%ae%x01%aI`.
  * A header is `\x01<email>\x01<date>` with a valid date; a bad header clears the author.
  * Only `A\t<path>` and `D\t<path>` lines count; every other line is ignored.
  * It keeps a path when its author is not the factory and it is a page path outside rigs/.
- * A path is a tombstone at its newest person delete, unless a person add is newer. A tie keeps the tombstone.
- * An add by the factory never lifts it. One entry per path.
+ * The log must list the newest commit first (`--topo-order`): log order decides, not author date, which a rebase or amend can change.
+ * A path is a tombstone when its newest person event is a delete; the tombstone date is that delete's date.
+ * An add or delete by the factory is ignored. One entry per path.
  */
 export function tombstones(log: string, factoryEmail: string) {
-  const del = new Map<string, { path: string; at: string }>()
-  const add = new Map<string, { path: string; at: string }>()
+  const seen = new Set<string>()
+  const out: { path: string; at: string }[] = []
   let at: string | undefined
   for (const l of log.split('\n')) {
     if (l.startsWith('\x01')) {
@@ -580,13 +581,11 @@ export function tombstones(log: string, factoryEmail: string) {
     if (!m || !at) continue
     const path = m[2]!
     if (!WIKI_PAGE_PATH.test(path) || path.split('/').includes('..') || path.startsWith('rigs/')) continue
-    const map = m[1] === 'D' ? del : add
-    const old = map.get(path)
-    if (!old || Date.parse(at) > Date.parse(old.at)) map.set(path, { path, at })
+    if (seen.has(path)) continue
+    seen.add(path)
+    if (m[1] === 'D') out.push({ path, at })
   }
-  return [...del.values()].filter(
-    d => !add.has(d.path) || Date.parse(add.get(d.path)!.at) <= Date.parse(d.at),
-  )
+  return out
 }
 
 /** One needs-person.md bullet. The reason goes through line() and is cut to 200 characters. */

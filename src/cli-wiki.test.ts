@@ -805,6 +805,43 @@ test('953a a person re-add lifts an older person delete; a factory re-add does n
   expect(Date.parse(t[0].at)).toBe(Date.parse('2026-11-01T10:00:00+00:00'))
 })
 
+test('953a commit order decides, not author date, in both directions', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const p = 'solutions/2026-11/p.md'
+  const q = 'solutions/2026-11/q.md'
+  const put = (...f: string[]) => {
+    mkdirSync(join(wiki(), 'solutions', '2026-11'), { recursive: true })
+    f.forEach(x => writeFileSync(join(wiki(), x), page('topic', x)))
+  }
+  const by = (msg: string, date: string) =>
+    git('-c', 'user.name=p', '-c', 'user.email=person@acme.example', 'commit', '-qm', msg, `--date=${date}`)
+  put(p, q)
+  git('add', p, q)
+  by('add both', '2026-11-05T10:00:00+00:00')
+  git('rm', '-q', p)
+  by('delete p, dated older than its add', '2026-11-01T10:00:00+00:00')
+  git('rm', '-q', q)
+  by('delete q', '2026-11-06T10:00:00+00:00')
+  put(q)
+  git('add', q)
+  by('add q back, dated older than its delete', '2026-11-02T10:00:00+00:00')
+  git('rm', '-q', q)
+  by('delete q again', '2026-11-07T10:00:00+00:00')
+  const r = 'solutions/2026-11/r.md'
+  put(p, q, r)
+  expect(commitPass('again').exitCode).toBe(0)
+  const files = git('ls-files').split('\n')
+  expect(files).toContain(r)
+  expect(files).not.toContain(p)
+  expect(files).not.toContain(q)
+  expect(
+    state()
+      .tombstones.map((x: { path: string }) => x.path)
+      .sort(),
+  ).toEqual([p, q])
+})
+
 test('5ezo a failed seed commit exits 1, sets no origin and calls no gh', () => {
   for (const args of [[], ['--remote', URL_]]) {
     setup()

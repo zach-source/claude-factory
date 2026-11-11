@@ -5627,6 +5627,7 @@ function wikiTombstones(dir: string) {
   if (wikiGit(dir, ['rev-parse', '--verify', '-q', 'HEAD']).code !== 0) return old
   const log = wikiGit(dir, [
     'log',
+    '--topo-order',
     '--diff-filter=AD',
     '--no-renames',
     '--name-status',

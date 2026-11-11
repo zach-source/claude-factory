@@ -51,11 +51,11 @@ test('humanLines treats an unknown author as a person and fails closed', () => {
 const H = (e: string, d: string) => `\x01${e}\x01${d}`
 test('tombstones keeps the page paths that a person deleted, with the newest date', () => {
   const log = [
-    H(P, '2026-11-01T10:00:00+00:00'),
-    'D\tsolutions/a.md',
     H(P, '2026-11-02T10:00:00+00:00'),
     'D\tsolutions/a.md',
     'D\tb.md',
+    H(P, '2026-11-01T10:00:00+00:00'),
+    'D\tsolutions/a.md',
     '',
     H(F, '2026-11-03T10:00:00+00:00'),
     'D\tfactory-gone.md',
@@ -80,7 +80,11 @@ test('tombstones keeps the page paths that a person deleted, with the newest dat
 const D1 = '2026-11-01T10:00:00+00:00'
 const A1 = '2026-11-02T10:00:00+00:00'
 const D2 = '2026-11-03T10:00:00+00:00'
-const ev = (...x: [string, string, string][]) => x.map(([e, d, l]) => `${H(e, d)}\n${l}`).join('\n')
+const ev = (...x: [string, string, string][]) =>
+  [...x]
+    .reverse()
+    .map(([e, d, l]) => `${H(e, d)}\n${l}`)
+    .join('\n')
 test('tombstones lifts an older person delete when a newer person add follows', () => {
   const rows: [string, string, { path: string; at: string }[]][] = [
     ['delete only', ev([P, D1, 'D\tb.md']), [{ path: 'b.md', at: D1 }]],
@@ -93,7 +97,17 @@ test('tombstones lifts an older person delete when a newer person add follows', 
       ev([P, D1, 'D\tb.md'], [P, A1, 'A\tb.md'], [P, D2, 'D\tb.md']),
       [{ path: 'b.md', at: D2 }],
     ],
-    ['tie keeps the delete', ev([P, D1, 'D\tb.md'], [P, D1, 'A\tb.md']), [{ path: 'b.md', at: D1 }]],
+    ['same date, log order decides', ev([P, D1, 'D\tb.md'], [P, D1, 'A\tb.md']), []],
+    [
+      'add dated older than the delete, later in order, lifts',
+      ev([P, A1, 'D\tb.md'], [P, D1, 'A\tb.md']),
+      [],
+    ],
+    [
+      'delete dated older than the add, later in order, stays',
+      ev([P, D2, 'A\tb.md'], [P, D1, 'D\tb.md']),
+      [{ path: 'b.md', at: D1 }],
+    ],
     ['bad header before an add', ev([P, D1, 'D\tb.md'], [P, 'junk', 'A\tb.md']), [{ path: 'b.md', at: D1 }]],
     [
       '4-field header before an add',
@@ -109,10 +123,10 @@ test('tombstones ignores every line outside the A and D grammar', () => {
   for (const l of ['b.md', 'M\tb.md', 'R100\ta.md\tb.md', 'D\t"q\\303.md"', 'D b.md', 'd\tb.md'])
     expect([l, tombstones(head + l, F)]).toEqual([l, []])
   expect(tombstones(`${head}D\tb.md`, F)).toEqual([{ path: 'b.md', at: D1 }])
-  const base = `${head}D\tb.md\n${H(P, A1)}\n`
+  const tail = `\n${head}D\tb.md`
   for (const l of ['M\tb.md', 'a\tb.md', 'A b.md', 'b.md'])
-    expect([l, tombstones(base + l, F)]).toEqual([l, [{ path: 'b.md', at: D1 }]])
-  expect(tombstones(`${base}A\tb.md`, F)).toEqual([])
+    expect([l, tombstones(`${H(P, A1)}\n${l}${tail}`, F)]).toEqual([l, [{ path: 'b.md', at: D1 }]])
+  expect(tombstones(`${H(P, A1)}\nA\tb.md${tail}`, F)).toEqual([])
 })
 
 test('flagLine masks a token and keeps one line of at most 200 characters', () => {
