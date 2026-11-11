@@ -1293,13 +1293,32 @@ function commentContinues(cmd: string): boolean {
 /** The length of the command text that an Allow question shows. */
 const CUT = 300
 
-/** The command as an Allow question shows it: the first 300 characters, then how many it hides, so the
- * person sees that a longer command may hold a second command. */
-function shownCommand(command: string): string {
-  const head = cutText(command, CUT)
-  return head.length === command.length
-    ? command
-    : `${head}… (${command.length - head.length} of ${command.length} characters not shown)`
+/** Select complete display tokens. The end offset uses source UTF-16 units. */
+function commandPreview(command: string, limit: number) {
+  let text = ''
+  let end = 0
+  let spaces = false
+  while (end < command.length) {
+    const point = command.codePointAt(end)!
+    let source = String.fromCodePoint(point)
+    let token = source
+    if (point === 32 && command[end + 1] === ' ') {
+      let to = end + 2
+      while (command[to] === ' ') to++
+      source = command.slice(end, to)
+      token = `\\x20{${source.length}}`
+    } else if (point === 9) token = '\\t'
+    else if (point === 10) token = '\\n'
+    else if (point === 13) token = '\\r'
+    else if (point < 32 || point === 127) token = `\\x${point.toString(16).padStart(2, '0')}`
+    else if ((point >= 0x202a && point <= 0x202e) || (point >= 0x2066 && point <= 0x2069))
+      token = `\\u${point.toString(16)}`
+    if (text.length + token.length > limit) break
+    text += token
+    end += source.length
+    if (point === 32 && source.length > 1) spaces = true
+  }
+  return { text, end, spaces }
 }
 
 /** which Bash commands the manager model may not run without the person's explicit Allow: a gate decision,
@@ -1316,6 +1335,21 @@ export function gatedCommand(
   // claude-factory-0jr2.6: a comment line that ends in a backslash. Ask with the raw text, and match the kinds on the full join.
   const unreadable = commentContinues(rawCommand)
   const command = unreadable ? rawCommand.replace(/\\\n/g, '') : joinLines(rawCommand)
+  const headSource = unreadable ? rawCommand : command
+  const head = commandPreview(headSource, CUT)
+  const shownCommand =
+    head.end === headSource.length
+      ? head.text
+      : `${head.text}… (${headSource.length - head.end} of ${headSource.length} characters not shown)`
+  let rawHeadEnd = head.end
+  if (!unreadable) {
+    // Map the joined head back to raw source before the window counts later hits.
+    for (const match of rawCommand.matchAll(/(?<!\\)((?:\\\\)*)\\\n/g)) {
+      if (match.index + match[1]!.length >= rawHeadEnd) break
+      rawHeadEnd += 2
+    }
+  }
+  let spaceNotation = head.spaces
   // `factory` as a command word (`factory`, `bin/factory`), not a part of a path such as `acme-factory/x`
   const baseTexts = unreadable
     ? [rawCommand.replace(/\\\n/g, '\n'), rawCommand.replace(/\\\n/g, '')]
@@ -1327,14 +1361,16 @@ export function gatedCommand(
   const verbHidden = baseTexts.some(t => VERB_HIDDEN.test(t))
   let substitution: { phrase: string; deny: string; detail: string } | undefined
   if (at >= 0) {
-    // the head stops at 300 characters, so show the text around the first hit too. Do not split a surrogate pair at either edge.
+    // Show 40 source units on each side of the first hit. Keep surrogate pairs whole.
     let from = Math.max(0, at - 40)
     if (from > 0 && /[\uDC00-\uDFFF]/.test(rawCommand[from] ?? '')) from--
     let to = at + 40
     if (to < rawCommand.length && /[\uD800-\uDBFF]/.test(rawCommand[to - 1] ?? '')) to--
-    const around = `${from > 0 ? '…' : ''}${rawCommand.slice(from, to)}${to < rawCommand.length ? '…' : ''}`
+    const window = commandPreview(rawCommand.slice(from, to), 492)
+    spaceNotation ||= window.spaces
+    const around = `${from > 0 ? '…' : ''}${window.text}${to < rawCommand.length ? '…' : ''}`
     // a harmless first hit must not hide a later one: count the candidates after the head and the window (no quote state, so it over-counts)
-    const more = (rawCommand.slice(Math.max(to, 300)).match(/[$`(]/g) ?? []).length
+    const more = (rawCommand.slice(Math.max(to, rawHeadEnd)).match(/[$`(]/g) ?? []).length
     const unseen =
       more > 0
         ? ` ${more} more dollar signs, backticks or parentheses come after this text and are not shown.`
@@ -1354,10 +1390,10 @@ export function gatedCommand(
   )
     .map(f => {
       const text = f(rawCommand)
-      // the cut is in the coordinates of the text that shownCommand cuts: the joined text, or the raw text of an unreadable form
+      // Map the displayed source extent into each alternate read.
       return {
         text,
-        cut: unreadable ? f(cutText(rawCommand, CUT).replace(/\\$/, '')).length : cutText(text, CUT).length,
+        cut: unreadable ? f(rawCommand.slice(0, head.end).replace(/\\$/, '')).length : head.end,
         canonical: false,
       }
     })
@@ -1394,7 +1430,7 @@ export function gatedCommand(
     // a kind found on a base read asks. One found only on the canonical read asks only if nothing else is wrong.
     ask: kinds.some(k => k.base) || (kinds.length > 0 && !substitution && !verbHidden && !unreadable),
     kinds: kinds.map(k => k.id),
-    question: `The manager model wants to ${names.join(' and ')}: ${shownCommand(unreadable ? rawCommand : command)}.${substitution ? ` ${substitution.detail}` : ''}${hidden.length ? ` The text not shown holds: ${hidden.map(k => `${k.phrase}${times(k.hidden)}`).join(' and ')}.` : ''} Allow it?`,
+    question: `The manager model wants to ${names.join(' and ')}: ${shownCommand}.${substitution ? ` ${substitution.detail}` : ''}${hidden.length ? ` The text not shown holds: ${hidden.map(k => `${k.phrase}${times(k.hidden)}`).join(' and ')}.` : ''}${spaceNotation ? ' In this preview, \\x20{N} means N ASCII spaces.' : ''} Allow it?`,
     deny: [
       ...(unreadable
         ? [

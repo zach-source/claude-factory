@@ -162,6 +162,15 @@ export const OUTBOX_USAGE = {
   helped: 'usage: factory memory helped --from run/station <note path...>',
 }
 
+/** Read one literal text value after a structural boundary. Undefined means legacy args; null means malformed args. */
+export function literalText(cmd: string, args: string[]): { text: string; wake?: true } | null | undefined {
+  const at = cmd === 'report' ? 3 : cmd === 'mail' ? (args[2] === '--wake' ? 3 : 2) : -1
+  if (at < 0 || args[at] !== '--') return undefined
+  const text = args[at + 1]
+  if (args.length !== at + 2 || typeof text !== 'string' || !text.trim()) return null
+  return { text, ...(cmd === 'mail' && at === 3 ? { wake: true as const } : {}) }
+}
+
 /**
  * whether `factory report|mail|memory add`'s own args, inside a VM, ask for help, are malformed, or are fine
  * to queue: 'help' when `--help`/`-h` sits in a positional slot (report's run/seq/outcome, mail's run/node,
@@ -173,12 +182,14 @@ export function outboxUsage(cmd: string, args: string[]): 'help' | string | null
   const helpAt = (slots: (string | undefined)[]) => slots.some(a => a === '--help' || a === '-h')
   if (cmd === 'report') {
     if (helpAt(args.slice(0, 3))) return 'help'
+    if (literalText(cmd, args) === null) return OUTBOX_USAGE.report
     if (args.length < 3 || !/^\d+$/.test(args[1] ?? '') || (args[2] ?? '').startsWith('-'))
       return OUTBOX_USAGE.report
     return null
   }
   if (cmd === 'mail') {
     if (helpAt(args.slice(0, 2))) return 'help'
+    if (literalText(cmd, args) === null) return OUTBOX_USAGE.mail
     if (args.length < 2) return OUTBOX_USAGE.mail
     return null
   }

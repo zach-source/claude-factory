@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { REAP_FAILED } from './reap'
@@ -67,3 +67,52 @@ test.skipIf(!linux)('the reaper runs a command with no children and passes stdio
   expect(await run('exit 0')).toEqual({ out: '', err: '', code: 0 })
   expect((await run('printf hi')).out).toBe('hi')
 })
+
+const ORPHANS = 1500
+const MAX_ZOMBIES = 600
+
+/** the number of zombie children of ppid; counts only, never a process list */
+const zombieCount = (ppid: number) => {
+  let n = 0
+  for (const e of readdirSync('/proc'))
+    if (/^\d+$/.test(e))
+      try {
+        const s = readFileSync(`/proc/${e}/stat`, 'utf8')
+        const [state, pp] = s.slice(s.lastIndexOf(')') + 2).split(' ')
+        if (state === 'Z' && pp === String(ppid)) n++
+      } catch {}
+  return n
+}
+
+test.skipIf(!linux)(
+  'dead adopted children are waited for while the main command lives',
+  async () => {
+    const script = `for i in $(seq ${ORPHANS / 100}); do for j in $(seq 100); do (true &); done; sleep 0.3; done; sleep 1; exit 5`
+    const p = Bun.spawn([process.execPath, reap, 'sh', '-c', script], { stdout: 'pipe', stderr: 'pipe' })
+    let ended = false
+    let max = 0
+    let alive = 0
+    const t = setInterval(() => {
+      const n = zombieCount(p.pid)
+      if (ended) return
+      alive++
+      max = Math.max(max, n)
+    }, 50)
+    void p.exited.then(() => (ended = true))
+    try {
+      const code = await p.exited
+      clearInterval(t)
+      console.log(`zombie max ${max}, alive samples ${alive}`)
+      expect({ ok: max <= MAX_ZOMBIES && alive >= 10, code, max, alive }).toEqual({
+        ok: true,
+        code: 5,
+        max,
+        alive,
+      })
+    } finally {
+      clearInterval(t)
+      p.kill('SIGKILL')
+    }
+  },
+  60_000,
+)
