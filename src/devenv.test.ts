@@ -123,7 +123,7 @@ test('cacheProposal copies by hand when it cannot be sure of the rule', () => {
     tpl({ env: { FACTORY_NIX_CACHE: "https://cache.example:8443/d it's=" } }),
     tpl({ env: { FACTORY_NIX_CACHE: `https://cache.example:8443/d ghp_${'a'.repeat(36)}` } }),
     tpl({ env: { FACTORY_NIX_CACHE: 'https://u:p@cache.example/d key=' } }),
-    tpl({ env: { FACTORY_NIX_CACHE: 'https://:p@cache.example/d key=' } }), // a password only: no SECRETS shape
+    tpl({ env: { FACTORY_NIX_CACHE: 'https://:p@cache.example/d key=' } }), // a password only: SECRETS matches it too
   ]
   for (const t of cases) expect(proposal([t, cand()]).lines).toEqual([COPY])
   // the candidate has the host in upper case
