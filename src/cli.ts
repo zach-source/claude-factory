@@ -177,7 +177,7 @@ import {
   type TickOut,
   type Io,
 } from './once'
-import { guardHook } from './core/chat'
+import { guardHook, runApproved } from './core/chat'
 import { check } from './core/guards'
 import { REPAIR_CAP, closableParents, conflictProbes, heldBeads, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
@@ -829,16 +829,16 @@ export function replayable(
  * `report <run> <seq> <outcome> --summary-file <path>` -> [run, seq, outcome, <file text>]; any other args pass
  * unchanged. The flag counts only right after the outcome, with exactly one path and a non-blank file. The path must
  * sit inside the text roots (see textFilePath). A bad form
- * throws. A whole word `--summary-file` in a later slot also throws: it would post the flag as text and lose the
- * report. A literal boundary skips the file parse. A VM expands it before it queues, so the laptop never reads a
- * path a VM chose (see `replayable`)
+ * throws. A whole word `--summary-file` or one that starts with `--summary-file=` in a later slot also throws: it
+ * would post the flag as text and lose the report. A literal boundary skips the file parse. A VM expands it before
+ * it queues, so the laptop never reads a path a VM chose (see `replayable`)
  */
 export function summaryArgs(args: string[]): string[] {
   const literal = worker.literalText('report', args)
   if (literal === null) return fail(worker.OUTBOX_USAGE.report)
   if (literal) return [...args.slice(0, 3), literal.text]
   if (args[3] !== '--summary-file') {
-    if (args.slice(3).includes('--summary-file'))
+    if (args.slice(3).some(a => a === '--summary-file' || a.startsWith('--summary-file=')))
       return fail(
         'usage: factory report <run> <seq> <outcome> --summary-file <path> (the flag must follow the outcome)',
       )
@@ -903,7 +903,7 @@ export function fileArgs(cmd: string, args: string[], exact = true): string[] {
     if (literal) return args
     const at = args[2] === '--wake' ? 3 : 2
     if (args[at] !== '--text-file') {
-      if (args.slice(at).includes('--text-file'))
+      if (args.slice(at).some(a => a === '--text-file' || a.startsWith('--text-file=')))
         return fail('usage: factory mail <run> <box> [--wake] --text-file <path> (the flag must come first)')
       return args
     }
@@ -13726,6 +13726,7 @@ export const corePort: Port = {
   screen: screenRun,
   mail: mailRun,
   chatModel: runModelAsync,
+  chatRun: runApproved,
 }
 const cliCtx = (): OpCtx => ({
   home: HOME,

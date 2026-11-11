@@ -61,6 +61,12 @@ export type Port = {
   screen: (id: string | undefined) => Promise<string>
   /** one async manager chat model call (src/once.ts runModelAsync); a fake in tests */
   chatModel: (c: ModelCall) => Promise<ModelResult>
+  chatRun: (c: {
+    command: string
+    cwd: string
+    env: Env
+    timeoutMs: number
+  }) => Promise<{ code: number; out: string }>
   mail: (
     m: { id: string | undefined; to: string | undefined; text: string; wake: boolean },
     who: { env: Env; cwd: string },
@@ -498,10 +504,29 @@ export const CATALOG: Op[] = makeCatalog([
           f('id', 'id', true, 'the conversation id'),
           f('text', 'text', true, 'the message to the manager'),
           f('front', 'enum', true, 'the front end that sends', ['cli', 'web', 'claude-mod', 'herdr-mod']),
+          f(
+            'approve',
+            'id',
+            false,
+            'a tool_use id from the asks of the last manager turn: the core runs that command one time before the next turn',
+          ),
+          f(
+            'command',
+            'text',
+            false,
+            'with approve: the exact command text that the person saw; the core refuses if the stored command differs',
+          ),
         ],
       },
       'json',
-      (c, i) => chat.send(c, { id: i.id as string, text: i.text as string, front: i.front as chat.Front }),
+      (c, i) =>
+        chat.send(c, {
+          id: i.id as string,
+          text: i.text as string,
+          front: i.front as chat.Front,
+          approve: i.approve as string | undefined,
+          command: i.command as string | undefined,
+        }),
     ),
     long: true,
   },

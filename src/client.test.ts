@@ -556,6 +556,28 @@ test('teyn1 AC1 file text stays literal through the real CLI', async () => {
   }
 })
 
+test('9ydy equals-form --text-file refuses in server mode, longer words stay text', async () => {
+  const rows = [
+    ['r1', 'manager', '--text-file=/x/ok.md'],
+    ['r1', 'manager', '--text-file='],
+    ['r1', 'manager', 'hello', '--text-file=/x/ok.md'],
+    ['r1', 'manager', 'hello', '--text-file='],
+    ['r1', 'manager', '--wake', '--text-file=/x/ok.md'],
+    ['r1', 'manager', '--wake', '--text-file='],
+    ['r1', 'manager', '--wake', 'hello', '--text-file=/x/ok.md'],
+    ['r1', 'manager', '--wake', 'hello', '--text-file='],
+  ]
+  const th = textHome('valid.txt', 'valid')
+  for (const args of rows) {
+    expect(typeof route('mail', args, () => ['r1', 'manager', 'x'])).toBe('string')
+    hits.length = 0
+    const m = await cli(['mail', ...args], { FACTORY_SERVER: url(), FACTORY_HOME: th.home })
+    expect(m.code).toBe(1)
+    expect(hits).toHaveLength(0)
+  }
+  expect(typeof route('mail', ['r1', 'manager', 'x--text-file=y'])).toBe('object')
+})
+
 test('teyn1 AC2 invalid file forms fail before transport', async () => {
   const th = textHome('valid.txt', 'valid')
   const rows = [
