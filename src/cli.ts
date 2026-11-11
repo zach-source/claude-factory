@@ -9188,6 +9188,8 @@ function refusePatrolDiscovered(b: ReturnType<typeof beads>, x: Bead) {
       // next stays null: refused below
     }
     if (!next) return no(`has a parent ${p} the patrol cannot read`)
+    if (seen.size === 1 && (next.labels?.some(isHoldLabel) || isOwned(next)))
+      no(`has a parent ${p} with a hold`)
     cur = next
   }
 }
@@ -10466,7 +10468,13 @@ function rigFacts(
   const candidates = linear.rigs.has(rig.name)
     ? []
     : dispatchable(ready, linked, Infinity, byId(every))
-        .filter(x => !isOwned(x) && !openChildrenOf(x.id).length && !linear.ids.has(x.id))
+        .filter(
+          x =>
+            !isOwned(x) &&
+            !x.labels?.some(isHoldLabel) &&
+            !openChildrenOf(x.id).length &&
+            !linear.ids.has(x.id),
+        )
         .slice(0, 40)
         .map(c => ({
           id: c.id,
