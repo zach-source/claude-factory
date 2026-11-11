@@ -157,6 +157,35 @@ test('migrated rigs gain an https remote from origin, keep repo, and name a rig 
   expect(migratedRigs([{ name: 'beta', repo: '/home/u/repos/beta' }], origin).error).toContain('rig beta')
 })
 
+test('migrated rigs never carry a user or password, and a remote of a bad shape stops the move', () => {
+  const clean = 'https://github.com/acme/widget.git'
+  const beta = { name: 'beta', repo: '/home/u/repos/beta' }
+  const m = migratedRigs([beta], () => 'https://user:zqsecret@github.com/acme/widget.git')
+  expect(m.rigs).toEqual([{ ...beta, remote: clean }])
+  expect(m.error).toBeUndefined()
+  expect(JSON.stringify(m)).not.toContain('zqsecret')
+  const own = migratedRigs(
+    [{ name: 'beta', repo: '/r', remote: 'https://zqsecret@github.com/acme/widget.git' }],
+    () => undefined,
+  )
+  expect(own.rigs[0]!.remote).toBe(clean)
+  const slash = migratedRigs([beta], () => 'https:///user:zqsecret@github.com/acme/widget.git')
+  expect(slash.rigs).toEqual([{ ...beta, remote: clean }])
+  for (const o of ['https://github.com\\@evil.example/x', 'git@u:tok@github.com/acme/widget']) {
+    const e = migratedRigs([beta], () => o)
+    expect('remote' in e.rigs[0]!).toBe(false)
+    expect(e.error).toBe('rig beta: the remote is refused: it carries a user or password')
+  }
+  const bad = migratedRigs([beta], () => '--upload-pack=x')
+  expect('remote' in bad.rigs[0]!).toBe(false)
+  expect(bad.error).toBe('rig beta: the remote is refused: it must be an https:// or git@ URL')
+  const gamma = { name: 'gamma', repo: '/home/u/repos/gamma' }
+  const both = migratedRigs([beta, gamma], r => (r.endsWith('gamma') ? '/srv/gamma' : undefined))
+  expect(both.error).toBe(
+    'no origin remote for rig beta (/home/u/repos/beta): add one or set "remote"\nrig gamma: the remote is refused: it must be an https:// or git@ URL',
+  )
+})
+
 test('the host waits on an empty home for the marker, and starts on a marker, a fresh flag, or a hand-made home', () => {
   const f = { migrated: false, fresh: false, hasRigs: false, archive: false }
   expect(homeReady(f)).toBe(false)

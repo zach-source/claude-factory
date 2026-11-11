@@ -36,6 +36,15 @@ export const isLaptopPane = (inVm: boolean, pane: string | null | undefined) =>
 /** an https remote a VM can clone: the egress gateway puts GitHub's credential in, and the VM has no ssh key */
 export const httpsRemote = (url: string) => url.replace(/^(?:ssh:\/\/)?git@([^:/]+)[:/]/, 'https://$1/')
 
+/** claude-factory-v8iw: why a rig remote (after httpsRemote) must not go to git, else undefined. The reason never holds the URL */
+export function remoteRefusal(url: string): string | undefined {
+  if (!/^https:\/\/[\x21-\x7e]+$/.test(url) || !URL.canParse(url)) return 'it must be an https:// or git@ URL'
+  if (/[@\\]/.test(url)) return 'it carries a user or password'
+}
+
+/** an https URL with no user or password: the egress gateway puts the credential in */
+export const noUserinfo = (url: string) => url.replace(/^https:\/\/+[^/?#\\]*@/, 'https://')
+
 export const reposRoot = (env: Env = process.env) => env.FACTORY_REPOS ?? '/workspace/w/repos'
 
 /** where a rig's repo is in the task */
@@ -134,7 +143,16 @@ export function planRepoSync(
     if (exists(join(path, '.git'))) return { rig: r.name, path, do: 'fetch' }
     if (!r.remote)
       return { rig: r.name, path, do: 'missing', why: `rig ${r.name} has no "remote" in rigs.json` }
-    return { rig: r.name, path, do: 'clone', url: httpsRemote(r.remote) }
+    const url = httpsRemote(r.remote)
+    const why = remoteRefusal(url)
+    if (why)
+      return {
+        rig: r.name,
+        path,
+        do: 'missing',
+        why: `rig ${r.name}: the "remote" in rigs.json is refused: ${why}`,
+      }
+    return { rig: r.name, path, do: 'clone', url }
   })
 }
 
@@ -158,7 +176,7 @@ export function syncRepos(rigs: RigLike[], home: string, env: Env = process.env)
     mkdirSync(reposRoot(env), { recursive: true })
     const p =
       step.do === 'clone'
-        ? run(['git', 'clone', '-q', step.url, step.path])
+        ? run(['git', 'clone', '-q', '--', step.url, step.path])
         : run(['git', 'fetch', '-q', 'origin'], step.path)
     if (p.exitCode !== 0) {
       problems.push(`${step.rig}: git ${step.do}: ${errLine(p)}`)
