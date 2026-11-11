@@ -169,6 +169,13 @@ test('migrated rigs never carry a user or password, and a remote of a bad shape 
     () => undefined,
   )
   expect(own.rigs[0]!.remote).toBe(clean)
+  const slash = migratedRigs([beta], () => 'https:///user:zqsecret@github.com/acme/widget.git')
+  expect(slash.rigs).toEqual([{ ...beta, remote: clean }])
+  for (const o of ['https://github.com\\@evil.example/x', 'git@u:tok@github.com/acme/widget']) {
+    const e = migratedRigs([beta], () => o)
+    expect('remote' in e.rigs[0]!).toBe(false)
+    expect(e.error).toBe('rig beta: the remote is refused: it carries a user or password')
+  }
   const bad = migratedRigs([beta], () => '--upload-pack=x')
   expect('remote' in bad.rigs[0]!).toBe(false)
   expect(bad.error).toBe('rig beta: the remote is refused: it must be an https:// or git@ URL')

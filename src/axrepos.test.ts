@@ -13,7 +13,7 @@ import {
   planRepoSync,
   syncRepos,
 } from './axrepos'
-import { bootstrapBeads } from './worker'
+import { bootstrapBeads, clone } from './worker'
 
 const AX = { FACTORY_IN_AX: '1' }
 const URL = 'https://github.com/acme/widget.git'
@@ -270,6 +270,10 @@ test('remoteRefusal: only https (git@ maps to it) with no user or password goes 
       'https://zqsecret@github.com/acme/widget.git',
       'https://@github.com/acme/widget.git',
       'https://github.com@evil.example/acme/widget.git',
+      'https:///user:zqsecret@github.com/acme/widget.git',
+      'https:////user:zqsecret@github.com/acme/widget.git',
+      'https://github.com\\@evil.example/x',
+      'git@u:tok@github.com/acme/widget',
     ].map((u): [string, unknown] => [u, refused(USER)]),
   ]
   for (const [remote, want] of rows) {
@@ -334,4 +338,32 @@ test('bootstrapBeads gives git -- before the origin in ls-remote and remote add'
   const lines = readFileSync(log, 'utf8').split('\n')
   expect(lines).toContain(`ls-remote -- ${URL} refs/dolt/data`)
   expect(lines).toContain(`remote add -- origin ${URL}`)
+})
+
+test('clone gives git -- before FACTORY_REPO in both clone calls', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'axrepos-clone-'))
+  const fake = join(root, 'bin')
+  const log = join(root, 'git.log')
+  mkdirSync(fake, { recursive: true })
+  writeFileSync(
+    join(fake, 'git'),
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\necho 'Remote branch main not found in upstream origin' >&2\nexit 1\n`,
+    { mode: 0o755 },
+  )
+  const keys = ['FACTORY_REPO', 'FACTORY_BRANCH', 'FACTORY_WORKER_DIR', 'FACTORY_WORKER_REPO', 'PATH']
+  const saved = keys.map(k => process.env[k])
+  process.env.FACTORY_REPO = URL
+  process.env.FACTORY_BRANCH = 'main'
+  process.env.FACTORY_WORKER_DIR = join(root, 'own')
+  process.env.FACTORY_WORKER_REPO = join(root, 'repo')
+  process.env.PATH = `${fake}:${process.env.PATH}`
+  mkdirSync(process.env.FACTORY_WORKER_DIR, { recursive: true })
+  try {
+    await clone({ tries: 1, waitMs: 0 }).catch(() => undefined)
+  } finally {
+    keys.forEach((k, i) => (saved[i] === undefined ? delete process.env[k] : (process.env[k] = saved[i])))
+  }
+  const lines = readFileSync(log, 'utf8').split('\n')
+  expect(lines.some(l => l.startsWith(`clone --branch main -- ${URL} `))).toBe(true)
+  expect(lines.some(l => l.startsWith(`clone -- ${URL} `))).toBe(true)
 })

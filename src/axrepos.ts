@@ -39,11 +39,12 @@ export const httpsRemote = (url: string) => url.replace(/^(?:ssh:\/\/)?git@([^:/
 /** claude-factory-v8iw: why a rig remote (after httpsRemote) must not go to git, else undefined. The reason never holds the URL */
 export function remoteRefusal(url: string): string | undefined {
   if (!/^https:\/\/[\x21-\x7e]+$/.test(url) || !URL.canParse(url)) return 'it must be an https:// or git@ URL'
-  if (/^https:\/\/[^/?#]*@/.test(url)) return 'it carries a user or password'
+  const u = new URL(url)
+  if (u.username || u.password || /[@\\]/.test(url)) return 'it carries a user or password'
 }
 
 /** an https URL with no user or password: the egress gateway puts the credential in */
-export const noUserinfo = (url: string) => url.replace(/^https:\/\/[^/?#]*@/, 'https://')
+export const noUserinfo = (url: string) => url.replace(/^https:\/\/+[^/?#\\]*@/, 'https://')
 
 export const reposRoot = (env: Env = process.env) => env.FACTORY_REPOS ?? '/workspace/w/repos'
 

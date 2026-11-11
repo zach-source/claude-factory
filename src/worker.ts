@@ -1313,7 +1313,7 @@ export async function setup(o: { tries?: number; waitMs?: number } = {}) {
 }
 
 /** clone the run branch once; a note for the brief when origin has lost it */
-async function clone({ tries = 60, waitMs = 5000 } = {}) {
+export async function clone({ tries = 60, waitMs = 5000 } = {}) {
   const remote = process.env.FACTORY_REPO
   const noteFile = join(own(), 'missing-branch-note')
   if (!remote) return ''
@@ -1327,7 +1327,7 @@ async function clone({ tries = 60, waitMs = 5000 } = {}) {
     const tmp = repo() + '.tmp'
     rmSafe(repo(), { recursive: true, force: true })
     rmSafe(tmp, { recursive: true, force: true })
-    const r = sh(['git', 'clone', '--branch', branch, remote, tmp])
+    const r = sh(['git', 'clone', '--branch', branch, '--', remote, tmp])
     if (r.ok) {
       excludeScratch(tmp)
       writePrivatePatterns(tmp)
@@ -1338,7 +1338,7 @@ async function clone({ tries = 60, waitMs = 5000 } = {}) {
     // not transient: the laptop pushed the branch before the launch, so it is gone (a merge deleted it)
     if (err.includes(`Remote branch ${branch} not found in upstream origin`)) {
       rmSafe(tmp, { recursive: true, force: true })
-      const c = sh(['git', 'clone', remote, tmp])
+      const c = sh(['git', 'clone', '--', remote, tmp])
       const b = c.ok ? sh(['git', '-C', tmp, 'checkout', '-q', '-b', branch]) : c
       if (!b.ok) throw new Error(`git clone ${remote}: ${b.err}`)
       excludeScratch(tmp)
