@@ -10,7 +10,7 @@ export const SECRETS = [
   /github_pat_[A-Za-z0-9_]{20,}/,
   /sk-ant-[A-Za-z0-9_-]{20,}/,
   /AKIA[0-9A-Z]{16}/,
-  /secret_?access_?key["']?\s*[=:]\s*["']?[A-Za-z0-9/+]{40}/i, // AWS secret key by its name
+  /secret_?access_?key["']?\s*[=:]\s*["']?[A-Za-z0-9/+]{40,}/i, // AWS secret key by its name
   /xox[bpsa]-[A-Za-z0-9-]{10,}/,
   /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/,
   /-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/,

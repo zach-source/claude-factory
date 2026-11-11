@@ -946,6 +946,7 @@ test('9u12: secretFile finds the new token shapes', () => {
     'https://' + 'a'.repeat(20) + '@host/p',
     'aws_secret_access_key = ' + K,
     'AWS_SECRET_ACCESS_KEY=' + K,
+    'secret_access_key = "' + K + 'x'.repeat(24) + '"',
     '"SecretAccessKey": "' + K + '"',
     "aws_secret_access_key: '" + K + "'",
     ['-----BEGIN PGP', 'PRIVATE KEY BLOCK-----'].join(' '),
