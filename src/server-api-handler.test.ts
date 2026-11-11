@@ -31,6 +31,7 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
   // each port function logs into the same array as the runner, so a "zero calls" check counts both
   const log = (port: string, args: unknown[]) => calls.push({ port, args })
   const port: Port = {
+    say: () => {},
     gcPass: () => {},
     gcWorktreesPass: () => {},
     gcRigs: () => [],
@@ -251,6 +252,27 @@ describe('read routes', () => {
     const u = setup()
     expect((await get(u.h, '/v1/board')).status).toBe(503)
     expect(t.calls.length + u.calls.length).toBe(0)
+  })
+  test('the manager role gets 403 on halt and 200 on status; the person gets 200 on both', async () => {
+    const t = setup()
+    const halt = (who: 'person' | 'manager') =>
+      t.h(
+        new Request('http://x/v1/halt', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'idempotency-key': `key-${who}-halt` },
+          body: JSON.stringify({ mode: 'stop' }),
+        }),
+        '1.2.3.4',
+        who,
+      )
+    const status = (who: 'person' | 'manager') => t.h(new Request('http://x/v1/status'), '1.2.3.4', who)
+    const refused = await halt('manager')
+    expect(refused.status).toBe(403)
+    expect(await refused.text()).toContain('manager role cannot call factory.halt')
+    expect(t.calls).toEqual([])
+    expect((await status('manager')).status).toBe(200)
+    expect((await status('person')).status).toBe(200)
+    expect((await halt('person')).status).toBe(200)
   })
   test('a non-zero exit gives 422 with the stderr, a timeout gives 504', async () => {
     const t = setup({ result: { code: 1, out: '', err: 'x'.repeat(900) } })
@@ -934,7 +956,7 @@ describe('serveSocket event transport', () => {
   const fake = (writeOk: () => boolean) => new Fake(writeOk)
   const tick = () => new Promise(r => setTimeout(r, 20))
   const open = (sock: ReturnType<typeof fake>, h: H) => {
-    serveSocket(sock as never, h, 1000)
+    serveSocket(sock as never, (req, ip) => h(req, ip), 1000)
     sock.emit('data', Buffer.from('GET /v1/events?after=0 HTTP/1.1\r\nhost: x\r\n\r\n'))
   }
 

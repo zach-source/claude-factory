@@ -3,6 +3,8 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  allowed,
+  boardView,
   CATALOG,
   CATALOG_VERSION,
   fieldOk,
@@ -169,10 +171,10 @@ describe('CATALOG', () => {
     ])
     expect(CATALOG.filter(o => o.route.path === '/v1/gc')).toHaveLength(1)
   })
-  test('has 31 operations: 21 GET and 10 POST', () => {
-    expect(CATALOG.length).toBe(31)
-    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(21)
-    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(10)
+  test('has 35 operations: 23 GET and 12 POST', () => {
+    expect(CATALOG.length).toBe(35)
+    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(23)
+    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(12)
     expect(CATALOG.filter(o => o.route.method === 'POST' && !o.mutates).map(o => o.name)).toEqual([
       'guard.check',
     ])
@@ -180,12 +182,24 @@ describe('CATALOG', () => {
   test('rights map as before', () => {
     for (const o of CATALOG) {
       const get = o.route.method === 'GET' || o.name === 'guard.check'
-      expect(o.rights).toBe(get ? 'read' : 'owner')
+      expect(o.rights).toBe(
+        get
+          ? 'read'
+          : ['factory.halt', 'gc.run', 'chat.send', 'manager.say'].includes(o.name)
+            ? 'owner'
+            : 'manager',
+      )
       expect(o.mutates).toBe(!get)
       expect(o.long).toBe(o.name === 'chat.send')
       expect(o.since).toBe(1)
     }
     expect(CATALOG_VERSION).toBe(1)
+  })
+  test('allowed: the manager role cannot call an owner operation', () => {
+    expect(allowed('owner', 'manager')).toBe(false)
+    expect(allowed('owner', 'person')).toBe(true)
+    expect(allowed('manager', 'manager')).toBe(true)
+    expect(allowed('read', 'manager')).toBe(true)
   })
   test('the chat operations', () => {
     const send = CATALOG.find(o => o.name === 'chat.send')!
@@ -246,7 +260,11 @@ describe('CATALOG', () => {
       'guard.check POST /v1/guard/check',
       'lease.show GET /v1/lease',
       'mail.list GET /v1/mail',
+      'manager.brief GET /v1/manager/brief',
       'manager.context GET /v1/manager/context',
+      'manager.log POST /v1/manager/log/:kind',
+      'manager.say POST /v1/manager/say',
+      'manager.show GET /v1/manager',
       'metrics.show GET /v1/metrics',
       'plan.show GET /v1/plan',
       'prs.show GET /v1/prs',
@@ -295,6 +313,11 @@ describe('slimBoard and snapshot (claude-factory-hpmc.23)', () => {
     expect(s.rigs as unknown[]).toEqual([{ name: 'a', factory: 'lifecycle', maxRuns: 3 }])
     expect(s.lease).toEqual({ holder: 'h' })
     expect(JSON.stringify(s).length).toBeLessThan(JSON.stringify(board).length)
+  })
+  test('the board view and the slim board keep the halt state and its age first', () => {
+    const paused = { halt: 'paused', haltAt: 1, ...board }
+    for (const v of [boardView(paused), slimBoard(paused)])
+      expect(Object.keys(v as object).slice(0, 2)).toEqual(['halt', 'haltAt'])
   })
   test('slimBoard returns a value that is not a board unchanged', () => {
     expect(slimBoard(null)).toBeNull()

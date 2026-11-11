@@ -12,6 +12,20 @@ type RigLike = { name: string; repo: string; remote?: string; beadsRemote?: { ur
 
 export const inAx = (env: Env = process.env) => env.FACTORY_IN_AX === '1'
 
+/** claude-factory-gogxc.1: the factory server pod. Its paths are on the home volume, but it is not a VM behind the egress gateway, so it is not inAx */
+export const inServer = (env: Env = process.env) => env.FACTORY_SERVER_MODE === '1'
+
+/** the process keeps rig clones and beads stores under the factory home: in the AX task, or in the server pod */
+export const ownsClones = (env: Env = process.env) => inAx(env) || inServer(env)
+
+/** where the account-swap state is: a directory of the home volume in the server pod, else `~/.claude-switch-backup` */
+export const switchDir = (home: string, userHome: string, env: Env = process.env) =>
+  join(inServer(env) ? home : userHome, inServer(env) ? 'claude-switch-backup' : '.claude-switch-backup')
+
+/** the directory for the worktrees of the repo `name`: under the factory home in the server pod, else herdr's layout */
+export const worktreeBase = (name: string, home: string, userHome: string, env: Env = process.env) =>
+  inServer(env) ? join(home, 'worktrees', name) : join(userHome, '.herdr', 'worktrees', name)
+
 /**
  * The runner name of a station. On the laptop it is the station's own, else the rig's, else the default.
  * In the AX manager a station never gets a local runner: a herdr pane there would sit next to the factory home.
@@ -45,18 +59,20 @@ export function remoteRefusal(url: string): string | undefined {
 /** an https URL with no user or password: the egress gateway puts the credential in */
 export const noUserinfo = (url: string) => url.replace(/^https:\/\/+[^/?#\\]*@/, 'https://')
 
-export const reposRoot = (env: Env = process.env) => env.FACTORY_REPOS ?? '/workspace/w/repos'
+export const reposRoot = (env: Env = process.env) =>
+  env.FACTORY_REPOS ??
+  (inServer(env) && env.FACTORY_HOME ? join(env.FACTORY_HOME, 'repos') : '/workspace/w/repos')
 
 /** where a rig's repo is in the task */
 export const axRepoPath = (name: string, env: Env = process.env) => join(reposRoot(env), name)
 
 /** the rigs as this process uses them: in the task, `repo` is the clone; on the laptop, as written */
 export const mapRigs = <R extends RigLike>(rigs: R[], env: Env = process.env) =>
-  inAx(env) ? rigs.map(r => ({ ...r, repo: axRepoPath(r.name, env) })) : rigs
+  ownsClones(env) ? rigs.map(r => ({ ...r, repo: axRepoPath(r.name, env) })) : rigs
 
 /** a run's repo as written (a laptop path), to the clone of the rig that has that repo; an unknown path stays */
 export function mapRunRepo(rigs: RigLike[], repo: string, env: Env = process.env) {
-  const rig = inAx(env) ? rigs.find(r => r.repo === repo) : undefined
+  const rig = ownsClones(env) ? rigs.find(r => r.repo === repo) : undefined
   return rig ? axRepoPath(rig.name, env) : repo
 }
 
@@ -69,7 +85,7 @@ export function mapRunWorktree(
   run: { id: string; repo: string; worktree: string },
   env: Env = process.env,
 ) {
-  const laptop = inAx(env) && rigs.some(r => r.repo === run.repo)
+  const laptop = ownsClones(env) && rigs.some(r => r.repo === run.repo)
   return laptop ? join(env.FACTORY_HOME ?? '/workspace/w/home', 'worktrees', run.id) : run.worktree
 }
 
@@ -83,7 +99,7 @@ export const beadsDirOf = (home: string, repo: string) => join(home, 'beads', ba
  */
 export function bdEnv(repo: string, env: Env = process.env) {
   const home = env.FACTORY_HOME
-  if (!inAx(env) || !home) return env
+  if (!ownsClones(env) || !home) return env
   const dir = beadsDirOf(home, repo)
   if (!existsSync(join(dir, '.beads'))) return env
   let extra: Record<string, string> = {}
@@ -104,7 +120,7 @@ export function bdEnv(repo: string, env: Env = process.env) {
  * It gives nothing on the laptop, outside a rig's clone under the repos root, or before the rig's store exists.
  */
 export function bdExports(top: string | undefined, env: Env = process.env): Record<string, string> {
-  if (!top || !inAx(env)) return {}
+  if (!top || !ownsClones(env)) return {}
   try {
     if (realpathSync(dirname(top)) !== realpathSync(reposRoot(env))) return {}
   } catch {
@@ -122,7 +138,7 @@ export function bdExports(top: string | undefined, env: Env = process.env): Reco
  */
 export function hasRigBeads(repo: string, rigs: RigLike[], env: Env = process.env) {
   if (existsSync(join(repo, '.beads'))) return true
-  if (!inAx(env)) return false
+  if (!ownsClones(env)) return false
   if (rigs.some(r => r.repo === repo && r.beadsRemote)) return true
   return !!env.FACTORY_HOME && existsSync(join(beadsDirOf(env.FACTORY_HOME, repo), '.beads'))
 }

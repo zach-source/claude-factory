@@ -70,6 +70,8 @@ export type Port = {
     env: Env
     timeoutMs: number
   }) => Promise<{ code: number; out: string }>
+  /** type text and Enter into the manager pane (ax.say) */
+  say: (text: string) => unknown
   mail: (
     m: { id: string | undefined; to: string | undefined; text: string; wake: boolean },
     who: { env: Env; cwd: string },
@@ -84,6 +86,7 @@ export type Op = {
   summary: string
   inputs: Field[]
   output: 'table' | 'text' | 'json' | 'stream'
+  /** read: any caller. manager: the person or the manager. owner: the person only. */
   rights: 'read' | 'owner' | 'manager'
   mutates: boolean
   long: boolean
@@ -146,6 +149,11 @@ export function fieldOk(f: Field, v: unknown): boolean {
 
 const routeKey = (o: Op) => `${o.route.method} ${o.route.path.replace(/:[^/]+/g, ':')}`
 const params = (o: Op) => o.route.path.split('/').filter(s => s.startsWith(':'))
+
+export type Caller = 'person' | 'manager'
+
+/** The person may call every operation. The manager may not call an owner operation (FR-019). */
+export const allowed = (rights: Op['rights'], who: Caller): boolean => who === 'person' || rights !== 'owner'
 
 /** Check every rule, else throw: a bad catalog serves nothing. Return a copy sorted by name. */
 export function makeCatalog(ops: Op[]): Op[] {
@@ -242,7 +250,14 @@ const f = (name: string, kind: Kind, required = true, help = H[name]!, values?: 
 })
 const id = (name: string) => f(name, 'id')
 
-type Spec = { name: string; summary: string; method: 'GET' | 'POST'; path: string; inputs?: Field[] }
+type Spec = {
+  name: string
+  summary: string
+  method: 'GET' | 'POST'
+  path: string
+  inputs?: Field[]
+  rights?: Op['rights']
+}
 const bridge = (
   s: Spec,
   argv: (i: Input) => string[],
@@ -253,7 +268,7 @@ const bridge = (
   summary: s.summary,
   inputs: s.inputs ?? [],
   output,
-  rights: s.method === 'GET' ? 'read' : 'owner',
+  rights: s.rights ?? (s.method === 'GET' ? 'read' : 'manager'),
   mutates: s.method === 'POST',
   long: false,
   route: { method: s.method, path: s.path },
@@ -430,6 +445,7 @@ export const CATALOG: Op[] = makeCatalog([
       summary: 'Remove eligible run data or worktrees.',
       method: 'POST',
       path: '/v1/gc',
+      rights: 'owner',
       inputs: [
         f('worktrees', 'flag', false, 'use the worktree pass'),
         f('dryRun', 'flag', false, 'preview without removal'),
@@ -546,6 +562,7 @@ export const CATALOG: Op[] = makeCatalog([
         summary: 'Send a message to the manager chat and wait for its answer.',
         method: 'POST',
         path: '/v1/conversations/:id',
+        rights: 'owner',
         inputs: [
           f('id', 'id', true, 'the conversation id'),
           f('text', 'text', true, 'the message to the manager'),
@@ -697,6 +714,53 @@ export const CATALOG: Op[] = makeCatalog([
   ),
   local(
     {
+      name: 'manager.show',
+      summary: 'Show the last health report of the manager task.',
+      method: 'GET',
+      path: '/v1/manager',
+    },
+    'json',
+    (c, i) => managerOps.show(c, i),
+  ),
+  local(
+    {
+      name: 'manager.brief',
+      summary:
+        'Show the first brief of a manager session: decisions, mail, plan and the last 20 patrol rows.',
+      method: 'GET',
+      path: '/v1/manager/brief',
+    },
+    'json',
+    (c, i) => managerOps.brief(c, i),
+  ),
+  local(
+    {
+      name: 'manager.log',
+      summary: 'Add one row to a log of the manager: patrol, pm, brief, review, usage or health.',
+      method: 'POST',
+      path: '/v1/manager/log/:kind',
+      inputs: [
+        f('kind', 'id', true, 'the log: patrol, pm, brief, review, usage or health'),
+        f('entry', 'text', true, 'the row, one JSON object'),
+      ],
+    },
+    'text',
+    (c, i) => managerOps.log(c, i),
+  ),
+  local(
+    {
+      name: 'manager.say',
+      summary: 'Type a text into the manager pane.',
+      method: 'POST',
+      path: '/v1/manager/say',
+      rights: 'owner',
+      inputs: [f('text', 'text', true, 'the text for the manager')],
+    },
+    'text',
+    (c, i) => managerOps.say(c, i),
+  ),
+  local(
+    {
       name: 'rigs.list',
       summary: 'List the rigs, their runs and their settings.',
       method: 'GET',
@@ -824,6 +888,7 @@ export const CATALOG: Op[] = makeCatalog([
       summary: 'Stop or resume the factory.',
       method: 'POST',
       path: '/v1/halt',
+      rights: 'owner',
       inputs: [f('mode', 'enum', true, undefined, ['stop', 'resume'])],
     },
     i => [i.mode as string],

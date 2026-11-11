@@ -93,13 +93,13 @@ export type ServeOpts = {
   patrol?: { everyMs: number; run: () => Promise<unknown>; kill?: () => void }
   holder?: string
   log?: (line: string) => void
-  /** the client API on its own mTLS listener; `ca` is the person CA text; `handle` gets the request and the peer address */
+  /** the client API on its own mTLS listener; `ca` is the person CA text; `handle` gets the request and the peer address and the role */
   client?: {
     port: number
     cert: string
     key: string
     ca: string
-    handle: (req: Request, ip: string) => Promise<Response>
+    handle: (req: Request, ip: string, who: 'person' | 'manager') => Promise<Response>
     log?: (line: string) => void
     /** idle limit while the request is read, in ms; default 30000 */
     idleMs?: number

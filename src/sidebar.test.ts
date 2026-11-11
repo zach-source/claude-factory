@@ -23,6 +23,7 @@ test('the sidebar says which runs move on their own and which wait on someone', 
   expect(byWs.w6).toBeUndefined() // a finished run's workspace is cleared
   expect(rollup).toBe('1 running · 2 need you · 1 stuck · 1 parked')
   expect(tokens([rows[0]!]).rollup).toBe('1 running')
+  expect(tokens([rows[0]!], 'paused').rollup).toBe('PAUSED · 1 running') // a paused factory must show
 })
 
 test('waiting lists what holds on the person, by rig, with how to answer', () => {
