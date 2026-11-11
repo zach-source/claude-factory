@@ -97,12 +97,12 @@ type RigRow = { name: string; repo: string; remote?: string }
 
 /**
  * rigs.json for the task: each rig gains `remote`, its origin as https, and keeps `repo` (the task maps it).
- * A rig whose origin `originOf` cannot name stops the move
+ * A rig whose origin `originOf` cannot name, or whose remote has a bad shape, stops the move. A user or password is removed
  */
 export function migratedRigs<R extends RigRow>(rigs: R[], originOf: (repo: string) => string | undefined) {
   const bad: string[] = []
   const refused: string[] = []
-  const out = rigs.map(r => {
+  const out = rigs.map((r): R & { remote?: string } => {
     const raw = r.remote || originOf(r.repo)
     if (!raw) {
       bad.push(`${r.name} (${r.repo})`)
@@ -113,7 +113,7 @@ export function migratedRigs<R extends RigRow>(rigs: R[], originOf: (repo: strin
     if (!why) return { ...r, remote: url }
     refused.push(`rig ${r.name}: the remote is refused: ${why}`)
     const { remote: _, ...rest } = r
-    return rest
+    return rest as R & { remote?: string }
   })
   const errors = [
     ...(bad.length ? [`no origin remote for rig ${bad.join(', ')}: add one or set "remote"`] : []),
