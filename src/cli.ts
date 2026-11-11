@@ -5946,7 +5946,9 @@ export function keepPersonLines(
  * Stage the wiki, put every staged page that fails a check back at its last version, and commit the rest
  * as the factory identity. A page passes when its path, size (65,536 bytes) and scanPages() are clean.
  * A journal line names the path and a fixed reason, never page text. `paths` limits the staging to those pages
- * (none: the whole tree). True when it made a commit, null when nothing was staged, false on a failure.
+ * (none: the whole tree), and so do the checks and the commit. The commit is built on a private index, so a page a
+ * person staged outside `paths` stays staged and out of it. True when it made a commit, null when nothing was
+ * committed, false on a failure.
  */
 export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki'), paths?: string[]) {
   const clean = (s: string) =>
@@ -5957,31 +5959,52 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
   if (!repoConfigOk(dir)) return (wikiLog('wiki: repo config not allowed, nothing committed'), false)
   if (wikiGit(dir, ['add', '-A', '--', ...(paths ?? [])]).code !== 0)
     return (wikiLog('wiki: stage failed, nothing committed'), false)
-  const list = wikiGit(dir, ['diff', '--cached', '--raw', '--no-renames', '-z', '--diff-filter=d'])
+  const list = wikiGit(dir, [
+    'diff',
+    '--cached',
+    '--raw',
+    '--no-renames',
+    '--no-abbrev',
+    '-z',
+    '--',
+    ...(paths ?? []),
+  ])
   if (list.code !== 0) return (wikiLog('wiki: staged list failed, nothing committed'), false)
   // raw -z: ":<old mode> <new mode> <old sha> <new sha> <status>\0<path>\0"
   const fields = list.out.toString().split('\0')
   const refused: string[] = []
+  const entries: { mode: string; sha: string; status: string; path: string }[] = []
   const tombs = new Set(wikiTombstones(dir).map(t => t.path))
   // a refused rename target puts its source back too, or the commit would delete the old page
   // ponytail: git pairs a rename only above 50% similarity; a rewrite below that still commits the old path's delete
   const moved = new Map<string, string>()
-  const ren = wikiGit(dir, ['diff', '--cached', '--raw', '-M', '-z', '--diff-filter=R'])
+  const ren = wikiGit(dir, [
+    'diff',
+    '--cached',
+    '--raw',
+    '-M',
+    '-z',
+    '--diff-filter=R',
+    '--',
+    ...(paths ?? []),
+  ])
   if (ren.code === 0) {
     const f = ren.out.toString().split('\0')
     for (let k = 0; k + 2 < f.length; k += 3) moved.set(f[k + 2]!, f[k + 1]!)
   }
   for (let k = 0; k + 1 < fields.length; k += 2) {
-    const [, mode, , , status] = fields[k]!.split(' ')
+    const [, mode, , sha, status] = fields[k]!.split(' ')
     const path = fields[k + 1]!
+    entries.push({ mode: mode!, sha: sha!, status: status!, path })
     let why: string | undefined
+    if (status === 'D') continue
     if (!WIKI_PAGE_PATH.test(path) || path.split('/').includes('..'))
       why = 'wiki: bad page path, page kept at last version'
     else if (status === 'A' && tombs.has(path)) why = `wiki: tombstoned path ${path}, page not made again`
     else if (mode !== '100644' && mode !== '100755')
       why = `wiki: bad file mode in ${path}, page kept at last version`
     else {
-      const blob = wikiGit(dir, ['show', `:${path}`]).out
+      const blob = wikiGit(dir, ['show', sha!]).out
       const reasons =
         blob.length > WIKI_PAGE_MAX
           ? ['page too large']
@@ -6004,31 +6027,64 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
   // a refused path that is still staged (an unstage that failed) must never reach a commit
   if (refused.length && wikiGit(dir, ['diff', '--cached', '--quiet', '--', ...refused]).code !== 0)
     return (wikiLog('wiki: unstage failed, nothing committed'), false)
-  if (wikiGit(dir, ['diff', '--cached', '--quiet']).code !== 1) return null
-  const c = wikiGit(
-    dir,
-    [
-      '-c',
-      'user.name=factory',
-      '-c',
-      `user.email=${WIKI_EMAIL}`,
-      '-c',
-      'commit.gpgsign=false',
-      'commit',
-      '-q',
+  const keep = entries.filter(e => !refused.includes(e.path))
+  if (!keep.length) return null
+  // the commit is built on a private index with HEAD pinned: a page staged outside `paths` stays out of it
+  const head = wikiGit(dir, ['rev-parse', '--verify', '-q', 'HEAD'])
+  const old = head.code === 0 ? head.out.toString().trim() : ''
+  const tmp = mkdtempSync(join(tmpdir(), 'factory-wiki-index-'))
+  const idx = { GIT_INDEX_FILE: join(tmp, 'index') }
+  try {
+    const steps = [old ? ['read-tree', old] : ['read-tree', '--empty']]
+    for (const e of keep)
+      steps.push(
+        e.status === 'D'
+          ? ['update-index', '--force-remove', '--', e.path]
+          : ['update-index', '--add', '--cacheinfo', `${e.mode},${e.sha},${e.path}`],
+      )
+    for (const a of steps)
+      if (wikiGit(dir, a, false, idx).code !== 0)
+        return (wikiLog('wiki: commit index failed, nothing committed'), false)
+    const tree = wikiGit(dir, ['write-tree'], false, idx)
+    if (tree.code !== 0) return (wikiLog('wiki: commit index failed, nothing committed'), false)
+    const c = wikiGit(
+      dir,
+      [
+        '-c',
+        'user.name=factory',
+        '-c',
+        `user.email=${WIKI_EMAIL}`,
+        '-c',
+        'commit.gpgsign=false',
+        'commit-tree',
+        tree.out.toString().trim(),
+        ...(old ? ['-p', old] : []),
+        '-m',
+        `wiki ${clean(pass)}: ${clean(summary)}`,
+      ],
+      false,
+      {
+        GIT_AUTHOR_NAME: 'factory',
+        GIT_AUTHOR_EMAIL: WIKI_EMAIL,
+        GIT_COMMITTER_NAME: 'factory',
+        GIT_COMMITTER_EMAIL: WIKI_EMAIL,
+      },
+    )
+    if (c.code !== 0) return (wikiLog(`wiki: commit failed (exit ${c.code})`), false)
+    // compare-and-swap: refuses when a person committed after the rev-parse
+    const u = wikiGit(dir, [
+      'update-ref',
       '-m',
-      `wiki ${clean(pass)}: ${clean(summary)}`,
-    ],
-    false,
-    {
-      GIT_AUTHOR_NAME: 'factory',
-      GIT_AUTHOR_EMAIL: WIKI_EMAIL,
-      GIT_COMMITTER_NAME: 'factory',
-      GIT_COMMITTER_EMAIL: WIKI_EMAIL,
-    },
-  )
-  if (c.code !== 0) wikiLog(`wiki: commit failed (exit ${c.code})`)
-  return c.code === 0
+      `wiki ${clean(pass)}`,
+      'HEAD',
+      c.out.toString().trim(),
+      old || '0'.repeat(40),
+    ])
+    if (u.code !== 0) return (wikiLog('wiki: HEAD moved, nothing committed'), false)
+    return true
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
 }
 
 /** PUBLIC, PRIVATE or INTERNAL from `gh repo view`; read at most once in 24 h per remote unless `fresh`. Else undefined. */
