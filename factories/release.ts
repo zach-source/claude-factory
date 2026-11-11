@@ -35,7 +35,7 @@ export default {
   params: {
     claude: 'claude-smart --new --no-channels',
     exec_model: 'claude-sonnet-5-5[1m]',
-    judge_model: 'claude-opus-5-5[1m]',
+    judge_model: 'claude-fable-5-2[1m]',
   },
   backoffSec: 60,
   maxSteps: 40, // gather and rollout park and wake many times while people merge

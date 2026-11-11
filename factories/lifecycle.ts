@@ -98,7 +98,7 @@ export default {
     base_branch: '', // the branch runs start from and open pull requests against; empty is the rig's default branch
     claude: 'claude-smart --new --no-channels', // the Claude Code launcher
     exec_model: 'claude-sonnet-5-5[1m]', // execution
-    judge_model: 'claude-opus-5-5[1m]', // planning, judgment, review
+    judge_model: 'claude-fable-5-2[1m]', // planning, judgment, review
     security_model: 'claude-fable-5-2', // security and architecture
     codex: 'codex --dangerously-bypass-approvals-and-sandbox', // the codex launcher (the deny hook stays on)
     codex_exec_model: 'gpt-6.1-sol', // codex in place of exec_model
