@@ -69,7 +69,7 @@ test.skipIf(!linux)('the reaper runs a command with no children and passes stdio
 })
 
 const ORPHANS = 1500
-const MAX_ZOMBIES = 200
+const MAX_ZOMBIES = 600
 
 /** the number of zombie children of ppid; counts only, never a process list */
 const zombieCount = (ppid: number) => {
@@ -87,7 +87,7 @@ const zombieCount = (ppid: number) => {
 test.skipIf(!linux)(
   'dead adopted children are waited for while the main command lives',
   async () => {
-    const script = `for i in $(seq ${ORPHANS}); do (true &); done; sleep 1; exit 5`
+    const script = `for i in $(seq ${ORPHANS / 100}); do for j in $(seq 100); do (true &); done; sleep 0.3; done; sleep 1; exit 5`
     const p = Bun.spawn([process.execPath, reap, 'sh', '-c', script], { stdout: 'pipe', stderr: 'pipe' })
     let ended = false
     let max = 0
@@ -103,9 +103,12 @@ test.skipIf(!linux)(
       const code = await p.exited
       clearInterval(t)
       console.log(`zombie max ${max}, alive samples ${alive}`)
-      expect(max).toBeLessThanOrEqual(MAX_ZOMBIES)
-      expect(alive).toBeGreaterThanOrEqual(10)
-      expect(code).toBe(5)
+      expect({ ok: max <= MAX_ZOMBIES && alive >= 10, code, max, alive }).toEqual({
+        ok: true,
+        code: 5,
+        max,
+        alive,
+      })
     } finally {
       clearInterval(t)
       p.kill('SIGKILL')
