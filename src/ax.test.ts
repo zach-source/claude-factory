@@ -2938,7 +2938,7 @@ test('managerEnv sets the token swap to a broker POST only when the broker is se
 })
 
 // the Codex fallback rules (y3f8w.1) follow the manager's other rules
-const CODEX = [ax.OPENAI_RULE, ax.CODEX_CHATGPT_RULE]
+const CODEX = [ax.OPENAI_RULE, ax.CODEX_CHATGPT_RULE, ax.BUILDER_RULE]
 test('managerEgress adds an http rule for each in-cluster address that is a URL', () => {
   expect(ax.managerEgress({})).toEqual([{ hosts: ['claude.ai'] }, ...CODEX])
   expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'not a url' })).toEqual([

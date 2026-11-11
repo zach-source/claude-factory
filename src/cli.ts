@@ -6894,9 +6894,8 @@ function devenvPass(names: string[], force = false) {
       if (!devenv.isDue(devenv.readStamp(stampFile), key, force)) return `${rig.name}: up to date (${key})`
       const log = join(HOME, 'devenv', `${rig.name}.log`)
       mkdirSync(join(HOME, 'devenv'), { recursive: true })
-      const remote = httpsRemote(git(rig.repo, 'remote', 'get-url', 'origin'))
-      const r = devenv.build(cfg, { image, remote, rev, key, log, force })
-      devenv.writeStamp(stampFile, { key, ok: r.ok, at: Date.now(), rev })
+      const r = devenv.build(cfg, { image, repo: rig.repo, rev, key, log, force })
+      devenv.writeStamp(stampFile, { key, ok: r.ok, at: Date.now(), rev, ...(r.ok ? {} : { why: r.why }) })
       return r.ok
         ? `${rig.name}: built and cached ${rev.slice(0, 7)} (${key})`
         : `${rig.name}: failed, see ${log}\n${r.why}`
