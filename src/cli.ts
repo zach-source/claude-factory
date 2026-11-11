@@ -231,6 +231,7 @@ import { REASON, boundedRun } from './screen'
 import * as client from './client'
 import { backupAge, backupError, backupWanted } from './homebackup'
 import * as managerhost from './managerhost'
+import { drainHaltQueue, runHaltCmd } from './halt-order'
 import * as leases from './lease'
 import * as herdrApp from './herdr-install'
 import * as migrate from './migrate'
@@ -241,6 +242,7 @@ import {
   httpsRemote,
   inAx,
   isLaptopPane,
+  inServer,
   mapRigs,
   mapRunRepo,
   mapRunWorktree,
@@ -443,11 +445,27 @@ const halted = (): Halt | null => (existsSync(haltFile()) ? readJson(haltFile())
 /**
  * a tick writes its halt copy back only while halt.json is still the one it read: a `factory resume` that
  * removed it, or a new stop that replaced it, must win over the stale copy (claude-factory-sg4s3).
- * ponytail: a check and a write, not a lock; the gap is microseconds. Upgrade path: take the tick lock in stop and resume.
+ * stop and resume now take tick.lock (halt-order.ts), so this check is a second guard, for a lock taken over from a dead holder.
  */
 export function writeHaltIfSame(halt: Halt, next: Halt = halt, file = haltFile()) {
   const now = existsSync(file) ? readJson<Halt>(file) : null
   if (now?.at === halt.at) writeJson(file, next)
+}
+
+/** stop or resume, with the caller holding tick.lock. Throws when the command does not fit the state. */
+function applyHalt(cmd: 'stop' | 'resume') {
+  if (cmd === 'stop') {
+    if (halted()) throw new Error(`already ${halted()!.state}`)
+    writeJson(haltFile(), { state: 'stopping', at: Date.now(), told: {}, closed: {} })
+    return `stopping: each working worker is told to commit and wait; its pane closes once it is quiet, at most ${HALT_GRACE_MS / 60_000} min. Ticks carry it out; factory status shows it. factory resume brings them back.`
+  }
+  const halt = halted()
+  if (!halt) throw new Error('the factory is not stopped')
+  // the runs whose workers stop closed, at the station they were at: the next tick resumes each
+  const back = existsSync(resumeFile_()) ? readJson<Record<string, number>>(resumeFile_()) : {}
+  writeJson(resumeFile_(), { ...back, ...halt.closed })
+  rmSync(haltFile())
+  return `resuming ${Object.keys(halt.closed).length} worker(s) in their own conversations at the next tick`
 }
 
 /** what a stop does next to one working worker */
@@ -606,7 +624,8 @@ async function launchAxManager(args: string[]) {
 }
 /** refuse to run a manager or a tick here while the AX manager task lives (claude-factory-192.6) */
 const lease = () => {
-  const m = ax.remoteManager()
+  // in the server pod the manager lease is the guard, not the AX task name (claude-factory-gogxc.4)
+  const m = inServer() ? undefined : ax.remoteManager()
   if (m) fail(m)
 }
 /**
@@ -622,7 +641,7 @@ function localLease(want = leases.asker(process.env, process.ppid)): leases.Leas
     return cur ?? { holder: 'unknown', kind: 'cli', at: Date.now() }
   }
   try {
-    const d = leases.take(HOME, want)
+    const d = leases.take(HOME, want, Date.now(), inServer())
     return d.ok ? undefined : d.lease
   } finally {
     release()
@@ -8118,6 +8137,7 @@ async function tick(isPatrol = false) {
   const release = hold('tick.lock')
   if (!release) return { busy: true }
   try {
+    drainHaltQueue(HOME, applyHalt) // commands that found the lock busy come first, in seq order
     const now = Date.now()
     await refreshCursorMeter(HOME, process.env, now)
     const linearState = existsSync(linearSyncFile())
@@ -13766,6 +13786,7 @@ export const corePort: Port = {
   abort: abortRun,
   screen: screenRun,
   mail: mailRun,
+  say: ax.say,
   chatModel: runModelAsync,
   chatRun: runApproved,
 }
@@ -13949,7 +13970,13 @@ if (import.meta.main && !outboxCmd)
             if (c !== 0) throw new Error(`exit ${c}`)
           })
         }
-        server.main(args, HOME, () => tick(), corePort, backup)
+        // the pod's tick takes the manager lease like `factory tick`; a busy lease means no tick (claude-factory-gogxc.4)
+        const podTick = async () => {
+          const other = localLease(leases.podAsker(hostname()))
+          if (other) throw new Error(`no tick: ${leases.leaseLine(other, Date.now())}`)
+          return tick()
+        }
+        server.main(args, HOME, podTick, corePort, backup)
         break
       case 'cert': {
         refuseWorker('cert', true)
@@ -14067,25 +14094,17 @@ if (import.meta.main && !outboxCmd)
         if (!args.length) fail("usage: factory say '<text...>'")
         ax.say(args.join(' '))
         break
-      case 'stop': {
-        refuseWorker('stop', true)
-        if (halted()) fail(`already ${halted()!.state}`)
-        writeJson(haltFile(), { state: 'stopping', at: Date.now(), told: {}, closed: {} })
-        console.log(
-          `stopping: each working worker is told to commit and wait; its pane closes once it is quiet, at most ${HALT_GRACE_MS / 60_000} min. Ticks carry it out; factory status shows it. factory resume brings them back.`,
-        )
-        break
-      }
+      case 'stop':
       case 'resume': {
-        refuseWorker('resume', true)
-        const halt = halted() ?? fail('the factory is not stopped')
-        // the runs whose workers stop closed, at the station they were at: the next tick resumes each
-        const back = existsSync(resumeFile_()) ? readJson<Record<string, number>>(resumeFile_()) : {}
-        writeJson(resumeFile_(), { ...back, ...halt.closed })
-        rmSync(haltFile())
-        console.log(
-          `resuming ${Object.keys(halt.closed).length} worker(s) in their own conversations at the next tick`,
-        )
+        refuseWorker(cmd, true)
+        try {
+          const r = await runHaltCmd(HOME, () => hold('tick.lock'), cmd, applyHalt)
+          console.log(
+            'queued' in r ? `queued as ${r.queued}: a tick is running; the next tick applies it` : r.out,
+          )
+        } catch (e) {
+          fail((e as Error).message)
+        }
         break
       }
       case 'memory': {

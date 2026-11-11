@@ -170,10 +170,10 @@ describe('CATALOG', () => {
     ])
     expect(CATALOG.filter(o => o.route.path === '/v1/gc')).toHaveLength(1)
   })
-  test('has 31 operations: 21 GET and 10 POST', () => {
-    expect(CATALOG.length).toBe(31)
-    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(21)
-    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(10)
+  test('has 35 operations: 23 GET and 12 POST', () => {
+    expect(CATALOG.length).toBe(35)
+    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(23)
+    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(12)
     expect(CATALOG.filter(o => o.route.method === 'POST' && !o.mutates).map(o => o.name)).toEqual([
       'guard.check',
     ])
@@ -182,7 +182,11 @@ describe('CATALOG', () => {
     for (const o of CATALOG) {
       const get = o.route.method === 'GET' || o.name === 'guard.check'
       expect(o.rights).toBe(
-        get ? 'read' : ['factory.halt', 'gc.run', 'chat.send'].includes(o.name) ? 'owner' : 'manager',
+        get
+          ? 'read'
+          : ['factory.halt', 'gc.run', 'chat.send', 'manager.say'].includes(o.name)
+            ? 'owner'
+            : 'manager',
       )
       expect(o.mutates).toBe(!get)
       expect(o.long).toBe(o.name === 'chat.send')
@@ -255,7 +259,11 @@ describe('CATALOG', () => {
       'guard.check POST /v1/guard/check',
       'lease.show GET /v1/lease',
       'mail.list GET /v1/mail',
+      'manager.brief GET /v1/manager/brief',
       'manager.context GET /v1/manager/context',
+      'manager.log POST /v1/manager/log/:kind',
+      'manager.say POST /v1/manager/say',
+      'manager.show GET /v1/manager',
       'metrics.show GET /v1/metrics',
       'plan.show GET /v1/plan',
       'prs.show GET /v1/prs',
