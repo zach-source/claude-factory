@@ -17,6 +17,7 @@ import {
   unsetSetting,
 } from './settings'
 import { tokenCommand } from './claude-token'
+import { writeFresh } from './write-fresh'
 import { buildImage, IMAGE_KEY, type Target } from './image'
 import {
   appendFileSync,
@@ -556,7 +557,7 @@ const tickError = (id: string) =>
   existsSync(tickErrorFile(id)) ? readFileSync(tickErrorFile(id), 'utf8').trim() : undefined
 const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, 'utf8'))
 /** written and fsynced: a report or snapshot outlives a power cut, not just a crash */
-function durable(path: string, text: string, flag: 'w' | 'a') {
+function durable(path: string, text: string, flag: 'a') {
   const fd = openSync(path, flag)
   try {
     writeSync(fd, text)
@@ -565,9 +566,8 @@ function durable(path: string, text: string, flag: 'w' | 'a') {
     closeSync(fd)
   }
 }
-function writeJson(path: string, value: unknown) {
-  durable(`${path}.tmp`, JSON.stringify(value, null, 2), 'w')
-  renameSync(`${path}.tmp`, path) // atomic: a reader never sees half a snapshot
+export function writeJson(path: string, value: unknown) {
+  writeFresh(path, JSON.stringify(value, null, 2)) // atomic: a reader never sees half a snapshot
 }
 /** `factory manager --ax [args]`: run the manager as the long-lived AX task (claude-factory-192.2) */
 async function launchAxManager(args: string[]) {
@@ -4139,7 +4139,7 @@ const MANAGER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,AskUserQuestion,Skill,Agen
 export const managerCommand = (extra: string[] = [], dirs = process.env['CLAUDE_CODE_PLUGIN_DIRS'] ?? '') => [
   'claude',
   '--model',
-  'claude-opus-5-5', // not [1m]: Claude Code compacts it near 200k, and every call re-reads the whole context
+  'claude-fable-5-2', // not [1m]: Claude Code compacts it near 200k, and every call re-reads the whole context
   // the person's own default mode (auto) refuses the production reads a patrol needs
   ...['--permission-mode', 'bypassPermissions'],
   '--strict-mcp-config', // and no --mcp-config: no MCP servers
@@ -11487,10 +11487,11 @@ function axSweep() {
             seq: c.seq,
             pane: c.pane,
             over: ['done', 'aborted'].includes(where(value)[0]),
+            sub: where(value)[1],
           })
         } catch {
           // no readable state: keep an owner that never gets a delete (seq -1)
-          runs.push({ id, seq: -1, pane: null, over: false })
+          runs.push({ id, seq: -1, pane: null, over: false, sub: '' })
         }
       const picked = axSweepNames([...tasks, ...workspaces], runs, ax.managerTask())
       let removed = 0

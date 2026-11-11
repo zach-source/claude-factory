@@ -7,8 +7,9 @@ const live: SweepRun = {
   seq: 5,
   pane: `ax://${taskName('lifecycle-acme1', 5)}`,
   over: false,
+  sub: 'working',
 }
-const done: SweepRun = { id: 'lifecycle-acme2', seq: 15, pane: null, over: true }
+const done: SweepRun = { id: 'lifecycle-acme2', seq: 15, pane: null, over: true, sub: '' }
 const t = (r: SweepRun, s: number) => taskName(r.id, s)
 const sweep = (names: string[], runs = [live, done], manager = 'f-manager') =>
   sweepNames(names, runs, manager)
@@ -40,7 +41,7 @@ test('sweepNames keeps the manager task whatever its name', () => {
 })
 
 test('sweepNames keeps f-manager-<n> even when the manager env names another task', () => {
-  const m: SweepRun = { id: 'manager', seq: 4, pane: null, over: true }
+  const m: SweepRun = { id: 'manager', seq: 4, pane: null, over: true, sub: '' }
   expect(taskName('manager', 3)).toBe('f-manager-3')
   expect(sweep(['f-manager-3'], [m], 'other')).toEqual([])
 })
@@ -78,7 +79,26 @@ test('sweepNames keeps the previous attempt when the run pane is that task', () 
 test('sweepNames keeps every name of a run whose state is not readable, alone and with a colliding id', () => {
   const long = 'x'.repeat(70)
   const a = { ...done, id: `${long}a` }
-  const unreadable: SweepRun = { id: `${long}b`, seq: -1, pane: null, over: false }
+  const unreadable: SweepRun = { id: `${long}b`, seq: -1, pane: null, over: false, sub: '' }
   expect(sweep([taskName(a.id, 10)], [a, unreadable])).toEqual([])
   expect(sweep([t(done, 10)], [unreadable])).toEqual([])
+})
+
+test("sweepNames picks a parked run's leak at its own seq", () => {
+  for (const sub of ['waiting', 'backoff', 'stuck'])
+    expect(sweep([t(live, 5)], [{ ...live, sub, pane: null }])).toEqual([t(live, 5)])
+})
+
+test('sweepNames keeps the current seq unless the run is parked', () => {
+  const keep = (n: string, runs: SweepRun[]) => expect(sweep([n], runs)).toEqual([])
+  keep(t(live, 5), [{ ...live, sub: 'working', pane: null }]) // launch in progress
+  keep(t(live, 5), [live]) // live worker
+  keep(t(live, 5), [{ ...live, sub: 'stuck' }]) // stuck, inspected
+  keep(t(live, 5), [{ ...live, sub: 'backoff' }])
+  for (const sub of ['', 'Waiting', 'asking', 'waiting ']) keep(t(live, 5), [{ ...live, sub, pane: null }])
+  keep(t(live, 6), [{ ...live, sub: 'waiting', pane: null }]) // above seq
+  const long = 'x'.repeat(70)
+  const a = { ...live, id: `${long}a`, seq: 10, pane: null, sub: 'waiting' }
+  const b = { ...a, id: `${long}b` }
+  keep(taskName(a.id, 10), [a, b]) // two owners
 })
