@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'"
+    />
+    <title>factory</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bd: #8884;
+        --mut: #888;
+      }
+      body {
+        font:
+          14px/1.45 system-ui,
+          sans-serif;
+        margin: 0;
+      }
+      header {
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+        padding: 0.5rem 1rem;
+        border-bottom: 1px solid var(--bd);
+        flex-wrap: wrap;
+      }
+      nav {
+        display: flex;
+        gap: 0.25rem;
+        flex-wrap: wrap;
+      }
+      nav button {
+        font: inherit;
+        padding: 0.25rem 0.7rem;
+        border: 1px solid var(--bd);
+        background: none;
+        color: inherit;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      nav button[aria-current] {
+        background: #2a6fdb;
+        color: #fff;
+        border-color: #2a6fdb;
+      }
+      main {
+        padding: 1rem;
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+      h2 {
+        font-size: 1rem;
+        margin: 1.25rem 0 0.4rem;
+      }
+      .mut {
+        color: var(--mut);
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 0.25rem 0.6rem;
+        border-bottom: 1px solid var(--bd);
+        vertical-align: top;
+      }
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        margin: 0;
+      }
+      .err {
+        color: #c33;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>factory</strong>
+      <nav id="nav"></nav>
+      <span id="stamp" class="mut"></span>
+    </header>
+    <main id="main"></main>
+    <script>
+      // The page holds no factory logic. Each section only shows the answers of /v1 operations.
+      // ponytail: poll every 5 s (spec 008 FR-010). Upgrade path: /v1/events.
+      const SECTIONS = {
+        Overview: [
+          ['Board', '/v1/board'],
+          ['Manager lease', '/v1/lease'],
+        ],
+        Runs: [['Runs', '/v1/status']],
+        'Epics and backlog': [['Backlog', '/v1/backlog']],
+        PRs: [['Open pull requests', '/v1/prs']],
+        Rigs: [['Rigs', '/v1/rigs']],
+        Runners: [['Runners', '/v1/runners']],
+        Mail: [['Mail', '/v1/mail']],
+        Manager: [
+          ['Questions for you', '/v1/decisions'],
+          ['Manager steps', '/v1/steps'],
+          ['Metrics', '/v1/metrics'],
+        ],
+      }
+      const el = (tag, text, cls) =>
+        Object.assign(document.createElement(tag), { textContent: text ?? '', className: cls ?? '' })
+      const cell = v => (v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v ?? ''))
+      // An array of objects is a table. Any other JSON or text is a block of text.
+      function render(v) {
+        if (Array.isArray(v) && v.length && v.every(r => r && typeof r === 'object' && !Array.isArray(r))) {
+          const cols = [...new Set(v.flatMap(Object.keys))]
+          const t = el('table'),
+            h = t.createTHead().insertRow()
+          for (const c of cols) h.append(el('th', c))
+          for (const r of v) {
+            const tr = t.insertRow()
+            for (const c of cols) tr.insertCell().textContent = cell(r[c])
+          }
+          return t
+        }
+        return el('pre', typeof v === 'string' ? v : JSON.stringify(v, null, 2))
+      }
+      // Presentation only: the epic counts come from the core (backlog.show). The page only lays them out.
+      const done = c => `${c.closed}/${c.total}`
+      function renderBacklog(rigs) {
+        const box = el('div')
+        for (const r of rigs) {
+          const epics = (r.epics ?? []).map(e => ({
+            epic: '  '.repeat(e.depth) + e.id,
+            title: e.title,
+            status: e.status,
+            done: done(e.counts),
+            'in progress': e.counts.in_progress,
+            blocked: e.counts.blocked,
+          }))
+          box.append(el('h2', r.name), ...(r.error ? [el('pre', r.error, 'err')] : []))
+          if (epics.length) box.append(el('h3', 'Epics'), render(epics))
+          for (const k of ['queued', 'unqueued']) if (r[k]?.length) box.append(el('h3', k), render(r[k]))
+        }
+        return box
+      }
+      const RENDER = { '/v1/backlog': v => (Array.isArray(v) ? renderBacklog(v) : render(v)) }
+      async function load(path) {
+        try {
+          const r = await fetch(path, { cache: 'no-store' })
+          const text = await r.text()
+          if (!r.ok) return el('pre', `${r.status} ${text}`, 'err')
+          let v = text
+          try {
+            v = JSON.parse(text)
+          } catch {}
+          return (RENDER[path] ?? render)(v)
+        } catch (e) {
+          return el('pre', String(e), 'err')
+        }
+      }
+      let current = decodeURIComponent(location.hash.slice(1))
+      if (!SECTIONS[current]) current = 'Overview'
+      const nav = document.getElementById('nav'),
+        main = document.getElementById('main')
+      async function show() {
+        const name = current
+        const parts = await Promise.all(
+          SECTIONS[name].map(async ([title, path]) => [title, await load(path)]),
+        )
+        if (name !== current) return
+        main.replaceChildren(...parts.flatMap(([title, node]) => [el('h2', title), node]))
+        document.getElementById('stamp').textContent = 'updated ' + new Date().toLocaleTimeString()
+      }
+      for (const name of Object.keys(SECTIONS)) {
+        const b = el('button', name)
+        b.onclick = () => {
+          current = name
+          location.hash = encodeURIComponent(name)
+          mark()
+          show()
+        }
+        nav.append(b)
+      }
+      function mark() {
+        for (const b of nav.children) b.toggleAttribute('aria-current', b.textContent === current)
+      }
+      mark()
+      show()
+      setInterval(show, 5000)
+    </script>
+  </body>
+</html>

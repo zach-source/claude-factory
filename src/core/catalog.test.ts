@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   CATALOG,
   CATALOG_VERSION,
@@ -7,6 +10,7 @@ import {
   readBody,
   readQuery,
   slimBoard,
+  snapFresh,
   snapshot,
   type Field,
   type Op,
@@ -165,9 +169,9 @@ describe('CATALOG', () => {
     ])
     expect(CATALOG.filter(o => o.route.path === '/v1/gc')).toHaveLength(1)
   })
-  test('has 30 operations: 20 GET and 10 POST', () => {
-    expect(CATALOG.length).toBe(30)
-    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(20)
+  test('has 31 operations: 21 GET and 10 POST', () => {
+    expect(CATALOG.length).toBe(31)
+    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(21)
     expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(10)
     expect(CATALOG.filter(o => o.route.method === 'POST' && !o.mutates).map(o => o.name)).toEqual([
       'guard.check',
@@ -242,6 +246,7 @@ describe('CATALOG', () => {
       'guard.check POST /v1/guard/check',
       'lease.show GET /v1/lease',
       'mail.list GET /v1/mail',
+      'manager.context GET /v1/manager/context',
       'metrics.show GET /v1/metrics',
       'plan.show GET /v1/plan',
       'prs.show GET /v1/prs',
@@ -328,5 +333,28 @@ describe('slimBoard and snapshot (claude-factory-hpmc.23)', () => {
     const out = JSON.parse((await snapshot(c, { views: 'board,lease' })).out)
     expect(out.views.board).toEqual({ error: 'no tick yet' })
     expect(out.views.lease).toBeDefined()
+  })
+  test('snapshot --max-age answers from the cache and computes a view only when it is older (ql0jz)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'snap-'))
+    let computed = 0
+    const c = {
+      home,
+      env: {},
+      port: {},
+      cli: async () => ({ code: 0, out: '', err: '' }),
+      board: () => (computed++, board),
+    } as never
+    const run = (maxAge?: string) => snapshot(c, { views: 'board', ...(maxAge ? { maxAge } : {}) })
+    await run('60000')
+    expect(computed).toBe(1)
+    expect(snapFresh(home, 'board', 60000)).toBe(true)
+    expect(snapFresh(home, 'board', 60000, Date.now() + 61000)).toBe(false)
+    expect(JSON.parse((await run('60000')).out).views.board.runs[0].id).toBe('r1')
+    expect(computed).toBe(1) // the second call read the cache
+    await Bun.sleep(5)
+    await run('0') // a view older than 0 ms is computed again
+    expect(computed).toBe(2)
+    await run() // no maxAge: no cache read
+    expect(computed).toBe(3)
   })
 })

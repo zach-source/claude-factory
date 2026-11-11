@@ -81,6 +81,7 @@ import {
 import { otelOf, type Otel } from './otel'
 import { watchDecide, WATCH_FAIL_PASSES, type Seen, type WatchedPr } from './watch'
 import { sweepNames as axSweepNames, type SweepRun } from './axsweep'
+import { epicRows } from './ui-data'
 import { ORPHAN_CAP, orphanSweep, type OrphanCtx, type OrphanPr } from './orphans'
 import {
   actorOf,
@@ -353,7 +354,7 @@ import {
   workerMarker,
 } from './core/caller'
 import type { Ctx as OpCtx, Env, Input as OpInput, Port, Print, RunResult as OpResult } from './core/catalog'
-import { slimBoard, snapshot as snapshotRun } from './core/catalog'
+import { slimBoard, snapFresh, snapshot as snapshotRun } from './core/catalog'
 import * as backlogOp from './core/ops/backlog'
 import * as decisionsOp from './core/ops/decisions'
 import * as gatesOp from './core/ops/gates'
@@ -366,6 +367,7 @@ import * as planOp from './core/ops/plan'
 import * as prsOp from './core/ops/prs'
 import * as rigsOp from './core/ops/rigs'
 import * as runsOp from './core/ops/runs'
+import { ensurePlanPick, savedPlanPick } from './plan-model'
 import { cursorCap, cursorLine, cursorMeter, cursorVerdict, refreshCursorMeter } from './cursor-meter'
 import { grokBudget, grokLine, grokSpent, grokVerdict, logGrokSpend } from './grok-meter'
 import { maskAssignments } from './worker-hook'
@@ -2199,7 +2201,18 @@ function logLaunch(run: Run, node: string, seq: number, agent: string, resume: b
     const rig = rigOf(run.repo)?.name
     const harness = harnessOf(agent) ?? 'other'
     const model = ax.modelOf(agent) ?? 'default'
-    const line = { at: Date.now(), run: run.id, rig, node, seq, harness, model, resume }
+    const pick = node === 'plan' ? savedPlanPick(runDir(run.id)) : null
+    const line = {
+      at: Date.now(),
+      run: run.id,
+      rig,
+      node,
+      seq,
+      harness,
+      model,
+      resume,
+      ...(pick && { pick }),
+    }
     appendFileSync(join(HOME, 'launches.jsonl'), `${JSON.stringify(line)}\n`)
   } catch {
     // best effort: see above
@@ -2978,6 +2991,12 @@ export const pickAgent = (
   home = HOME,
 ) => {
   const params = paramsOf(def, rig, env)
+  // plan's Jev pick (plan-model.ts) replaces the default plan_model only; a rig or env value wins
+  const jev =
+    node === 'plan' && params.plan_model === def.params?.plan_model
+      ? savedPlanPick(join(home, 'runs', runId))
+      : null
+  if (jev) params.plan_model = jev.model
   const split = def.nodes[node]!.split
   // a host without the unified_exec pin cannot launch codex (the probe refuses), so the split keeps Claude there
   const codexOk = runner === 'ax' ? axCodex(env) : existsSync(pin)
@@ -5029,6 +5048,8 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
   try {
     // a migrated run's worktree is not in the task: make it from origin before any git call in it
     if (sub === 'working' && inAx() && !existsSync(run.worktree)) reviveWorktree(run)
+    // plan: one Jev call picks the model before the first launch (plan-model.ts)
+    if (sub === 'working' && node === 'plan' && !run.ship) await ensurePlanPick(runDir(run.id), run.goal)
     if (sub === 'working')
       agent = haltRun(run, def, node, ctx(), send, halt, now) ?? reconcile(run, def, ctx(), node, send, now)
     else agent = agentOf(def, actor.getSnapshot().value, ctx())
@@ -6875,9 +6896,8 @@ function devenvPass(names: string[], force = false) {
       if (!devenv.isDue(devenv.readStamp(stampFile), key, force)) return `${rig.name}: up to date (${key})`
       const log = join(HOME, 'devenv', `${rig.name}.log`)
       mkdirSync(join(HOME, 'devenv'), { recursive: true })
-      const remote = httpsRemote(git(rig.repo, 'remote', 'get-url', 'origin'))
-      const r = devenv.build(cfg, { image, remote, rev, key, log, force })
-      devenv.writeStamp(stampFile, { key, ok: r.ok, at: Date.now(), rev })
+      const r = devenv.build(cfg, { image, repo: rig.repo, rev, key, log, force })
+      devenv.writeStamp(stampFile, { key, ok: r.ok, at: Date.now(), rev, ...(r.ok ? {} : { why: r.why }) })
       return r.ok
         ? `${rig.name}: built and cached ${rev.slice(0, 7)} (${key})`
         : `${rig.name}: failed, see ${log}\n${r.why}`
@@ -8150,18 +8170,27 @@ async function tick(isPatrol = false) {
     release()
     // FACTORY_NO_KICK=1 (tests): a detached pass would recreate a removed home
     if (process.env.FACTORY_NO_KICK !== '1' && (rigs().length || runIds().length)) {
-      kickBeads() // claims keep their heartbeat while halted; dispatch checks for itself
-      if (!halted()) kickDream()
-      if (!halted()) kickWatch()
-      if (!halted()) kickSync()
-      kickDevenv()
-      kickConfigSync()
-      kickSelfUpdate()
-      kickGc()
-      kickGcWorktrees()
-      kickSweeps()
+      // a kick can throw (stamp EACCES or ENOSPC): log one line, so the later kicks still run
+      const safe = <T>(name: string, kick: () => T): T | undefined => {
+        try {
+          return kick()
+        } catch (e) {
+          console.error(`tick: ${name} failed: ${(e as Error).message}`)
+        }
+      }
+      safe('kickBeads', kickBeads) // claims keep their heartbeat while halted; dispatch checks for itself
+      if (!halted()) safe('kickDream', kickDream)
+      if (!halted()) safe('kickWatch', kickWatch)
+      if (!halted()) safe('kickSync', kickSync)
+      safe('kickDevenv', kickDevenv)
+      safe('kickConfigSync', kickConfigSync)
+      safe('kickSelfUpdate', kickSelfUpdate)
+      safe('kickGc', kickGc)
+      safe('kickGcWorktrees', kickGcWorktrees)
+      safe('kickSweeps', kickSweeps)
       // one wiki pass in each tick, so refresh and groom never race for wiki.lock; a halt gets refresh only
-      if (!kickWiki('refresh', 30) && !halted()) kickWiki('groom', 24 * 60)
+      if (!safe('kickWiki', () => kickWiki('refresh', 30)) && !halted())
+        safe('kickWiki', () => kickWiki('groom', 24 * 60))
     }
   }
 }
@@ -12557,7 +12586,10 @@ async function backlog() {
     try {
       const b = beads(rig.repo, 'factory')
       // three listings a rig, whatever its size: ready, blocked and every bead (child counts)
-      return { ...w, ...backlogOf(b.ready(), b.unqueued(), b.blocked(), b.every()) }
+      const all = b.every()
+      // the epic progress is the one of `factory ui` (src/ui-data.ts), so the web page needs no logic of its own
+      const epics = epicRows(all.map(x => ({ ...x, parent: parentOf(x) })))
+      return { ...w, ...backlogOf(b.ready(), b.unqueued(), b.blocked(), all), epics }
     } catch (err) {
       return { ...w, queued: [], unqueued: [], error: (err as Error).message }
     }
@@ -13382,7 +13414,7 @@ async function wikiRefresh(dryRun: boolean): Promise<string[]> {
       }))
     files.set(
       `rigs/${rig.name}.md`,
-      renderRigPage(rig.name, mine, waitingIds, queues[rig.name] ?? [], shipped, now),
+      renderRigPage(rig.name, mine, waitingIds, queues[rig.name] ?? [], shipped, now, halted()),
     )
   }
   // an agent pass owns this worktree: a link or a non-regular file at a target would take a write outside it
@@ -14647,12 +14679,23 @@ if (import.meta.main && !outboxCmd)
       }
       case 'snapshot': {
         // claude-factory-hpmc.23: several read views in one call; the board view is the slim board
-        if (args[0] !== '--views' || !args[1] || args.length !== 2)
-          fail('usage: factory snapshot --views a,b')
-        const board = args[1]!.split(',').includes('board')
+        // claude-factory-ql0jz: --max-age <ms> takes a view from snapshot-cache.json when it is that fresh
+        const ageAt = args.indexOf('--max-age')
+        const maxAge = ageAt < 0 ? undefined : args[ageAt + 1]
+        const rest = ageAt < 0 ? args : args.filter((_a, k) => k !== ageAt && k !== ageAt + 1)
+        if (
+          rest[0] !== '--views' ||
+          !rest[1] ||
+          rest.length !== 2 ||
+          (ageAt >= 0 && !/^\d+$/.test(maxAge ?? ''))
+        )
+          fail('usage: factory snapshot --views a,b [--max-age ms]')
+        const needBoard =
+          rest[1]!.split(',').includes('board') && !(maxAge && snapFresh(HOME, 'board', Number(maxAge)))
+        const board = needBoard
           ? await readOnlyBoard(leases.readLease(HOME) ?? { holder: 'none', kind: 'none', at: Date.now() })
           : null
-        emit(await snapshotRun({ ...cliCtx(), board: () => board }, { views: args[1]! }))
+        emit(await snapshotRun({ ...cliCtx(), board: () => board }, defined({ views: rest[1]!, maxAge })))
         break
       }
       case 'flows': {
