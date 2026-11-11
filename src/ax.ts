@@ -409,6 +409,14 @@ function stripRegistryHosts(extra: Egress[]): Egress[] {
     .filter(e => e.hosts.length > 0)
 }
 
+class HostError extends Error {}
+
+/** fail closed: a host that fails HOST (a `*` is a Substrate wildcard) must not become an egress rule */
+function plainHost(host: string, name: string) {
+  if (!HOST.test(host))
+    throw new HostError(`${name} must name a plain host (no *, no IPv6, two labels or more)`)
+}
+
 /** the gate's own egress rule: an https rule for https://, a Substrate HTTPRule ({http: ...}) for http://.
  * The host must be a plain name (HOST): a `*` there is a Substrate wildcard that opens the port on every host. */
 function gateRule(gateUrl: string, name = 'FACTORY_AX_PKG_GATE') {
@@ -420,8 +428,7 @@ function gateRule(gateUrl: string, name = 'FACTORY_AX_PKG_GATE') {
   }
   if (u.protocol !== 'https:' && u.protocol !== 'http:')
     throw new Error(`${name} must be an http or https URL`)
-  if (!HOST.test(u.hostname))
-    throw new Error(`${name} must name a plain host (no *, no IPv6, two labels or more)`)
+  plainHost(u.hostname, name)
   const defaultPort = u.protocol === 'https:' ? 443 : 80
   const port = u.port ? Number(u.port) : defaultPort
   const ports = port !== defaultPort ? { ports: { numbers: [port] } } : {}
@@ -1131,6 +1138,7 @@ function doltRule(r: DoltRig): (Egress & { port: number }) | undefined {
   try {
     const u = r.beadsRemote ? new URL(r.beadsRemote.url) : null
     if (!u?.hostname || u.protocol !== 'https:') return undefined
+    plainHost(u.hostname, 'the rig beadsRemote url')
     const port = Number(u.port) || 443
     const own = r.egress?.find(
       e => e.key && e.hosts.includes(u.hostname) && (e.port ?? 443) === port && !e.http,
@@ -1142,7 +1150,8 @@ function doltRule(r: DoltRig): (Egress & { port: number }) | undefined {
       prefix: own ? (own.prefix ?? 'Bearer ') : 'Basic ',
       port,
     }
-  } catch {
+  } catch (e) {
+    if (e instanceof HostError) throw e
     return undefined
   }
 }
@@ -1194,6 +1203,7 @@ export function managerEgress(
     try {
       const u = env[k] ? new URL(env[k]!) : null
       if (!u?.hostname) return []
+      plainHost(u.hostname, k)
       // the AX server's https rule has the gateway add the caller token (vault key AX_AUTH)
       if (k === MANAGER_AX_SERVER && u.protocol === 'https:')
         return [
@@ -1206,7 +1216,8 @@ export function managerEgress(
           },
         ]
       return [{ hosts: [u.hostname], port: Number(u.port) || 80, http: true }]
-    } catch {
+    } catch (e) {
+      if (e instanceof HostError) throw e
       return []
     }
   })
