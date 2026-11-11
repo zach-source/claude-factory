@@ -282,6 +282,7 @@ factory rig set app --runner ax --skills asd-ste100,egm --sandbox-class microvm
 factory rig egress add app broker.example.com=AWS_BROKER:Authorization: --port 8443 --path-prefix /v1/aws/acme/
 factory rig show app                                        # every field of the rig, secret values hidden
 factory rig env set svc FACTORY_SERVICES=0                  # svc runs on ax: set one env key of its VM workers
+printf %s "$TOKEN" | factory rig env set svc API_TOKEN=-   # read the value from stdin: it stays out of ps and history
 factory rig env unset svc FACTORY_SERVICES
 factory rig egress add svc cache.example=NIX_CACHE --port 8443   # add one egress rule
 factory devenv --missing                                    # the rig env and egress commands for each ax rig with a devenv and no cache
@@ -751,7 +752,7 @@ reach more hosts, with agent-vault's credential `KEY` injected for them. Runners
 A factory's `params` are what its worker commands name as `{name}`: lifecycle's are `claude` (the
 Claude Code launcher, default `claude-smart --new --no-channels`), `exec_model`, `judge_model` and
 `security_model`. A rig sets one with `--param name=value`; otherwise the factory's environment
-can, as `FACTORY_<NAME>` (e.g. `FACTORY_CLAUDE=claude factory loop`); otherwise the default holds.
+can, as `FACTORY_<NAME>` (e.g. `FACTORY_CLAUDE=claude factory loop`); otherwise the default holds. `--param name=-` reads the value from stdin.
 The default worker and the dream start from `FACTORY_CLAUDE` too, and its executable is treated
 as Claude.
 

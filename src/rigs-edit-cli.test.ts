@@ -37,7 +37,7 @@ beforeEach(() => {
 })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
-const factory = (args: string[], extra: Record<string, string> = {}) => {
+const factory = (args: string[], extra: Record<string, string> = {}, stdin?: string) => {
   const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, BEADS_ACTOR, FACTORY_DEF_NAME, ...rest } = process.env
   const laptop = Object.fromEntries(Object.entries(rest).filter(([k]) => !k.startsWith('HERDR_')))
   const p = Bun.spawnSync([CLI, ...args], {
@@ -49,6 +49,7 @@ const factory = (args: string[], extra: Record<string, string> = {}) => {
       FACTORY_HERDR: herdr,
       ...extra,
     },
+    ...(stdin !== undefined && { stdin: new TextEncoder().encode(stdin) }),
   })
   return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
 }
@@ -472,11 +473,11 @@ test('a worker cannot run rig undo or rig history', () => {
 })
 
 /** run each row and expect exit 1, a message, and rigs.json and its history unchanged */
-function refused(rows: string[][], extra: Record<string, string> = {}) {
+function refused(rows: string[][], extra: Record<string, string> = {}, stdin?: string) {
   const before = text()
   const h = histCount()
   for (const row of rows) {
-    const r = factory(['rig', ...row], extra)
+    const r = factory(['rig', ...row], extra, stdin)
     expect(r.code, row.join(' ')).toBe(1)
     expect(r.err, row.join(' ')).not.toBe('')
     expect(r.out + r.err, row.join(' ')).not.toContain('zqsecret')
@@ -506,6 +507,86 @@ test('rig env set then unset round-trips', () => {
   factory(['rig', 'env', 'unset', 'y', 'K'])
   expect(list()[1]).toEqual(y)
   expect('env' in list()[1]).toBe(false)
+})
+
+test('rig env set KEY=- reads the value from stdin; other dash values stay literal', () => {
+  const { x, y, rx } = seed()
+  for (const arg of ['x', rx]) {
+    const r = factory(['rig', 'env', 'set', arg, 'K=-'], {}, 'v=zqsecret\n')
+    expect(r.code).toBe(0)
+    expect(r.out).toBe('rig x: set env K\n')
+    expect(r.out + r.err).not.toContain('zqsecret')
+    expect(text()).toBe(JSON.stringify([{ ...x, env: { A: 'b', K: 'v=zqsecret' } }, y], null, 2))
+  }
+  for (const [stdin, want] of [
+    ['a\r\n', 'a'],
+    ['a\n\n', 'a\n'],
+    ['a', 'a'],
+    ['l1\nl2\n', 'l1\nl2'],
+  ] as const) {
+    factory(['rig', 'env', 'set', 'x', 'K=-'], {}, stdin)
+    expect(list()[0].env.K).toBe(want)
+  }
+  for (const v of ['--', '-x', 'x-']) {
+    factory(['rig', 'env', 'set', 'x', `K=${v}`])
+    expect(list()[0].env.K).toBe(v)
+  }
+  factory(['rig', 'env', 'set', 'x', 'K='])
+  expect(list()[0].env.K).toBe('')
+})
+
+test('rig env set KEY=- refuses empty stdin and a bad command before it reads', () => {
+  seed()
+  refused([['env', 'set', 'x', 'K=-']], {}, '')
+  refused([['env', 'set', 'x', 'K=-']], {}, '\n')
+  refused(
+    [
+      ['env', 'set', 'nope', 'K=-'],
+      ['env', 'set', 'x', '1A=-'],
+      ['env', 'set', 'x', 'K=-', 'extra'],
+    ],
+    {},
+    'zqsecret',
+  )
+})
+
+test('rig add and set --param name=- read the value from stdin', () => {
+  seed()
+  const r = factory(['rig', 'set', 'x', '--param', 'fast_check=-'], {}, 'bunx prettier --check .\n')
+  expect(r.code).toBe(0)
+  expect(r.out).toBe('rig x: set params\n')
+  expect(list()[0].params).toEqual({ base_branch: 'dev', fast_check: 'bunx prettier --check .' })
+  const a = factory(['rig', 'add', 'z', repo('z'), '--param', 'fast_check=-'], {}, 'zqsecret\n')
+  expect(a.code).toBe(0)
+  expect(a.out + a.err).not.toContain('zqsecret')
+  expect(list().find((r: { name: string }) => r.name === 'z').params.fast_check).toBe('zqsecret')
+})
+
+test('rig --param name=- refuses a second dash, a bad pair, empty stdin; no stdin value in a message', () => {
+  seed()
+  const two = factory(['rig', 'set', 'x', '--param', 'fast_check=-', '--param', 'base_branch=-'], {}, 'zqsecret')
+  expect(two.code).toBe(1)
+  expect(two.err).toContain('only one value can come from stdin')
+  expect(two.err).not.toContain('read no value from stdin')
+  const bad = factory(['rig', 'set', 'x', '--param', '-'], {}, 'zqsecret')
+  expect(bad.err).toContain('name=value')
+  expect(bad.err).not.toContain('only one')
+  const bb = factory(['rig', 'set', 'x', '--param', 'base_branch=-'], {}, 'a b zqsecret\n')
+  expect(bb.code).toBe(1)
+  expect(bb.err).toContain('the stdin value')
+  refused(
+    [
+      ['set', 'x', '--param', 'fast_check=-', '--param', 'base_branch=-'],
+      ['set', 'x', '--param', 'fast_check=-', '--param', 'nope=1'],
+      ['add', 'z', repo('z'), '--param', 'fast_check=-', '--protected-branch', 'a b'],
+      ['set', 'x', '--param', '-'],
+      ['set', 'x', '--param', 'nope=-'],
+      ['set', 'x', '--param', 'base_branch=-'],
+    ],
+    {},
+    'a b zqsecret\n',
+  )
+  refused([['set', 'x', '--param', 'fast_check=-']], {}, '')
 })
 
 test('rig env refuses a bad pair or key, an unset key and an unknown rig; the file stays', () => {
