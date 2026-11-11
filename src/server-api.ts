@@ -196,6 +196,7 @@ const MAX_BODY = 128 * 1024
 const DAY = 24 * 3600_000
 const EVENTS_KEEP = 256
 
+const WEB_PAGE = readFileSync(new URL('./web/index.html', import.meta.url), 'utf8')
 const reply = (status: number, body: string, json = true) =>
   new Response(body, { status, headers: { 'content-type': json ? 'application/json' : 'text/plain' } })
 const refuse = (status: number, why: string) => reply(status, `${JSON.stringify({ refused: why })}\n`)
@@ -351,6 +352,9 @@ export function clientHandler(o: ClientOpts) {
     if (req.headers.has('authorization'))
       return refuse(403, 'worker tokens are not accepted on the client port')
     const url = new URL(req.url)
+    // The web page. It holds no data: it calls the /v1 routes below with the same person certificate.
+    if (req.method === 'GET' && url.pathname === '/')
+      return new Response(WEB_PAGE, { headers: { 'content-type': 'text/html; charset=utf-8' } })
     if (req.method === 'GET' && url.pathname === '/v1/events') {
       const a = /^(?:|\?after=([0-9]+))$/.exec(url.search)
       return a
