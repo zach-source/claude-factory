@@ -50,6 +50,8 @@ After a populated header, body lines remain prose and cannot change scope.
 An empty header has one compatibility exception, defined below.
 
 For an empty header, locate the first subsequent line that starts with `---` in the normalized text.
+Find the delimiter on normalized LF line boundaries only. A lone CR, U+2028 or U+2029 does not end the region.
+Inside the region, split the lines for rig-like declarations at LF, CR, U+2028 and U+2029 (`LINE_END`).
 The line can end at EOF. `--- `, `---x` and `----` count as delimiters. ` ---` (indented) does not.
 If it exists, inspect only the lines between the empty header and that delimiter.
 If any line matches the rig-like grammar, reject the note for every query rig.

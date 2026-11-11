@@ -2486,7 +2486,11 @@ test('u509 legacy delimiter is an LF line, not CR, LS or PS', () => {
       const text = `---\n---\nx${sep}${d}\nrig: other\n---\nbody`
       expect(parse('ci/a.md', text).rig, JSON.stringify(text)).toBeTruthy()
       for (const rig of ['acme', 'other', undefined, parse('ci/a.md', text).rig])
-        expect(u509Ranked(text, rig).found, `${rig}`).toHaveLength(0)
+        for (const path of ['ci/case.md', 'ci/README.md']) {
+          const { found, calls } = u509Ranked(text, rig, path)
+          expect(found, `${path} ${rig}`).toHaveLength(0)
+          expect(calls, `${path} ${rig}`).toEqual({ vec: 0, topic: 0, act: 0 })
+        }
     }
 })
 

@@ -356,6 +356,18 @@ test('u509 empty header exception snapshot', () => {
     spaceAfter: '---\n---\nrig: other\n--- \nbody MARK',
     dashX: '---\n---\nrig: other\n---x\nbody MARK',
     fourDashes: '---\n---\nrig: other\n----\nbody MARK',
+    earlycrPlain: '---\n---\nx\r---\nrig: other\n---\nbody MARK',
+    earlycrSpace: '---\n---\nx\r--- \nrig: other\n---\nbody MARK',
+    earlycrX: '---\n---\nx\r---x\nrig: other\n---\nbody MARK',
+    earlycrFour: '---\n---\nx\r----\nrig: other\n---\nbody MARK',
+    earlylsPlain: '---\n---\nx\u2028---\nrig: other\n---\nbody MARK',
+    earlylsSpace: '---\n---\nx\u2028--- \nrig: other\n---\nbody MARK',
+    earlylsX: '---\n---\nx\u2028---x\nrig: other\n---\nbody MARK',
+    earlylsFour: '---\n---\nx\u2028----\nrig: other\n---\nbody MARK',
+    earlypsPlain: '---\n---\nx\u2029---\nrig: other\n---\nbody MARK',
+    earlypsSpace: '---\n---\nx\u2029--- \nrig: other\n---\nbody MARK',
+    earlypsX: '---\n---\nx\u2029---x\nrig: other\n---\nbody MARK',
+    earlypsFour: '---\n---\nx\u2029----\nrig: other\n---\nbody MARK',
   }
   const kept: Record<string, string> = {
     eofEmpty: '---\n---',
