@@ -263,6 +263,7 @@ test('u509 snapshot scope matrix', () => {
     bomCrlfOther: `${bom}---\r\nsummary: s\r\nrig: other\r\n---\r\nbody MARK`,
     mixedOther: '---\nsummary: s\r\nrig: other\n---\r\nbody MARK',
     eofOther: '---\nsummary: s\nrig: other\n---',
+    emptyThenBlock: '---\n---\nrig: other\n---\nbody MARK',
   }
   const good: Record<string, string> = {
     'crlf.md': '---\r\nsummary: s\r\nrig: acme\r\n---\r\nbody\r\n',

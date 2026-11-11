@@ -2524,3 +2524,22 @@ test('u509 empty header keeps shared scope and body isolation', () => {
   }
   expect(parse('ci/a.md', shared.lf ?? '').body).toBe('rig: other')
 })
+
+test('u509 empty header then a rig block closed by a later delimiter fails closed', () => {
+  const bom = '﻿'
+  const rows: Record<string, string> = {
+    lf: '---\n---\nrig: other\n---\nbody',
+    crlf: '---\r\n---\r\nrig: other\r\n---\r\nbody',
+    bom: `${bom}---\n---\nrig: other\n---\nbody`,
+    mixed: '---\r\n---\nrig: other\r\n---\nbody',
+    eof: '---\n---\nrig: other\n---',
+    capital: '---\n---\nRig: other\n---\nbody',
+    canonicalAcme: '---\n---\nrig: acme\n---\nbody',
+  }
+  const sentinel = parse('x.md', rows.lf ?? '').rig
+  for (const [name, text] of Object.entries(rows)) {
+    expect(parse('ci/a.md', text).rig, name).toBe(sentinel)
+    for (const rig of ['acme', 'other', undefined, sentinel])
+      expect(u509Ranked(text, rig).found, `${name} ${rig}`).toHaveLength(0)
+  }
+})

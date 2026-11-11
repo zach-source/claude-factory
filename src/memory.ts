@@ -89,8 +89,11 @@ export const parse = (path: string, text: string): Note => {
   const meta: Record<string, string> = Object.fromEntries(
     [...(m?.[1] ?? '').matchAll(/^(\w+):[ \t]*(.*)$/gm)].map(([, k, v]) => [k, v]),
   )
+  // empty header, then a later `---` line: older code read the lines between as the header. Any rig line there fails closed.
+  const gap = m && m[1] === undefined ? src.slice(m[0].length).split('\n') : []
+  const gapRig = gap.slice(0, Math.max(gap.indexOf('---'), 0)).some(l => RIG_LIKE.test(l))
   const decl = (m ? (m[1] ?? '') : src).split('\n').filter(l => RIG_LIKE.test(l))
-  if (decl.length > 1 || (decl.length === 1 && !(m && /^rig:[ \t]*\S/.test(decl[0] ?? ''))))
+  if (gapRig || decl.length > 1 || (decl.length === 1 && !(m && /^rig:[ \t]*\S/.test(decl[0] ?? ''))))
     meta.rig = INVALID_RIG
   const body = src.slice(m?.[0].length ?? 0).trim()
   return {
