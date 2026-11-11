@@ -285,7 +285,7 @@ function readerSegment(w: string[]): boolean {
  */
 function readOnly(command: string): boolean {
   let seg: string[] = []
-  for (let pos = 0; pos < command.length; ) {
+  for (let pos = 0; pos < command.length;) {
     TOKEN.lastIndex = pos
     const m = TOKEN.exec(command)
     if (!m) return false
