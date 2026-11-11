@@ -538,8 +538,16 @@ test.each<[string, string, string]>([
   ['Basic after odd char', 'Authorization: Basic dXNlcjpw!cGFzc3dvcmQ=zzzzzz', 'cGFzc3dvcmQ'],
   ['URL password with raw @', 'dsn postgres://app:p@ssw0rdTail@db.internal:5432/x', 'ssw0rdTail'],
   ['glpat with dot tail', 'tok ' + ['glpat', 'abcdefghij0123456789xyz.01.tAiL12345'].join('-'), 'tAiL12345'],
-  ['quoted Authorization', '"Authorization": "Bearer ' + 'zqTok' + 'enTail12345678901' + '"', 'zqTokenTail12345678901'],
-  ['quoted Bearer with tilde', '"Authorization": "Bearer ' + 'abc~def~ghi' + '~jkl~mno~pqr' + '"', 'def~ghi~jkl'],
+  [
+    'quoted Authorization',
+    '"Authorization": "Bearer ' + 'zqTok' + 'enTail12345678901' + '"',
+    'zqTokenTail12345678901',
+  ],
+  [
+    'quoted Bearer with tilde',
+    '"Authorization": "Bearer ' + 'abc~def~ghi' + '~jkl~mno~pqr' + '"',
+    'def~ghi~jkl',
+  ],
   ['ASIA secret next to key id', `id ${asia} secret ${awsSecret}`, awsSecret],
 ])('AC6 mask %s', (_n, text, secret) => {
   const t = lead(text)
