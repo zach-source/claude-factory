@@ -13,6 +13,7 @@ import {
   DOCKERFILE,
   isDue,
   remoteDevenv,
+  writeGhcrConfig,
   type ProposalRig,
 } from './devenv'
 
@@ -241,3 +242,9 @@ test('factory devenv --missing prints the commands, changes no file and refuses 
     'usage: factory devenv [rig...] [--force] | factory devenv --missing',
   )
 }, 60_000)
+
+test('writeGhcrConfig writes a placeholder ghcr.io login and no real secret', () => {
+  const dir = writeGhcrConfig(join(mkdtempSync(join(tmpdir(), 'devenv-g-')), 'docker'))
+  const c = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'))
+  expect(Buffer.from(c.auths['ghcr.io'].auth, 'base64').toString()).toBe('placeholder:placeholder')
+})

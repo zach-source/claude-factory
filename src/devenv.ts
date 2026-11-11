@@ -124,6 +124,17 @@ const caBundle = (env: Record<string, string | undefined>) => {
   return `${sys ? readFileSync(sys, 'utf8') : ''}\n${env.FACTORY_CA ?? ''}\n`
 }
 
+/**
+ * A Docker config with a placeholder login for ghcr.io. buildctl sends it as Basic to ghcr.io/token, and the egress
+ * gateway swaps in the real login (managerEgress). The file holds no secret.
+ */
+export function writeGhcrConfig(dir: string) {
+  mkdirSync(dir, { recursive: true })
+  const auth = Buffer.from('placeholder:placeholder').toString('base64')
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ auths: { 'ghcr.io': { auth } } }))
+  return dir
+}
+
 /** one line of a command's stderr for a reason: the first, hidden when it looks like a secret */
 const firstLine = (t: string) => hideSecret(t.split('\n')[0] ?? '')
 
@@ -156,10 +167,12 @@ export function build(
       github: !!gh?.out,
       prefix: Bun.which('buildctl') ? [] : ['nix', 'shell', 'nixpkgs#buildkit', '-c'],
     })
+    // buildctl: the client fetches the registry token (the package is internal), so no BUILDKIT_NO_CLIENT_TOKEN
+    const { BUILDKIT_NO_CLIENT_TOKEN: _drop, ...base } = process.env
     const p = run(cmd, {
       env: {
-        ...process.env,
-        BUILDKIT_NO_CLIENT_TOKEN: 'true',
+        ...(buildx ? { ...process.env, BUILDKIT_NO_CLIENT_TOKEN: 'true' } : base),
+        ...(buildx ? {} : { DOCKER_CONFIG: writeGhcrConfig(join(tmp, 'docker')) }),
         NIX_SSL_CERT_FILE: paths.ca,
         FACTORY_DEVENV_CACHE: token.out,
         FACTORY_DEVENV_GH: gh?.out,

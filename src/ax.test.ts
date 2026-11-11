@@ -2884,7 +2884,7 @@ test('launchManager applies the manager task with its command and env, then retr
     const prefixed = JSON.parse(readFileSync(join(dir, 'policy'), 'utf8')).rules.flatMap(
       (x: any) => x.https?.pathPrefixes ?? [],
     )
-    expect(prefixed).toEqual(['/repos/zach-source/', '/zach-source/', '/backend-api/codex/'])
+    expect(prefixed).toEqual(['/repos/zach-source/', '/zach-source/', '/backend-api/codex/', '/token'])
     expect(task.spec.debug).toBe(true)
     expect(task.spec.command).toEqual(['factory', 'manager', 'host', '--model', 'opus'])
     const env = Object.fromEntries(
@@ -2938,7 +2938,7 @@ test('managerEnv sets the token swap to a broker POST only when the broker is se
 })
 
 // the Codex fallback rules (y3f8w.1) follow the manager's other rules
-const CODEX = [ax.OPENAI_RULE, ax.CODEX_CHATGPT_RULE, ax.BUILDER_RULE]
+const CODEX = [ax.OPENAI_RULE, ax.CODEX_CHATGPT_RULE, ax.BUILDER_RULE, ax.GHCR_TOKEN_RULE]
 test('managerEgress adds an http rule for each in-cluster address that is a URL', () => {
   expect(ax.managerEgress({})).toEqual([{ hosts: ['claude.ai'] }, ...CODEX])
   expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'not a url' })).toEqual([
