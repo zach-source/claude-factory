@@ -6613,7 +6613,7 @@ function storeDreamUsage(start: number, codexHome?: string) {
 }
 
 const removedLine = (r: { path: string; target: string; skipped?: true }[]) =>
-  `removed symlinks: ${r.map(l => (l.skipped ? l.path + ' (directory changed during the scan, not entered)' : l.path + ' -> ' + l.target)).join(', ')}\n`
+  `removed symlinks: ${r.map(l => (l.skipped ? l.path + ' (skipped: changed or unreadable during the scan)' : l.path + ' -> ' + l.target)).join(', ')}\n`
 
 async function dream() {
   const release = hold('dream.lock')

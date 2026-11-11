@@ -1,6 +1,7 @@
 // claude-factory-eqxi: a symlink in the memory store is never read and a dream removes it
 import { expect, test } from 'bun:test'
 import {
+  chmodSync,
   closeSync,
   constants,
   existsSync,
@@ -14,10 +15,12 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
+import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import {
   add,
+  mdFileCount,
   compact,
   readEvalCases,
   resolvePath,
@@ -452,4 +455,59 @@ test('a writer at a FIFO throws at once and does not block (claude-factory-fkw4 
     closeSync(reader)
   }
   rmSync(root, { recursive: true, force: true })
+})
+
+test('an unreadable dir never stops a scan (claude-factory-fkw4 R4)', () => {
+  if (process.getuid?.() === 0) return
+  const { root, dir, secret } = linkStore()
+  writeFileSync(join(dir, 'topic', 'ok.md'), '---\nsummary: plain note\n---\nbody\n')
+  mkdirSync(join(dir, 'locked'))
+  writeFileSync(join(dir, 'locked', 'n.md'), 'x')
+  mkdirSync(join(dir, 'noexec'))
+  writeFileSync(join(dir, 'noexec', 'n.md'), 'x')
+  chmodSync(join(dir, 'locked'), 0o311)
+  chmodSync(join(dir, 'noexec'), 0o644)
+  try {
+    expect(walk(dir).notes.map(n => n.path)).toContain('topic/ok.md')
+    expect(() => mdFileCount(dir)).not.toThrow()
+    const out = join(root, 'snap.tgz')
+    expect(() => snapshot(dir, undefined, out)).not.toThrow()
+    mkdirSync(join(dir, 'z'))
+    symlinkSync(secret, join(dir, 'z', 'link.md'))
+    const r = dropLinks(dir)
+    expect(() => lstatSync(join(dir, 'z', 'link.md'))).toThrow()
+    expect(r).toContainEqual({ path: 'locked', target: '', skipped: true })
+  } finally {
+    chmodSync(join(dir, 'locked'), 0o755)
+    chmodSync(join(dir, 'noexec'), 0o755)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('snapshot and walk skip a unix socket named like a note', async () => {
+  const { root, dir } = linkStore()
+  writeFileSync(join(dir, 'topic', 'ok.md'), '---\nsummary: plain note\n---\nbody\n')
+  const server = createServer()
+  try {
+    await new Promise<void>((ok, bad) => {
+      server.once('error', bad)
+      server.listen(join(dir, 'topic', 's.md'), ok)
+    })
+  } catch (e) {
+    console.log('no unix socket here:', (e as NodeJS.ErrnoException).code)
+    rmSync(root, { recursive: true, force: true })
+    return
+  }
+  try {
+    const out = join(root, 'snap.tgz')
+    expect(snapshot(dir, undefined, out)).not.toBeNull()
+    const x = join(root, 'x')
+    mkdirSync(x)
+    expect(Bun.spawnSync(['tar', '-xzf', out, '-C', x]).exitCode).toBe(0)
+    expect(existsSync(join(x, 'topic', 'ok.md'))).toBe(true)
+    expect(walk(dir).notes.map(n => n.path)).toContain('topic/ok.md')
+  } finally {
+    server.close()
+    rmSync(root, { recursive: true, force: true })
+  }
 })

@@ -452,14 +452,22 @@ const regular = (f: string) => {
 }
 
 /** unlinks every symlink under dir (not the top-level .git) and returns what each pointed at; never follows one (claude-factory-eqxi).
- * It enters a directory with chdir and checks cwd. It reads and unlinks one name at a time. A directory that a live process swaps for a link is not entered: it comes back with skipped true */
+ * It enters a directory with chdir and checks cwd. It reads and unlinks one name at a time. A directory that a live process swaps for a link, or one that it cannot read, is not scanned: it comes back with skipped true */
 export function dropLinks(dir: string): { path: string; target: string; skipped?: true }[] {
   const out: { path: string; target: string; skipped?: true }[] = []
   if (!existsSync(dir)) return out
   const start = process.cwd()
   const base = realpathSync(dir)
   const scan = (here: string) => {
-    for (const e of readdirSync('.', { withFileTypes: true })) {
+    let entries
+    try {
+      entries = readdirSync('.', { withFileTypes: true })
+    } catch (e) {
+      if (!['EACCES', 'ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) throw e
+      out.push({ path: relative(base, here) || '.', target: '', skipped: true })
+      return
+    }
+    for (const e of entries) {
       const rel = relative(base, join(here, e.name))
       if (e.isSymbolicLink()) {
         out.push({ path: rel, target: readlinkSync(e.name) })
@@ -492,6 +500,10 @@ export function dropLinks(dir: string): { path: string; target: string; skipped?
   return out
 }
 
+/** a dir that a live process made unreadable, removed or linked during a scan: the scan skips the rest of that dir (claude-factory-fkw4) */
+const unreadable = (e: unknown) =>
+  ['EACCES', 'ENOENT', 'ENOTDIR', 'ELOOP'].includes((e as NodeJS.ErrnoException).code ?? '')
+
 /** every note, with its topic's README beside it: the dot folders (.git, the index, .archive) are not memory */
 export function walk(dir: string) {
   const notes: Note[] = []
@@ -499,28 +511,32 @@ export function walk(dir: string) {
   if (!existsSync(dir)) return { notes, topics }
   for (const topic of readdirSync(dir, { withFileTypes: true })) {
     if (!topic.isDirectory() || topic.name.startsWith('.')) continue
-    for (const e of readdirSync(join(dir, topic.name), { withFileTypes: true })) {
-      const f = e.name
-      if (!e.isFile() || !f.endsWith('.md')) continue
-      const text = tryRead(dir, join(dir, topic.name, f))
-      if (text === null) continue
-      if (f === 'LONG.md') {
-        for (const e of parseLong(text))
-          notes.push({
-            path: `${topic.name}/LONG.md#${e.id}`,
-            summary: e.summary,
-            rig: e.rig,
-            from: e.from,
-            at: e.at,
-            until: e.until,
-            body: e.body,
-            tier: 'long',
-          })
-        continue
+    try {
+      for (const e of readdirSync(join(dir, topic.name), { withFileTypes: true })) {
+        const f = e.name
+        if (!e.isFile() || !f.endsWith('.md')) continue
+        const text = tryRead(dir, join(dir, topic.name, f))
+        if (text === null) continue
+        if (f === 'LONG.md') {
+          for (const e of parseLong(text))
+            notes.push({
+              path: `${topic.name}/LONG.md#${e.id}`,
+              summary: e.summary,
+              rig: e.rig,
+              from: e.from,
+              at: e.at,
+              until: e.until,
+              body: e.body,
+              tier: 'long',
+            })
+          continue
+        }
+        const n = parse(join(topic.name, f), text)
+        if (f === 'README.md') topics.set(topic.name, n)
+        else notes.push({ ...n, tier: 'short' })
       }
-      const n = parse(join(topic.name, f), text)
-      if (f === 'README.md') topics.set(topic.name, n)
-      else notes.push({ ...n, tier: 'short' })
+    } catch (e) {
+      if (!unreadable(e)) throw e
     }
   }
   return { notes, topics }
@@ -628,20 +644,25 @@ export function snapshot(dir: string, rig: string | undefined, out: string): { b
     }
     for (const topic of readdirSync(dir, { withFileTypes: true })) {
       if (!topic.isDirectory() || topic.name.startsWith('.')) continue
-      for (const f of readdirSync(join(dir, topic.name))) {
-        const src = join(dir, topic.name, f)
-        if (!f.endsWith('.md')) continue
-        const text = tryRead(dir, src)
-        if (text === null) continue
-        let body: string | null = keep(parse(f, text).rig) ? text : null
-        if (f === 'LONG.md') {
-          // always re-format: text that no entry holds (a preamble, a file with no entry) must not travel
-          const kept = parseLong(text).filter(e => keep(e.rig))
-          body = kept.length ? formatLong(kept) : null
+      try {
+        for (const e of readdirSync(join(dir, topic.name), { withFileTypes: true })) {
+          const f = e.name
+          const src = join(dir, topic.name, f)
+          if (!e.isFile() || !f.endsWith('.md')) continue
+          const text = tryRead(dir, src)
+          if (text === null) continue
+          let body: string | null = keep(parse(f, text).rig) ? text : null
+          if (f === 'LONG.md') {
+            // always re-format: text that no entry holds (a preamble, a file with no entry) must not travel
+            const kept = parseLong(text).filter(e => keep(e.rig))
+            body = kept.length ? formatLong(kept) : null
+          }
+          if (body === null) continue
+          mkdirSync(join(stage, topic.name), { recursive: true })
+          writeFileSync(join(stage, topic.name, f), body)
         }
-        if (body === null) continue
-        mkdirSync(join(stage, topic.name), { recursive: true })
-        writeFileSync(join(stage, topic.name, f), body)
+      } catch (e) {
+        if (!unreadable(e)) throw e
       }
     }
     const { notes, topics } = walk(stage)
@@ -1684,7 +1705,11 @@ export function mdFileCount(dir: string): number {
   let n = existsSync(join(dir, 'CORE.md')) ? 1 : 0
   for (const topic of readdirSync(dir, { withFileTypes: true })) {
     if (!topic.isDirectory() || topic.name.startsWith('.')) continue
-    n += readdirSync(join(dir, topic.name)).filter(f => f.endsWith('.md')).length
+    try {
+      n += readdirSync(join(dir, topic.name)).filter(f => f.endsWith('.md')).length
+    } catch (e) {
+      if (!unreadable(e)) throw e
+    }
   }
   return n
 }
