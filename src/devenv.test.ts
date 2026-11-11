@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
+  run,
   buildCommand,
   build,
   checkout,
@@ -241,3 +242,7 @@ test('factory devenv --missing prints the commands, changes no file and refuses 
     'usage: factory devenv [rig...] [--force] | factory devenv --missing',
   )
 }, 60_000)
+
+test('run: a command that is not on PATH fails and does not throw', () => {
+  expect(run(['factory-no-such-command-x']).ok).toBe(false)
+})
