@@ -366,6 +366,7 @@ import * as planOp from './core/ops/plan'
 import * as prsOp from './core/ops/prs'
 import * as rigsOp from './core/ops/rigs'
 import * as runsOp from './core/ops/runs'
+import { ensurePlanPick, savedPlanPick } from './plan-model'
 import { cursorCap, cursorLine, cursorMeter, cursorVerdict, refreshCursorMeter } from './cursor-meter'
 import { grokBudget, grokLine, grokSpent, grokVerdict, logGrokSpend } from './grok-meter'
 import { maskAssignments } from './worker-hook'
@@ -2199,7 +2200,18 @@ function logLaunch(run: Run, node: string, seq: number, agent: string, resume: b
     const rig = rigOf(run.repo)?.name
     const harness = harnessOf(agent) ?? 'other'
     const model = ax.modelOf(agent) ?? 'default'
-    const line = { at: Date.now(), run: run.id, rig, node, seq, harness, model, resume }
+    const pick = node === 'plan' ? savedPlanPick(runDir(run.id)) : null
+    const line = {
+      at: Date.now(),
+      run: run.id,
+      rig,
+      node,
+      seq,
+      harness,
+      model,
+      resume,
+      ...(pick && { pick }),
+    }
     appendFileSync(join(HOME, 'launches.jsonl'), `${JSON.stringify(line)}\n`)
   } catch {
     // best effort: see above
@@ -2978,6 +2990,12 @@ export const pickAgent = (
   home = HOME,
 ) => {
   const params = paramsOf(def, rig, env)
+  // plan's Jev pick (plan-model.ts) replaces the default plan_model only; a rig or env value wins
+  const jev =
+    node === 'plan' && params.plan_model === def.params?.plan_model
+      ? savedPlanPick(join(home, 'runs', runId))
+      : null
+  if (jev) params.plan_model = jev.model
   const split = def.nodes[node]!.split
   // a host without the unified_exec pin cannot launch codex (the probe refuses), so the split keeps Claude there
   const codexOk = runner === 'ax' ? axCodex(env) : existsSync(pin)
@@ -5029,6 +5047,8 @@ async function tickRun(run: Run, now: number, halt: Halt | null = null) {
   try {
     // a migrated run's worktree is not in the task: make it from origin before any git call in it
     if (sub === 'working' && inAx() && !existsSync(run.worktree)) reviveWorktree(run)
+    // plan: one Jev call picks the model before the first launch (plan-model.ts)
+    if (sub === 'working' && node === 'plan' && !run.ship) await ensurePlanPick(runDir(run.id), run.goal)
     if (sub === 'working')
       agent = haltRun(run, def, node, ctx(), send, halt, now) ?? reconcile(run, def, ctx(), node, send, now)
     else agent = agentOf(def, actor.getSnapshot().value, ctx())
