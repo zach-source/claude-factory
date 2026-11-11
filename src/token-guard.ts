@@ -67,7 +67,7 @@ export function realPath(p: string): string | undefined {
 }
 
 /** a checker: is `p` (resolved against `base`) inside the worktree, by lexical and by real path? No root: never. */
-function insideOf(root: string | undefined) {
+export function insideOf(root: string | undefined) {
   let realRoot = root
   try {
     if (root) realRoot = realpathSync(root)

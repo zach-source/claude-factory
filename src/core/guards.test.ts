@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { expect, mock, test } from 'bun:test'
 import { readFileSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
 import { rmQuiet } from '../home-guard'
 import { tmpdir } from 'node:os'
@@ -11,6 +11,7 @@ import { serverBashReason, serverToolReason, GRAMMAR_REASON, SECRET_PATH_REASON,
 
 test('server Bash accepts only literal commands and safe paths', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'patrol-guard-'))
+  const run = mock<typeof check>(() => ({ decision: 'allow' }))
   try {
     mkdirSync(join(cwd, 'repo'))
     writeFileSync(join(cwd, 'source'), '')
@@ -37,6 +38,9 @@ test('server Bash accepts only literal commands and safe paths', () => {
       'factory start',
       'factory queue',
       'factory status; cat k',
+      'factory status > x',
+      'factory status < x',
+      'factory status 2>x',
       'factory status | head',
       'factory status && id',
       'factory status $(id)',
@@ -53,7 +57,11 @@ test('server Bash accepts only literal commands and safe paths', () => {
       'factory status "x\\y"',
       'factory status\nid',
     ]
-    for (const command of denied) expect(serverBashReason(command, cwd, '/cli'), command).toBe(GRAMMAR_REASON)
+    for (const command of denied) {
+      run.mockClear()
+      expect(serverBashReason(command, cwd, '/cli', run), command).toBe(GRAMMAR_REASON)
+      expect(run).toHaveBeenCalledTimes(0)
+    }
     for (const command of [
       'factory status',
       '/cli status r1',
@@ -70,8 +78,12 @@ test('server Bash accepts only literal commands and safe paths', () => {
       'factory mail r1 build "fine"',
       "factory mail r1 build ''",
       "factory mail r1 build 'a\nb'",
-    ])
-      expect(serverBashReason(command, cwd, '/cli'), command).toBeUndefined()
+    ]) {
+      run.mockClear()
+      expect(serverBashReason(command, cwd, '/cli', run), command).toBeUndefined()
+      expect(run).toHaveBeenCalledTimes(1)
+      expect(run).toHaveBeenCalledWith(command, 'subagent')
+    }
     for (const command of [
       'factory mail r1 build --text-file /etc/factory/worker-key/key',
       'factory mail r1 build --text-file=/etc/factory/tls/tls.key',
@@ -80,8 +92,16 @@ test('server Bash accepts only literal commands and safe paths', () => {
       'factory mail r1 build --text-file link/factory/worker-key/key',
       'factory mail r1 build /run/secrets/a',
       'factory mail r1 build /var/run/secrets/a',
-    ])
-      expect(serverBashReason(command, cwd, '/cli'), command).toBe(SECRET_PATH_REASON)
+      'factory mail r1 build //etc/factory/worker-key/key',
+      'factory mail r1 build /./proc/1/environ',
+    ]) {
+      run.mockClear()
+      expect(serverBashReason(command, cwd, '/cli', run), command).toBe(SECRET_PATH_REASON)
+      expect(run).toHaveBeenCalledTimes(0)
+    }
+    expect(serverBashReason('factory status', cwd, '/cli', () => ({ decision: 'deny', reason: 'z' }))).toBe(
+      'z',
+    )
     expect(serverBashReason('factory status', '/', '/cli')).toBe(SECRET_PATH_REASON)
     expect(serverBashReason('factory status', 'relative', '/cli')).toBe(SECRET_PATH_REASON)
   } finally {
@@ -119,11 +139,14 @@ test('server tools deny secret paths and confine writes to home text', () => {
       ['Glob', { pattern: '~/x' }],
       ['Glob', { pattern: 'a/../x' }],
       ['Glob', { pattern: '**', path: '/proc' }],
+      ['Glob', { pattern: '{/etc/factory/**,a}' }],
+      ['Glob', { pattern: '[/]etc' }],
     ] as const)
       expect(serverToolReason(tool, input, home, home)).toBe(SECRET_PATH_REASON)
     for (const p of [
       join(home, 'steps/patrol/.bashrc'),
       join(text, '../x'),
+      join(text, '../steps/patrol/.bashrc'),
       join(text, 'outside/x'),
       join(text, 'loop'),
       text,
@@ -139,8 +162,15 @@ test('server tools deny secret paths and confine writes to home text', () => {
       ['Write', { file_path: 'text/a' }, home, undefined],
       ['Write', { file_path: 'text/a' }, home, 'relative'],
       ['Glob', {}, home, home],
+      ['Read', { file_path: 1 }, home, home],
+      ['Grep', { path: 5 }, home, home],
+      ['Glob', { pattern: 'x', path: 1 }, home, home],
+      ['Glob', { pattern: 1 }, home, home],
     ] as const)
       expect(serverToolReason(tool, input, cwd, h)).toBe(TOOL_REASON)
+    expect(serverToolReason('Write', { file_path: 'a', content: 1 }, home, home)).toBe(
+      `In the server, the patrol writes only under ${home}/text/.`,
+    )
     for (const [tool, input] of [
       ['Read', { file_path: join(text, 'a.md') }],
       ['Write', { file_path: join(text, 'b.md') }],
