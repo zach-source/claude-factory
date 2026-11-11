@@ -565,7 +565,7 @@ function durable(path: string, text: string, flag: 'w' | 'a') {
     closeSync(fd)
   }
 }
-function writeJson(path: string, value: unknown) {
+export function writeJson(path: string, value: unknown) {
   durable(`${path}.tmp`, JSON.stringify(value, null, 2), 'w')
   renameSync(`${path}.tmp`, path) // atomic: a reader never sees half a snapshot
 }
