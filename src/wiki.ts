@@ -330,6 +330,7 @@ const MASKS = [
   /:\/\/[^\s/:@]*:[^\s/]+@/g, // URL password: SECRETS stops at the first @
   /gl(?:pat|dt|rt|ptt)-[A-Za-z0-9_.-]{20,}/g, // SECRETS leaves the tail after a dot
   /:\/\/[^\s/:]{20,}@/g, // URL token: SECRETS stops at the first @
+  /secret_?access_?key["']?\s*[=:]\s*["']?\S+/gi, // SECRETS value class stops at _ - = .
   TOKEN_SHAPE,
   ...SECRETS.map(r => new RegExp(r.source, r.flags.includes('g') ? r.flags : r.flags + 'g')),
 ]

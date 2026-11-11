@@ -541,6 +541,7 @@ test.each<[string, string, string]>([
   ['URL token', 'git https://' + 'a'.repeat(24) + '@host/p', 'a'.repeat(24)],
   ['AWS secret by name', 'aws_secret_access_key = ' + K, K],
   ['AWS secret 64 chars', 'secret_access_key = "' + K + 'x'.repeat(24) + '"', 'x'.repeat(24)],
+  ['AWS secret with odd tail', 'secret_access_key = ' + K + '_tail-Part=9zz', '_tail-Part=9zz'],
   ['URL token with raw @', 'git https://' + 'a'.repeat(24) + '@zqTail12@host/p', 'zqTail12'],
   [
     'PGP block',
@@ -569,6 +570,7 @@ test('9u12: mask returns in under 1 s on 1 MiB', () => {
     ['-----BEGIN PGP', 'PRIVATE KEY BLOCK'].join(' ').repeat(32_768),
     '://' + 'a'.repeat(1_000_000) + '@',
     'secret_access_key=' + 'a'.repeat(1_000_000),
+    'secret_access_key = '.repeat(52_428),
   ]
   for (const s of inputs) {
     const t = performance.now()
