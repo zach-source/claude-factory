@@ -1,4 +1,4 @@
-// claude-factory-3c4w: the hook denies a factory word followed by a manager-only verb, or rig with a sub other than list.
+// claude-factory-3c4w, claude-factory-fib6: the hook denies a factory word followed by a manager-only verb, or rig with a sub other than list or show <one plain rig name>.
 import { expect, test } from 'bun:test'
 import { denyReason, DYNAMIC_VERB_REASON, FACTORY_CONTROL_REASON } from './worker-hook.ts'
 
