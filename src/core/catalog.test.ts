@@ -169,9 +169,9 @@ describe('CATALOG', () => {
     ])
     expect(CATALOG.filter(o => o.route.path === '/v1/gc')).toHaveLength(1)
   })
-  test('has 30 operations: 20 GET and 10 POST', () => {
-    expect(CATALOG.length).toBe(30)
-    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(20)
+  test('has 31 operations: 21 GET and 10 POST', () => {
+    expect(CATALOG.length).toBe(31)
+    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(21)
     expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(10)
     expect(CATALOG.filter(o => o.route.method === 'POST' && !o.mutates).map(o => o.name)).toEqual([
       'guard.check',
@@ -246,6 +246,7 @@ describe('CATALOG', () => {
       'guard.check POST /v1/guard/check',
       'lease.show GET /v1/lease',
       'mail.list GET /v1/mail',
+      'manager.context GET /v1/manager/context',
       'metrics.show GET /v1/metrics',
       'plan.show GET /v1/plan',
       'prs.show GET /v1/prs',

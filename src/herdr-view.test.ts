@@ -397,3 +397,22 @@ test('the board header names a refused manager codex key, and parseTick carries 
   expect(res.managerCodexAuth).toEqual({ at: 1, text: 'x' })
   expect(herdr.parseTick(0, JSON.stringify({ runs: [], manager: [] }), '').managerCodexAuth).toBeNull()
 })
+
+test('the manager model and context use come from one core read and show in the header (claude-factory-62v95)', () => {
+  const c = { model: 'claude-fable-5-2', tokens: 55129, window: 200000, percent: 27.6 }
+  expect(herdr.managerContextText(c)).toBe('manager claude-fable-5-2 · 55.1k tokens · 27.6% of 200.0k')
+  expect(herdr.managerContextText(null)).toBe('')
+  expect(herdr.tokensText(950)).toBe('950')
+  expect(herdr.tokensText(1_200_000)).toBe('1.2M')
+  expect(herdr.snapshotWords('manager', 4000)).toEqual([
+    'snapshot',
+    '--views',
+    'manager',
+    '--max-age',
+    '4000',
+  ])
+  expect(herdr.parseContext(0, JSON.stringify({ views: { manager: c } }))).toEqual(c)
+  expect(herdr.parseContext(0, JSON.stringify({ views: { manager: null } }))).toBeNull()
+  expect(herdr.parseContext(1, '')).toBeNull()
+  expect(herdr.parseContext(0, 'nope')).toBeNull()
+})

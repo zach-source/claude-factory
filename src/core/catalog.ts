@@ -14,6 +14,7 @@ import * as gatesOps from './ops/gates'
 import * as gcOps from './ops/gc'
 import * as leaseOps from './ops/lease'
 import * as mailOps from './ops/mail'
+import * as managerOps from './ops/manager'
 import * as flowsOps from './ops/flows'
 import * as metricsOps from './ops/metrics'
 import * as planOps from './ops/plan'
@@ -682,6 +683,17 @@ export const CATALOG: Op[] = makeCatalog([
     },
     'json',
     (c, i) => gatesOps.brief(c, i),
+  ),
+  local(
+    {
+      name: 'manager.context',
+      summary:
+        'Show the model and the context use (tokens and percent of the window) of the manager session.',
+      method: 'GET',
+      path: '/v1/manager/context',
+    },
+    'json',
+    (c, i) => managerOps.context(c, i),
   ),
   local(
     {
