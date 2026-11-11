@@ -271,7 +271,9 @@ describe('GET cap over mTLS', () => {
   test('9 slow reads give eight 200 and one 503, then reads work', async () => {
     const t = start(undefined, undefined, 3000)
     const who = pair(A)
-    const answers = await Promise.all(Array.from({ length: 9 }, () => raw(t.s.clientPort!, who, '', undefined, 15000)))
+    const answers = await Promise.all(
+      Array.from({ length: 9 }, () => raw(t.s.clientPort!, who, '', undefined, 15000)),
+    )
     expect(answers.filter(a => a === '200').length).toBe(8)
     expect(answers.filter(a => a === '503').length).toBe(1)
     expect(t.calls.length).toBe(8)
