@@ -70,6 +70,8 @@ export type Port = {
     env: Env
     timeoutMs: number
   }) => Promise<{ code: number; out: string }>
+  /** type text and Enter into the manager pane (ax.say) */
+  say: (text: string) => unknown
   mail: (
     m: { id: string | undefined; to: string | undefined; text: string; wake: boolean },
     who: { env: Env; cwd: string },
@@ -712,6 +714,53 @@ export const CATALOG: Op[] = makeCatalog([
     },
     'json',
     (c, i) => managerOps.context(c, i),
+  ),
+  local(
+    {
+      name: 'manager.show',
+      summary: 'Show the last health report of the manager task.',
+      method: 'GET',
+      path: '/v1/manager',
+    },
+    'json',
+    (c, i) => managerOps.show(c, i),
+  ),
+  local(
+    {
+      name: 'manager.brief',
+      summary:
+        'Show the first brief of a manager session: decisions, mail, plan and the last 20 patrol rows.',
+      method: 'GET',
+      path: '/v1/manager/brief',
+    },
+    'json',
+    (c, i) => managerOps.brief(c, i),
+  ),
+  local(
+    {
+      name: 'manager.log',
+      summary: 'Add one row to a log of the manager: patrol, pm, brief, review, usage or health.',
+      method: 'POST',
+      path: '/v1/manager/log/:kind',
+      inputs: [
+        f('kind', 'id', true, 'the log: patrol, pm, brief, review, usage or health'),
+        f('entry', 'text', true, 'the row, one JSON object'),
+      ],
+    },
+    'text',
+    (c, i) => managerOps.log(c, i),
+  ),
+  local(
+    {
+      name: 'manager.say',
+      summary: 'Type a text into the manager pane.',
+      method: 'POST',
+      path: '/v1/manager/say',
+      rights: 'owner',
+      inputs: [f('text', 'text', true, 'the text for the manager')],
+    },
+    'text',
+    (c, i) => managerOps.say(c, i),
   ),
   local(
     {

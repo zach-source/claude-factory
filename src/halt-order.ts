@@ -67,3 +67,12 @@ export function drainHaltQueue(home: string, apply: (cmd: HaltCmd['cmd']) => str
     } catch {} // the person asked for a state that already holds: nothing to do
   }
 }
+
+/** the first line of factory status: the halt state and its age, so a pause never hides behind a count of runs */
+export function haltLine(halt: { state: 'stopping' | 'paused'; at: number; closed: object }, now: number) {
+  const mins = Math.max(0, Math.round((now - halt.at) / 60_000))
+  const age = `${mins} min`
+  return halt.state === 'paused'
+    ? `PAUSED for ${age}: ${Object.keys(halt.closed).length} worker(s) wait for factory resume`
+    : `STOPPING for ${age}: workers are committing and going quiet`
+}

@@ -178,7 +178,7 @@ export function readLog<T>(home: string, name: string): T[] {
 }
 
 /** appends one entry and keeps only the newest `cap` lines */
-function appendLog(home: string, name: string, cap: number, entry: unknown) {
+export function appendLog(home: string, name: string, cap: number, entry: unknown) {
   const log = [...readLog<unknown>(home, name), entry].slice(-cap)
   writeFileSync(file(home, name), `${log.map(e => JSON.stringify(e)).join('\n')}\n`)
 }

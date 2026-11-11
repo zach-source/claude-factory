@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   allowed,
+  boardView,
   CATALOG,
   CATALOG_VERSION,
   fieldOk,
@@ -170,10 +171,10 @@ describe('CATALOG', () => {
     ])
     expect(CATALOG.filter(o => o.route.path === '/v1/gc')).toHaveLength(1)
   })
-  test('has 38 operations: 21 GET, 16 POST and 1 DELETE', () => {
-    expect(CATALOG.length).toBe(38)
-    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(21)
-    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(16)
+  test('has 42 operations: 23 GET, 18 POST and 1 DELETE', () => {
+    expect(CATALOG.length).toBe(42)
+    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(23)
+    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(18)
     expect(CATALOG.filter(o => o.route.method === 'DELETE').map(o => o.name)).toEqual(['runs.remove'])
     expect(CATALOG.filter(o => o.route.method === 'POST' && !o.mutates).map(o => o.name)).toEqual([
       'guard.check',
@@ -183,7 +184,11 @@ describe('CATALOG', () => {
     for (const o of CATALOG) {
       const get = o.route.method === 'GET' || o.name === 'guard.check'
       expect(o.rights).toBe(
-        get ? 'read' : ['factory.halt', 'gc.run', 'chat.send'].includes(o.name) ? 'owner' : 'manager',
+        get
+          ? 'read'
+          : ['factory.halt', 'gc.run', 'chat.send', 'manager.say'].includes(o.name)
+            ? 'owner'
+            : 'manager',
       )
       expect(o.mutates).toBe(!get)
       expect(o.long).toBe(o.name === 'chat.send')
@@ -257,7 +262,11 @@ describe('CATALOG', () => {
       'guard.check POST /v1/guard/check',
       'lease.show GET /v1/lease',
       'mail.list GET /v1/mail',
+      'manager.brief GET /v1/manager/brief',
       'manager.context GET /v1/manager/context',
+      'manager.log POST /v1/manager/log/:kind',
+      'manager.say POST /v1/manager/say',
+      'manager.show GET /v1/manager',
       'metrics.show GET /v1/metrics',
       'plan.show GET /v1/plan',
       'prs.show GET /v1/prs',
@@ -312,6 +321,11 @@ describe('slimBoard and snapshot (claude-factory-hpmc.23)', () => {
     expect(s.rigs as unknown[]).toEqual([{ name: 'a', factory: 'lifecycle', maxRuns: 3 }])
     expect(s.lease).toEqual({ holder: 'h' })
     expect(JSON.stringify(s).length).toBeLessThan(JSON.stringify(board).length)
+  })
+  test('the board view and the slim board keep the halt state and its age first', () => {
+    const paused = { halt: 'paused', haltAt: 1, ...board }
+    for (const v of [boardView(paused), slimBoard(paused)])
+      expect(Object.keys(v as object).slice(0, 2)).toEqual(['halt', 'haltAt'])
   })
   test('slimBoard returns a value that is not a board unchanged', () => {
     expect(slimBoard(null)).toBeNull()

@@ -37,6 +37,7 @@ const fake = () => {
     goto: async (id, node, print) => (calls.push(['goto', id, node]), print('queued')),
     abort: id => void calls.push(['abort', id]),
     screen: async id => (calls.push(['screen', id]), 'screen text'),
+    say: text => void calls.push(['say', text]),
     mail: async (m, who, print) => (calls.push(['mail', m, who]), print('mailed')),
     chatRun: async () => ({ code: 0, out: '' }),
     chatModel: async () => ({
@@ -241,7 +242,9 @@ describe('moved reads run in process (AC1)', () => {
       const t = fake()
       const input: Input = {}
       for (const f of op.inputs) if (f.required) input[f.name] = dummy(f.kind, f.values)
-      await op.run(t.ctx(), input)
+      await op.run(t.ctx(), input).catch(e => {
+        if (!(e instanceof OpError)) throw e // the dummy input fails a validator: no CLI call
+      })
       if (t.cli.length) bridged.push(op.name)
     }
     expect(bridged).toEqual([

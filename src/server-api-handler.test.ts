@@ -31,6 +31,7 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
   // each port function logs into the same array as the runner, so a "zero calls" check counts both
   const log = (port: string, args: unknown[]) => calls.push({ port, args })
   const port: Port = {
+    say: () => {},
     gcPass: () => {},
     gcWorktreesPass: () => {},
     gcRigs: () => [],
