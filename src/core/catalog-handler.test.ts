@@ -66,6 +66,7 @@ const NAMES = [
   'prs.show',
   'rigs.adopt',
   'rigs.list',
+  'rigs.set',
   'rigs.unhold',
   'runners.show',
   'runs.abort',
@@ -81,6 +82,7 @@ const NAMES = [
   'runs.status',
   'snapshot.show',
   'steps.reports',
+  'sweeps.run',
 ]
 
 test('n69b2 AC1 gc route has no GET mutation or CLI bridge', async () => {

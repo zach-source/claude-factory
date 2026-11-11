@@ -90,7 +90,7 @@ export type Op = {
   rights: 'read' | 'owner' | 'manager'
   mutates: boolean
   long: boolean
-  route: { method: 'GET' | 'POST' | 'DELETE'; path: string }
+  route: { method: 'GET' | 'POST' | 'DELETE' | 'PATCH'; path: string }
   since: number
   run: (ctx: Ctx, input: Input) => Promise<RunResult>
 }
@@ -256,7 +256,7 @@ const id = (name: string) => f(name, 'id')
 type Spec = {
   name: string
   summary: string
-  method: 'GET' | 'POST' | 'DELETE'
+  method: 'GET' | 'POST' | 'DELETE' | 'PATCH'
   path: string
   inputs?: Field[]
   rights?: Op['rights']
@@ -967,6 +967,76 @@ export const CATALOG: Op[] = makeCatalog([
     },
     i => ['adopt', i.rig as string, ...(i.template ? [i.template as string] : [])],
   ),
+  bridge(
+    {
+      name: 'rigs.set',
+      summary: 'Change the settings of a rig. The CLI checks each value.',
+      method: 'PATCH',
+      path: '/v1/rigs/:rig',
+      inputs: [
+        id('rig'),
+        ...(
+          [
+            ['max', 'the most busy runs of the rig'],
+            ['sweeps', 'the sweeps of the rig, a,b or none'],
+            ['runner', 'the runner of the rig'],
+            ['agent', 'the agent command'],
+            ['clusterRuns', 'the most cluster runs'],
+            ['autoQueue', 'the auto-queue rule, p,n or off'],
+            ['skills', 'the skills, a,b or none'],
+            ['otelContent', 'on or off'],
+            ['sandboxClass', 'gvisor or microvm'],
+            ['param', 'name=value; one for each line'],
+            ['pushRule', 'a push rule, or none; one for each line'],
+            ['sensitivePath', 'a sensitive path, or none; one for each line'],
+            ['goal', 'the goal of the rig'],
+          ] as const
+        ).map(([n, help]) => f(n, 'text', false, help)),
+      ],
+    },
+    i => {
+      const flag = (k: string, v: unknown) => (typeof v === 'string' ? [`--${k}`, v] : [])
+      const lines = (k: string, v: unknown) =>
+        typeof v === 'string' ? v.split('\n').flatMap(x => [`--${k}`, x]) : []
+      return [
+        'rig',
+        'set',
+        i.rig as string,
+        ...flag('max', i.max),
+        ...flag('sweeps', i.sweeps),
+        ...flag('runner', i.runner),
+        ...flag('agent', i.agent),
+        ...flag('cluster-runs', i.clusterRuns),
+        ...flag('auto-queue', i.autoQueue),
+        ...flag('skills', i.skills),
+        ...flag('otel-content', i.otelContent),
+        ...flag('sandbox-class', i.sandboxClass),
+        ...lines('param', i.param),
+        ...lines('push-rule', i.pushRule),
+        ...lines('sensitive-path', i.sensitivePath),
+        ...flag('goal', i.goal), // the goal is the rest of the line: it goes last
+      ]
+    },
+  ),
+  {
+    // ponytail: the CLI sweep runs the pass for every rig and takes no name. Only "all" is allowed until it does.
+    ...bridge(
+      {
+        name: 'sweeps.run',
+        summary: 'Run the sweep pass for every rig. The name must be all.',
+        method: 'POST',
+        path: '/v1/sweeps/:name',
+        inputs: [{ ...id('name'), help: 'the sweep name; only all' }],
+      },
+      () => ['sweep'],
+    ),
+    run: (ctx, i) =>
+      i.name === 'all'
+        ? ctx.cli(['sweep'])
+        : Promise.reject(
+            new OpError(422, 'the sweep name must be all: the pass runs the sweeps of every rig'),
+          ),
+  } as Op,
   local(
     {
       name: 'decisions.answer',
