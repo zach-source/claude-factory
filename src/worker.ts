@@ -276,7 +276,7 @@ export function bootstrapBeads(
   mkdirSync(dir, { recursive: true })
   // bd bootstraps an empty store, and exits 0, from an origin with no refs/dolt/data: refuse that
   if (!remote) {
-    const ls = Bun.spawnSync(['git', 'ls-remote', origin, 'refs/dolt/data'], { env, stderr: 'pipe' })
+    const ls = Bun.spawnSync(['git', 'ls-remote', '--', origin, 'refs/dolt/data'], { env, stderr: 'pipe' })
     if (ls.exitCode !== 0)
       throw new Error(`beads in the VM: git ls-remote refs/dolt/data: ${lastError(ls.stderr.toString())}`)
     if (!ls.stdout.toString().trim())
@@ -287,7 +287,7 @@ export function bootstrapBeads(
   writeFileSync(join(dir, '.beads', 'config.yaml'), `sync.remote: ${JSON.stringify(syncRemote)}\n`)
   for (const cmd of [
     ['git', 'init', '-q', '.'],
-    ...(remote ? [] : [['git', 'remote', 'add', 'origin', origin]]),
+    ...(remote ? [] : [['git', 'remote', 'add', '--', 'origin', origin]]),
     [process.env.FACTORY_BD ?? 'bd', 'bootstrap', '-y'],
   ]) {
     const p = Bun.spawnSync(cmd, {

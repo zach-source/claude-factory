@@ -14,7 +14,7 @@ import { hideParseText } from './secrets'
 import { homedir, tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { MANAGER_CWD } from './ax'
-import { httpsRemote } from './axrepos'
+import { httpsRemote, noUserinfo, remoteRefusal } from './axrepos'
 import { rmQuiet } from './home-guard'
 import { where } from './machine'
 
@@ -101,16 +101,25 @@ type RigRow = { name: string; repo: string; remote?: string }
  */
 export function migratedRigs<R extends RigRow>(rigs: R[], originOf: (repo: string) => string | undefined) {
   const bad: string[] = []
+  const refused: string[] = []
   const out = rigs.map(r => {
-    if (r.remote) return { ...r, remote: httpsRemote(r.remote) }
-    const url = originOf(r.repo)
-    if (!url) bad.push(`${r.name} (${r.repo})`)
-    return { ...r, ...(url && { remote: httpsRemote(url) }) }
+    const raw = r.remote || originOf(r.repo)
+    if (!raw) {
+      bad.push(`${r.name} (${r.repo})`)
+      return r
+    }
+    const url = noUserinfo(httpsRemote(raw))
+    const why = remoteRefusal(url)
+    if (!why) return { ...r, remote: url }
+    refused.push(`rig ${r.name}: the remote is refused: ${why}`)
+    const { remote: _, ...rest } = r
+    return rest
   })
-  return {
-    rigs: out,
-    error: bad.length ? `no origin remote for rig ${bad.join(', ')}: add one or set "remote"` : undefined,
-  }
+  const errors = [
+    ...(bad.length ? [`no origin remote for rig ${bad.join(', ')}: add one or set "remote"`] : []),
+    ...refused,
+  ]
+  return { rigs: out, error: errors.length ? errors.join('\n') : undefined }
 }
 
 /** Claude Code's project dir name for a cwd: each character that is not a letter or a digit becomes `-` */

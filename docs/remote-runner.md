@@ -449,7 +449,7 @@ This section moves a running laptop factory to the manager task. The task needs 
 
 `rigs.json` holds the laptop's repo paths. In the task, `FACTORY_IN_AX=1` maps each rig's repo to `${FACTORY_REPOS:-/workspace/w/repos}/<rig name>`. The laptop is not changed. Runs that the laptop made have laptop paths in `run.json`. The task maps those paths to the same clones.
 
-A rig can have a `remote` field: its https clone URL. `factory repos sync` clones every rig's `remote` that is missing, and fetches the others. It changes `git@` and `ssh://` GitHub URLs to https. The gateway puts the GitHub credential in. A rig with no `remote` and no clone is an error, and the command names the rig. `factory manager host` runs `factory repos sync` before it starts the manager. A failure goes into `manager-host.log` and does not stop the manager.
+A rig can have a `remote` field: its https clone URL. `factory repos sync` clones every rig's `remote` that is missing, and fetches the others. It changes `git@` and `ssh://` GitHub URLs to https. The gateway puts the GitHub credential in. A rig with no `remote` and no clone is an error, and the command names the rig. `factory manager host` runs `factory repos sync` before it starts the manager. A failure goes into `manager-host.log` and does not stop the manager. `factory repos sync` refuses a `remote` that is not an `https://`, `git@` or `ssh://git@` URL, or that has a user or password, and names the rig.
 
 `factory repos sync` also makes the beads store of each rig that has a `.beads`. It uses the same steps as the worker (see Beads in the VM). The store is in `FACTORY_HOME/beads/<rig name>`. bd uses it through `BEADS_DIR`, with `BEADS_DOLT_SHARED_SERVER=0`. The store comes from the rig's `beadsRemote`, or from the `refs/dolt` of the GitHub origin. A rig with no `beadsRemote` needs `refs/dolt/data` on its origin. If the origin has none, set `beadsRemote` for the rig. The laptop-side `bd dolt push` and `bd dolt pull` in the task use that store.
 
@@ -496,7 +496,7 @@ The host starts the manager only on a `.migrated` with its own launch id. A back
 
 #### What moves
 
-- `rigs.json`, with a `remote` added to each rig (the https form of `git remote get-url origin` in its repo). `repo` stays as written.
+- `rigs.json`, with a `remote` added to each rig (the https form of `git remote get-url origin` in its repo). `repo` stays as written. The migrate removes a user or password from that URL, or from the rig's own `remote`. It refuses a URL that is not an `https://`, `git@` or `ssh://git@` URL.
 - `decisions.json`, `dispatch.json`, `metrics.jsonl`, `manager-sessions.json`, `memory/`, `launch/`, and the small top-level files.
 - The directories of all live runs. For finished runs (done or aborted), only the newest 50 move. `--keep N` changes the number. Their records in `metrics.jsonl` are already written.
 - In each run directory that moves, only the newest `*.memory.tgz` moves (highest attempt number). The laptop writes one at each AX worker launch and deletes it after the put, so the older ones are not used. The dry run gives their count and size.
