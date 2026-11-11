@@ -283,9 +283,13 @@ test('u509 snapshot scope matrix', () => {
     writeFileSync(join(dir, 'README.md'), 'top\n')
     mkdirSync(join(dir, 'ops'))
     const all = { ...Object.fromEntries(Object.entries(bad).map(([k, v]) => [`${k}.md`, v])), ...good }
-    for (const [f, t] of Object.entries(all)) writeFileSync(join(dir, 'ci', f), t)
+    for (const [f, t] of Object.entries(all))
+      writeFileSync(join(dir, 'ci', f), t.replace('MARK', `MARK_${f.replace(/\.md$/, '')}_ci`))
     for (const [k, t] of Object.entries(bad))
-      writeFileSync(join(dir, 'ops', k === 'indented' ? 'README.md' : `${k}.md`), t)
+      writeFileSync(
+        join(dir, 'ops', k === 'indented' ? 'README.md' : `${k}.md`),
+        t.replace('MARK', `MARK_${k}_ops`),
+      )
     const paths = [
       ...Object.keys(all).map(f => `ci/${f}`),
       ...Object.keys(bad).map(k => `ops/${k === 'indented' ? 'README' : k}.md`),
@@ -318,6 +322,8 @@ test('u509 snapshot scope matrix', () => {
       .map(f => readFileSync(join(x, 'ci', f), 'utf8'))
       .join('\n')
     expect(payload).not.toContain('MARK')
+    for (const k of Object.keys(bad))
+      for (const w of ['ci', 'ops']) expect(payload).not.toContain(`MARK_${k}_${w}`)
     for (const f of ['.index.json', '.usage.jsonl']) {
       const t = readFileSync(join(x, f), 'utf8')
       for (const k of Object.keys(bad)) expect(t).not.toContain(`${k}.md`)
@@ -443,17 +449,18 @@ test('u509 populated header snapshot matrix', () => {
     for (const rig of ['acme', 'other', undefined, sentinel]) {
       const dir = tmp('u509p')
       mkdirSync(join(dir, 'ci'))
-      const rows: { id: string; path: string; mark?: string; scoped: boolean }[] = []
+      const rows: { path: string; mark?: string; scoped: boolean }[] = []
       for (const [hk, hdr] of Object.entries(headers))
         for (const [bk, body] of Object.entries(bodies)) {
           const id = `${hk}_${bk}`
-          const mark = body === '' ? undefined : `MARK_${id}_${en}`
-          const text = conv(`---\n${hdr}\n---\n${body}${mark ? `\n${mark}` : ''}\n`)
+          const build = (mark?: string) => conv(`---\n${hdr}\n---\n${body}${mark ? `\n${mark}` : ''}\n`)
+          const noteMark = body === '' ? undefined : `MARK_${id}_${en}_note`
+          const readmeMark = body === '' ? undefined : `MARK_${id}_${en}_readme`
           mkdirSync(join(dir, `t_${id}`))
-          writeFileSync(join(dir, 'ci', `${id}.md`), text)
-          writeFileSync(join(dir, `t_${id}`, 'README.md'), text)
-          rows.push({ id, path: `ci/${id}.md`, mark, scoped: hk === 'scoped' })
-          rows.push({ id, path: `t_${id}/README.md`, mark, scoped: hk === 'scoped' })
+          writeFileSync(join(dir, 'ci', `${id}.md`), build(noteMark))
+          writeFileSync(join(dir, `t_${id}`, 'README.md'), build(readmeMark))
+          rows.push({ path: `ci/${id}.md`, mark: noteMark, scoped: hk === 'scoped' })
+          rows.push({ path: `t_${id}/README.md`, mark: readmeMark, scoped: hk === 'scoped' })
         }
       writeFileSync(
         join(dir, '.index.json'),
