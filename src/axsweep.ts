@@ -13,6 +13,8 @@ export type SweepRun = {
   pane: string | null
   /** done or aborted */
   over: boolean
+  /** the run's sub-state in state.json (working, waiting, backoff, stuck), or '' for a top-level or unreadable state */
+  sub: string
 }
 
 const LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/

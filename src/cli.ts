@@ -11462,10 +11462,11 @@ function axSweep() {
             seq: c.seq,
             pane: c.pane,
             over: ['done', 'aborted'].includes(where(value)[0]),
+            sub: where(value)[1],
           })
         } catch {
           // no readable state: keep an owner that never gets a delete (seq -1)
-          runs.push({ id, seq: -1, pane: null, over: false })
+          runs.push({ id, seq: -1, pane: null, over: false, sub: '' })
         }
       const picked = axSweepNames([...tasks, ...workspaces], runs, ax.managerTask())
       let removed = 0

@@ -267,3 +267,32 @@ test('AC8: a missing ax binary does not break the beads pass; the sweep deletes 
   expect(rows[0].error).toStartWith('ax-sweep:')
   expect(readFileSync(state, 'utf8')).toBe(before)
 })
+
+const park = (liveId: string, value: object) => {
+  const f = join(home(), 'runs', liveId, 'state.json')
+  const s = JSON.parse(readFileSync(f, 'utf8'))
+  s.snapshot.value = value
+  s.snapshot.context.seq = 5
+  s.snapshot.context.pane = null
+  s.snapshot.context.wakeAt = Date.now() + 3_600_000
+  writeFileSync(f, JSON.stringify(s))
+  writeFileSync(join(dir, 'tasks.txt'), table('NAME ATESPACE PHASE', [taskName(liveId, 5)]))
+  writeFileSync(join(dir, 'ws.txt'), table('NAME ATESPACE GIT-REPOS', [taskName(liveId, 5)]))
+}
+
+test("AC3: a pass deletes a parked run's task at its own seq", () => {
+  const { liveId } = setup()
+  park(liveId, { work: 'waiting' })
+  pass()
+  expect(deletes().sort()).toEqual([
+    `-a factory delete task ${taskName(liveId, 5)}`,
+    `-a factory delete workspace ${taskName(liveId, 5)}`,
+  ])
+})
+
+test("AC3: a pass keeps a working run's task at its own seq with no pane", () => {
+  const { liveId } = setup()
+  park(liveId, { work: 'working' })
+  pass()
+  expect(deletes()).toEqual([])
+})
