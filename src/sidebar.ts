@@ -26,12 +26,13 @@ export function runText(r: Row) {
 }
 
 /** the $factory token for each run's workspace, and the manager's rollup */
-export function tokens(rows: Row[]) {
+export function tokens(rows: Row[], halt?: 'stopping' | 'paused') {
   const live = rows.filter(isLive)
   const byWs: Record<string, string> = {}
   for (const r of live) if (r.ws) byWs[r.ws] = runText(r)
   const count = (h: string) => live.filter(r => hold(r) === h).length
   const rollup = [
+    halt === 'paused' ? 'PAUSED' : halt === 'stopping' ? 'STOPPING' : '',
     `${live.filter(r => !hold(r) && r.sub === 'working').length} running`,
     count('needs you') && `${count('needs you')} need you`,
     count('stuck') && `${count('stuck')} stuck`,
