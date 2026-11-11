@@ -1,6 +1,6 @@
 // applyTiers() on LONG.md entries: archive (old and idle), retire (until ended), trim (over 2000 chars).
 import { afterAll, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { applyTiers, compact, formatLong, type LongEntry, LONG_ENTRY_CAP, parseLong } from './memory'
@@ -118,4 +118,27 @@ test('an entry whose summary alone passes the cap is cut under the cap, archived
   const second = applyTiers(dir, { now: NOW })
   expect(second.trimmed).toBe(0)
   expect(readFileSync(archiveFile, 'utf8')).toBe(archive1)
+})
+
+test('applyTiers throws and writes nothing when .archive is a link (claude-factory-fkw4 R2)', () => {
+  seed([entry('keep'), entry('old', { at: at(60) })])
+  const seedText = readFileSync(longFile, 'utf8')
+  const outside = join(root, 'outside')
+  mkdirSync(outside)
+  symlinkSync(outside, join(dir, '.archive'))
+  expect(() => applyTiers(dir, { now: NOW })).toThrow(/ELOOP/)
+  expect(readdirSync(outside).length).toBe(0)
+  expect(readFileSync(longFile, 'utf8')).toBe(seedText)
+})
+
+test('applyTiers removes no short note when .archive is a link', () => {
+  seed([entry('keep')])
+  const note = join(dir, 'beads', 'old-note.md')
+  writeFileSync(note, `---\nsummary: old short note\nfrom: r1/x\nat: ${at(60)}\n---\nbody\n`)
+  const outside = join(root, 'outside')
+  mkdirSync(outside)
+  symlinkSync(outside, join(dir, '.archive'))
+  expect(() => applyTiers(dir, { now: NOW })).toThrow(/ELOOP/)
+  expect(existsSync(note)).toBe(true)
+  expect(readdirSync(outside).length).toBe(0)
 })

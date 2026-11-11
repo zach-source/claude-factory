@@ -6635,7 +6635,7 @@ async function dream() {
     // git tracks .usage.jsonl itself, so counts survive a clone or a lost file (claude-factory-503.3).
     // Only its crash-safe temp file (memory.ts:584-601) and the search index cache stay ignored.
     const pre = memory.dropLinks(MEMORY)
-    memory.writeStore(join(MEMORY, '.gitignore'), '.index.json*\n.usage.jsonl.tmp\n')
+    memory.writeStore(MEMORY, join(MEMORY, '.gitignore'), '.index.json*\n.usage.jsonl.tmp\n')
     const codexLinked = pre.some(l => l.path === '.codex') // a removed .codex link still refuses this dream
     if (pre.length) appendFileSync(join(HOME, 'dream.log'), removedLine(pre))
     if (!commitMemory('notes since the last dream')) return MEMORY_REFUSED
@@ -12660,7 +12660,7 @@ function reviewFacts(key: string | undefined) {
   const installedFile = join(memory.skillsDir(MEMORY), item!.name, 'SKILL.md')
   const installed =
     item!.kind === 'skill' && existsSync(installedFile)
-      ? clip(memory.tryRead(installedFile) ?? '', 16384)
+      ? clip(memory.tryRead(MEMORY, installedFile) ?? '', 16384)
       : undefined
   const { key: k, kind, name, change, text } = item!
   return {

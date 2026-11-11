@@ -1,9 +1,21 @@
 // claude-factory-eqxi: a symlink in the memory store is never read and a dream removes it
 import { expect, test } from 'bun:test'
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, relative } from 'node:path'
+import {
+  add,
+  inDir,
   coreNotes,
   corpus,
   dropLinks,
@@ -109,14 +121,14 @@ test('store helpers throw on a link and leave the target alone; a regular file w
   const before = readFileSync(secret, 'utf8')
   const link = join(dir, 'inbox', 'z.md')
   symlinkSync(secret, link)
-  expect(() => readStore(link, 'utf8')).toThrow(/ELOOP/)
-  expect(() => writeStore(link, 'x')).toThrow(/ELOOP/)
-  expect(() => appendStore(link, 'x')).toThrow(/ELOOP/)
+  expect(() => readStore(dir, link)).toThrow(/ELOOP/)
+  expect(() => writeStore(dir, link, 'x')).toThrow(/ELOOP/)
+  expect(() => appendStore(dir, link, 'x')).toThrow(/ELOOP/)
   expect(readFileSync(secret, 'utf8')).toBe(before)
   const plain = join(dir, 'inbox', 'p.md')
-  writeStore(plain, 'a')
-  appendStore(plain, 'b')
-  expect(readStore(plain, 'utf8')).toBe('ab')
+  writeStore(dir, plain, 'a')
+  appendStore(dir, plain, 'b')
+  expect(readStore(dir, plain)).toBe('ab')
   rmSync(root, { recursive: true, force: true })
 })
 
@@ -132,8 +144,8 @@ test('a writer with a link at its path throws and the target stays unchanged', (
 test('writeStore truncates a longer file', () => {
   const { root, dir } = linkStore()
   const f = join(dir, 'inbox', 't.md')
-  writeStore(f, 'a long text of many bytes')
-  writeStore(f, 'short')
+  writeStore(dir, f, 'a long text of many bytes')
+  writeStore(dir, f, 'short')
   expect(readFileSync(f, 'utf8')).toBe('short')
   rmSync(root, { recursive: true, force: true })
 })
@@ -142,12 +154,12 @@ test('tryRead gives null on a link or a missing file and rethrows other errors',
   const { root, dir, secret } = linkStore()
   const link = join(dir, 'inbox', 'z.md')
   symlinkSync(secret, link)
-  expect(tryRead(link)).toBeNull()
-  expect(tryRead(join(dir, 'inbox', 'missing.md'))).toBeNull()
-  expect(tryRead(join(dir, 'inbox'))).toBeNull()
+  expect(tryRead(dir, link)).toBeNull()
+  expect(tryRead(dir, join(dir, 'inbox', 'missing.md'))).toBeNull()
+  expect(tryRead(dir, join(dir, 'inbox'))).toBeNull()
   const locked = join(dir, 'inbox', 'locked.md')
   writeFileSync(locked, 'x', { mode: 0 })
-  if (process.getuid?.() !== 0) expect(() => tryRead(locked)).toThrow(/EACCES/)
+  if (process.getuid?.() !== 0) expect(() => tryRead(dir, locked)).toThrow(/EACCES/)
   rmSync(root, { recursive: true, force: true })
 })
 
@@ -213,8 +225,8 @@ test('snapshot skips a directory and a FIFO that stand in for a note, and does n
   mkdirSync(x)
   expect(Bun.spawnSync(['tar', '-xzf', out, '-C', x]).exitCode).toBe(0)
   expect(existsSync(join(x, 'topic', 'ok.md'))).toBe(true)
-  expect(tryRead(join(dir, 'inbox', 'x.md'))).toBeNull()
-  expect(tryRead(join(dir, 'CORE.md'))).toBeNull()
+  expect(tryRead(dir, join(dir, 'inbox', 'x.md'))).toBeNull()
+  expect(tryRead(dir, join(dir, 'CORE.md'))).toBeNull()
   rmSync(root, { recursive: true, force: true })
 })
 
@@ -280,4 +292,92 @@ test('dropLinks stops a level when a second process swaps its parent for a link 
     expect(lstatSync(join(outside, 'z_victim')).isSymbolicLink()).toBe(true)
     rmSync(root, { recursive: true, force: true })
   }
+}, 60000)
+
+test('a writer refuses a link in a parent dir and an outside path (claude-factory-fkw4 R2)', () => {
+  const { root, dir } = linkStore()
+  const outside = join(root, 'outside')
+  mkdirSync(outside)
+  rmSync(join(dir, 'inbox'), { recursive: true })
+  symlinkSync(outside, join(dir, 'inbox'))
+  expect(() => add(dir, { summary: 's', body: 'b' })).toThrow(/ELOOP/)
+  expect(() => writeStore(dir, join(dir, 'inbox', 'x.md'), 'x')).toThrow(/ELOOP/)
+  expect(() => appendStore(dir, join(dir, 'inbox', 'x.md'), 'x')).toThrow(/ELOOP/)
+  expect(readdirSync(outside).length).toBe(0)
+  mkdirSync(join(root, 'other', 'sub'), { recursive: true })
+  rmSync(join(dir, 'topic'), { recursive: true })
+  symlinkSync(join(root, 'other'), join(dir, 'topic'))
+  expect(() => writeStore(dir, join(dir, 'topic', 'sub', 'x.md'), 'x')).toThrow(/ELOOP/)
+  expect(existsSync(join(root, 'other', 'sub', 'x.md'))).toBe(false)
+  expect(() => writeStore(dir, join(root, 'secret2'), 'x')).toThrow(/EOUTSIDE/)
+  expect(existsSync(join(root, 'secret2'))).toBe(false)
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('a writer works at the root and in a real topic, through a linked or a relative store', () => {
+  const { root, dir } = linkStore()
+  writeStore(dir, join(dir, 'CORE.md'), 'x')
+  writeStore(dir, join(dir, 'topic', 'x.md'), 'x')
+  const linked = join(root, 'linked')
+  symlinkSync(dir, linked)
+  writeStore(linked, join(linked, 'topic', 'x.md'), 'y')
+  expect(readFileSync(join(dir, 'topic', 'x.md'), 'utf8')).toBe('y')
+  const before = process.cwd()
+  const rel = relative(before, dir)
+  writeStore(rel, join(rel, 'topic', 'y.md'), 'y')
+  expect(readFileSync(join(dir, 'topic', 'y.md'), 'utf8')).toBe('y')
+  expect(process.cwd()).toBe(before)
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('inDir unlink and a static reader do not go through a link in a parent dir', () => {
+  const { root, dir } = linkStore()
+  const outside = join(root, 'outside')
+  mkdirSync(outside)
+  writeFileSync(join(outside, 'x.md'), MARKER)
+  rmSync(join(dir, 'topic'), { recursive: true })
+  symlinkSync(outside, join(dir, 'topic'))
+  const before = process.cwd()
+  expect(() => inDir(dir, join(dir, 'topic', 'x.md'), n => unlinkSync(n))).toThrow(/ELOOP/)
+  expect(existsSync(join(outside, 'x.md'))).toBe(true)
+  expect(process.cwd()).toBe(before)
+  expect(tryRead(dir, join(dir, 'topic', 'x.md'))).toBeNull()
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('walk and snapshot give no outside text while a second process swaps a topic for a link', async () => {
+  const { root, dir } = linkStore()
+  const outside = join(root, 'outside')
+  mkdirSync(outside)
+  writeFileSync(join(outside, 'leak.md'), `---\nsummary: ${MARKER}\n---\n${MARKER}\n`)
+  writeFileSync(join(dir, 'topic', 'ok.md'), '---\nsummary: plain note\n---\nbody\n')
+  const topic = JSON.stringify(join(dir, 'topic'))
+  const swap = Bun.spawn([
+    'bun',
+    '-e',
+    `const fs=require('fs');const end=Date.now()+2000;while(Date.now()<end){fs.renameSync(${topic},${topic}+'.real');fs.symlinkSync(${JSON.stringify(outside)},${topic});fs.unlinkSync(${topic});fs.renameSync(${topic}+'.real',${topic})}`,
+  ])
+  const before = process.cwd()
+  const seen: string[] = []
+  const deadline = Date.now() + 2500
+  for (let i = 0; Date.now() < deadline; i++) {
+    try {
+      seen.push(JSON.stringify(walk(dir)))
+      const out = join(root, `snap${i}.tgz`)
+      if (snapshot(dir, undefined, out)) {
+        const x = join(root, `x${i}`)
+        mkdirSync(x)
+        Bun.spawnSync(['tar', '-xzf', out, '-C', x])
+        seen.push(Bun.spawnSync(['grep', '-r', MARKER, x]).exitCode === 1 ? '' : MARKER)
+      }
+    } catch (e) {
+      // a topic that vanished or is a link mid-scan: only these codes are fine
+      if (!['ENOENT', 'ELOOP', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) throw e
+    }
+    await Bun.sleep(0)
+  }
+  await swap.exited
+  expect(seen.join('')).not.toContain(MARKER)
+  expect(process.cwd()).toBe(before)
+  rmSync(root, { recursive: true, force: true })
 }, 60000)
