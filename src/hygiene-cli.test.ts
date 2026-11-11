@@ -1,7 +1,7 @@
 // claude-factory-8bg: the hygiene sweep end to end, with a fake bd and a fake gh on PATH.
 // Fixtures use acme/widget names only.
 import { afterEach, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -262,21 +262,84 @@ test('factory queue under FACTORY_PATROL refuses discovered_from without the fac
   expect(factory(['queue', 'a', 'acme-1'], patrol).code).toBe(0)
 })
 
-test('factory queue under FACTORY_PATROL refuses a hold label; a person releases it (9kou.4)', () => {
-  for (const hold of ['human', 'rejected', 'held:station']) {
+test('jmvx AC1 AC2 patrol queue and named start refuse target holds; a person releases them', () => {
+  for (const hold of ['owner', 'human', 'rejected', 'held:', 'held:station', 'held:cluster:acme']) {
+    for (const queued of [false, true]) {
+      setup([])
+      const labels = queued ? ['factory', hold] : [hold]
+      writeFileSync(
+        join(bin, 'bd'),
+        readFileSync(join(bin, 'bd'), 'utf8').replace(
+          /  show\) .*\n/,
+          `  show) case "$2" in acme-1) printf '%s' '${JSON.stringify([{ id: 'acme-1', labels }])}';; *) exit 1;; esac;;\n`,
+        ),
+      )
+      for (const args of [
+        ['queue', 'a', 'acme-1'],
+        ['start', 'lifecycle', 'a', 'acme-1'],
+      ]) {
+        const r = factory(args, { FACTORY_PATROL: '1' })
+        expect(r.code).not.toBe(0)
+        expect(r.err + r.out).toContain('a patrol cannot start it: a person queues it')
+        expect(r.err + r.out).toContain(`hold ${hold}`)
+        expect(callLines().some(l => /^(update|create|claim|comment)\b/.test(l))).toBe(false)
+        expect(existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')) : []).toEqual([])
+      }
+      expect(factory(['queue', 'a', 'acme-1']).code).toBe(0)
+      const update = callLines().find(l => l.startsWith('update acme-1'))!
+      expect(update).toContain(`--remove-label ${hold}`)
+      expect(update).toContain('--add-label factory')
+      expect(update).toContain('--unset-metadata owner_question')
+      expect(update).toContain('--unset-metadata owner_since')
+      expect(update).not.toContain('--unset-metadata owner_decisions')
+    }
+  }
+})
+
+test('jmvx AC3 patrol queue and named start refuse direct parent holds', () => {
+  const holds = ['owner', 'human', 'rejected', 'held:', 'held:station', 'held:cluster:acme']
+  for (const label of [...holds, 'decisions', '', 'ownerish', 'Owner', 'humane', 'held', 'rejected-by']) {
+    for (const verb of ['queue', 'start']) {
+      setup([])
+      const parent = {
+        id: 'acme-1',
+        labels: label === 'decisions' ? [] : [label],
+        ...(label === 'decisions' && { metadata: { owner_decisions: ['answer'] } }),
+      }
+      const child = { id: 'acme-1.1', parent: 'acme-1', labels: ['factory'] }
+      writeFileSync(
+        join(bin, 'bd'),
+        readFileSync(join(bin, 'bd'), 'utf8').replace(
+          /  show\) .*\n/,
+          `  show) case "$2" in acme-1) printf '%s' '${JSON.stringify([parent])}';; acme-1.1) printf '%s' '${JSON.stringify([child])}';; *) exit 1;; esac;;\n`,
+        ),
+      )
+      const args = verb === 'queue' ? ['queue', 'a', child.id] : ['start', 'lifecycle', 'a', child.id]
+      const r = factory(args, { FACTORY_PATROL: '1' })
+      if (holds.includes(label) || label === 'decisions') {
+        expect(r.code).not.toBe(0)
+        expect(r.err + r.out).toContain('parent acme-1 with a hold')
+        expect(callLines().some(l => /^(update|create|claim|comment)\b/.test(l))).toBe(false)
+        expect(existsSync(join(home, 'runs')) ? readdirSync(join(home, 'runs')) : []).toEqual([])
+      } else {
+        expect(r.err + r.out).not.toContain('a patrol cannot start it')
+        if (verb === 'queue') expect(r.code).toBe(0)
+        else expect(callLines()).toContain('children acme-1.1 --json --actor factory')
+      }
+    }
+  }
+})
+
+test('jmvx AC1 patrol queue permits literal hold lookalikes', () => {
+  for (const label of ['', 'ownerish', 'Owner', 'humane', 'held', 'rejected-by']) {
     setup([])
     writeFileSync(
       join(bin, 'bd'),
       readFileSync(join(bin, 'bd'), 'utf8').replace(
         /  show\) .*\n/,
-        `  show) case "$2" in acme-1) printf '%s' '[{"id":"acme-1","labels":["${hold}"]}]';; *) exit 1;; esac;;\n`,
+        `  show) printf '%s' '${JSON.stringify([{ id: 'acme-1', labels: label ? [label] : [] }])}';;\n`,
       ),
     )
-    const r = factory(['queue', 'a', 'acme-1'], { FACTORY_PATROL: '1' })
-    expect(r.code).not.toBe(0)
-    expect(r.err + r.out).toContain('a patrol cannot start it: a person queues it')
-    expect(callLines().some(l => l.startsWith('update acme-1'))).toBe(false)
-    expect(factory(['queue', 'a', 'acme-1']).code).toBe(0)
-    expect(callLines().find(l => l.startsWith('update acme-1'))).toContain(`--remove-label ${hold}`)
+    expect(factory(['queue', 'a', 'acme-1'], { FACTORY_PATROL: '1' }).code).toBe(0)
   }
 })

@@ -633,6 +633,7 @@ export const PRICES: Record<string, { in: number; out: number; read?: number }> 
   opus: { in: 5, out: 25 },
   sonnet: { in: 3, out: 15 },
   haiku: { in: 1, out: 5 },
+  'fable-5-2': { in: 8, out: 40, read: 0.2 }, // ponytail: from the Claude Code cost of one call (0.8x fable-5-1); set the list price when it is published
   'fable-5-1': { in: 10, out: 50, read: 0.25 },
   // ponytail: `fable` matches any later Fable name by substring; add a key when a new Fable model appears
   fable: { in: 10, out: 50 },

@@ -1,7 +1,16 @@
 // Worker tokens (claude-factory-akiq.4): sign, check, revoke. Every test passes `now` and uses a fresh home.
 import { expect, test } from 'bun:test'
 import { createHmac } from 'node:crypto'
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { check, revoke, sign } from './tokens'
@@ -176,4 +185,25 @@ test('sign drops rows that expired before it', () => {
   sign(h, key, claims, NOW)
   sign(h, key, { ...claims, node: 'review', exp: claims.exp + 100 }, claims.exp + 1)
   expect(Object.keys(JSON.parse(readFileSync(join(h, 'worker-tokens.json'), 'utf8')))).toHaveLength(1)
+})
+
+test('e0qu AC12 stale temp mode: the store ends with mode 0600', () => {
+  const h = home()
+  const tmp = join(h, 'worker-tokens.json.tmp')
+  writeFileSync(tmp, 'stale')
+  chmodSync(tmp, 0o644)
+  sign(h, key, claims, NOW)
+  expect(statSync(join(h, 'worker-tokens.json')).mode & 0o777).toBe(0o600)
+  expect(existsSync(tmp)).toBe(false)
+})
+
+test('e0qu AC13 symlink at the temp name: the victim keeps its text', () => {
+  const h = home()
+  const victim = join(h, 'victim.txt')
+  writeFileSync(victim, 'keep')
+  symlinkSync(victim, join(h, 'worker-tokens.json.tmp'))
+  sign(h, key, claims, NOW)
+  expect(lstatSync(join(h, 'worker-tokens.json')).isFile()).toBe(true)
+  expect(readFileSync(victim, 'utf8')).toBe('keep')
+  expect(existsSync(join(h, 'worker-tokens.json.tmp'))).toBe(false)
 })

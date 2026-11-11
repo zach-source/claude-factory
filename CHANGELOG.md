@@ -6,6 +6,7 @@ minor release may change the factory format, the CLI or the run state.
 
 ## Unreleased
 
+- Changed: `judge_model` (review, check, incident, postmortem, improve, recipe) is now `claude-fable-5-2[1m]` (was `claude-opus-5-5[1m]`) in lifecycle, release, ship and sweeps. New lifecycle param `plan_model` (default `claude-opus-5-5[1m]`) keeps plan on Opus 5.5. The manager and the manager chat run `claude-fable-5-2` (was `claude-opus-5-5`). The price table has a `fable-5-2` row (8/40, read 0.2 per million tokens, an estimate from one call). Owner decision 2026-11-11.
 - Changed: `security_model` is now `claude-fable-5-2` (was `claude-fable-5-1`) in lifecycle, ship and sweeps. The lifecycle `codex_security_share` default is now `0.5` (was `0.3`), so more security stations use `gpt-6-astra`. The worker and server images and CI now pin Claude Code 2.1.322 (was 2.1.319 in the worker, 2.1.291 in the server and CI). The `fable` key in `PRICES` prices Fable 5.2.
 - New: remote mode for the Herdr app mod (claude-factory-hpmc.14). `factory herdr install --machine <m> [--home <path>]` writes a config that sends every exec and file read to that `hc` machine. The mod only shows the board and calls `stop`, `resume`, `unhold`, `abort`. It never ticks, patrols or takes the lease. A "Manager chat" button opens `<m>/manager`. A local install refuses a home whose manager runs in AX. `factory tick --board` prints the board and changes nothing.
 - Changed: the default factory home is the platform data dir (claude-factory-nnkqp).

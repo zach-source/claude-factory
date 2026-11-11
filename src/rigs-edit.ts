@@ -1,20 +1,16 @@
 import {
-  closeSync,
   copyFileSync,
   existsSync,
-  fsyncSync,
   mkdirSync,
-  openSync,
   readdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   rmdirSync,
   statSync,
-  writeSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { hideParseText, SECRETS } from './secrets'
+import { writeFresh } from './write-fresh'
 
 export const LOCK_WAIT_MS = 5_000
 export const LOCK_STALE_MS = 30_000
@@ -115,14 +111,7 @@ export function editRigs<R extends Rig>(
         .sort()
       for (const f of old.slice(0, Math.max(0, old.length - HISTORY_KEEP))) rmSync(join(hist, f))
     }
-    const fd = openSync(`${file}.tmp`, 'w')
-    try {
-      writeSync(fd, JSON.stringify(next, null, 2))
-      fsyncSync(fd)
-    } finally {
-      closeSync(fd)
-    }
-    renameSync(`${file}.tmp`, file)
+    writeFresh(file, JSON.stringify(next, null, 2))
     return next
   } finally {
     rmdirSync(dir)

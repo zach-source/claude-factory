@@ -22,6 +22,7 @@ import {
   httpsRemote,
   isDenyLine,
   memorySnapshotPut,
+  outboxArgv,
   outboxDenial,
   overwritten,
   progressSig,
@@ -144,7 +145,7 @@ test("inside a VM, a worker's report and mail wait in the outbox instead of touc
     .split('\n')
     .map(l => JSON.parse(l))
   expect(lines.map(l => [l.argv, l.from])).toEqual([
-    [['report', 'r1', '1', 'ready', 'did', 'it'], 'a'],
+    [['report', 'r1', '1', 'ready', '--', 'did it'], 'a'],
     [['memory', 'add', '--kind', 'fact', 'a lesson'], 'a'],
   ])
   expect(existsSync(home)).toBe(false) // nothing on this side was touched
@@ -228,7 +229,9 @@ test('inside a VM, report --summary-file queues the file text; a bad file queues
   expect(existsSync(outbox)).toBe(false)
   expect(factory(['report', 'r1', '1', 'ready', '--summary-file', f], env).code).toBe(0)
   const lines = readFileSync(outbox, 'utf8').trim().split('\n')
-  expect(lines.map(l => JSON.parse(l).argv)).toEqual([['report', 'r1', '1', 'ready', 'long\nsummary "x"\n']])
+  expect(lines.map(l => JSON.parse(l).argv)).toEqual([
+    ['report', 'r1', '1', 'ready', '--', 'long\nsummary "x"\n'],
+  ])
   rmSync(join(home, 'text'), { recursive: true, force: true })
 })
 
@@ -265,8 +268,8 @@ test('inside a VM, a well-formed report/mail still queues, and "-h" in free text
     .split('\n')
     .map(l => JSON.parse(l).argv)
   expect(lines).toEqual([
-    ['mail', 'r1', 'manager', 'hi'],
-    ['report', 'r1', '3', 'ready', 'fixed', 'the', '-h', 'flag'],
+    ['mail', 'r1', 'manager', '--', 'hi'],
+    ['report', 'r1', '3', 'ready', '--', 'fixed the -h flag'],
   ])
 })
 
@@ -400,6 +403,300 @@ esac
   chmodSync(join(dir, 'ax'), 0o755)
 }
 const called = () => (existsSync(calls) ? readFileSync(calls, 'utf8') : '')
+
+test('yn9ag AC1: file report option text survives the outbox and replay once', () => {
+  const id = 'yn9-report'
+  const seq = launched(id)
+  mkdirSync(join(home, 'text'), { recursive: true })
+  const file = join(home, 'text', 'yn9-summary')
+  const outbox = join(dir, 'yn9-report.jsonl')
+  writeFileSync(file, '--summary-file')
+  expect(
+    factory(['report', id, String(seq), 'ready', '--summary-file', file], fakeBd(id).env(outbox)).code,
+  ).toBe(0)
+  const lines = readFileSync(outbox, 'utf8').trim().split('\n')
+  cluster('Running', { status: 'working', lines })
+  expect(factory(['tick']).code).toBe(0)
+  const events = () =>
+    inbox(id)
+      .split('\n')
+      .filter(Boolean)
+      .map(l => JSON.parse(l))
+  expect(events().filter(e => e.type === 'DONE')).toEqual([
+    expect.objectContaining({ outcome: 'ready', summary: '--summary-file', seq }),
+  ])
+  factory(['tick'])
+  expect(events().filter(e => e.type === 'DONE')).toHaveLength(1)
+})
+
+test('yn9ag AC1: file mail option text preserves whitespace and only explicit wake', () => {
+  const id = 'yn9-mail'
+  launched(id)
+  const root = join(home, 'text')
+  mkdirSync(root, { recursive: true })
+  const file = join(root, 'yn9-mail')
+  const outbox = join(dir, 'yn9-mail.jsonl')
+  const env = fakeBd(id).env(outbox)
+  const texts = ['--wake', '--text-file', '--', '-h', ' \n"quotes" café 日本語\n ']
+  for (const text of texts) {
+    writeFileSync(file, text)
+    expect(factory(['mail', id, 'manager', '--text-file', file], env).code).toBe(0)
+  }
+  writeFileSync(file, '--wake')
+  expect(factory(['mail', id, 'manager', '--wake', '--text-file', file], env).code).toBe(0)
+  const lines = readFileSync(outbox, 'utf8').trim().split('\n')
+  cluster('Running', { status: 'working', lines })
+  factory(['tick'])
+  const events = () =>
+    inbox(id)
+      .split('\n')
+      .filter(Boolean)
+      .map(l => JSON.parse(l))
+  expect(events().filter(e => e.type === 'MAIL')).toEqual([
+    ...texts.map(text => ({ type: 'MAIL', from: 'a', to: 'manager', text, at: expect.any(Number) })),
+    { type: 'MAIL', from: 'a', to: 'manager', text: '--wake', wake: true, at: expect.any(Number) },
+  ])
+  factory(['tick'])
+  expect(events().filter(e => e.type === 'MAIL')).toHaveLength(texts.length + 1)
+})
+
+test.each(['--text-file', '--', '-h', ' \n"quotes" café 日本語\n '])(
+  'yn9ag AC1: report file text %j stays literal',
+  text => {
+    const id = 'yn9-controls'
+    const seq = launched(id)
+    mkdirSync(join(home, 'text'), { recursive: true })
+    const file = join(home, 'text', 'yn9-controls')
+    const outbox = join(dir, 'yn9-controls.jsonl')
+    rmSync(outbox, { force: true })
+    writeFileSync(file, text)
+    expect(
+      factory(['report', id, String(seq), 'ready', '--summary-file', file], fakeBd(id).env(outbox)).code,
+    ).toBe(0)
+    cluster('Running', { status: 'working', lines: readFileSync(outbox, 'utf8').trim().split('\n') })
+    factory(['tick'])
+    expect(
+      inbox(id)
+        .split('\n')
+        .filter(Boolean)
+        .map(l => JSON.parse(l)),
+    ).toEqual([{ type: 'DONE', seq, outcome: 'ready', summary: text, at: expect.any(Number) }])
+  },
+)
+
+function replayTrace(sentinel: string, name: string) {
+  const trace = join(dir, `${name}-seam.jsonl`)
+  const preload = join(dir, `${name}-seam.ts`)
+  writeFileSync(
+    preload,
+    `
+import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+const record = (kind: string) => fs.appendFileSync(${JSON.stringify(trace)}, JSON.stringify(kind) + '\\n')
+const read = fs.readFileSync
+fs.readFileSync = ((path, ...args) => {
+  if (String(path) === ${JSON.stringify(sentinel)}) record('read')
+  return read(path, ...args)
+}) as typeof read
+syncBuiltinESMExports()
+const spawn = Bun.spawnSync
+Bun.spawnSync = ((argv, ...args) => {
+  if (Array.isArray(argv) && argv[0] === ${JSON.stringify(CLI)} && ['mail', 'report'].includes(argv[1])) record('spawn')
+  return spawn(argv, ...args)
+}) as typeof spawn
+`,
+  )
+  return { trace, preload, env: { BUN_OPTIONS: `--preload=${preload}` } }
+}
+
+test('yn9ag AC2: closed replay grammar refuses file options and malformed boundaries before the spawn seam', () => {
+  const side = { node: 'a', seq: 1 }
+  const sentinel = join(dir, 'yn9-sentinel')
+  writeFileSync(sentinel, 'sentinel contents must stay private')
+  const link = join(dir, 'yn9-link')
+  symlinkSync(sentinel, link)
+  const invalid: unknown[][] = [
+    ['report', 'r', '1', 'ready', '--'],
+    ['report', 'r', '1', 'ready', '--', 'text', 'extra'],
+    ['report', 'r', '1', 'ready', '--', 7],
+    ['report', 'r', '1', 'ready', '--', 'text', '--summary-file', sentinel],
+    ['mail', 'r', 'manager', '--'],
+    ['mail', 'r', 'manager', '--', 'text', '--wake'],
+    ['mail', 'r', 'manager', '--wake', '--'],
+    ['mail', 'r', 'manager', '--wake', '--', 'text', 'extra'],
+    ['mail', 'r', 'manager', '--', null],
+    ['mail', 'other', 'manager', '--', 'text'],
+    ['report', 'other', '1', 'ready', '--', 'text'],
+    ['report', 'r', '2', 'ready', '--', 'text'],
+    ['report', 'r', '01', 'ready', '--', 'text'],
+    ['decide', 'r', 'ready', '--', 'text'],
+    ['mail', 'r', 'manager', '--', ' \n '],
+    ['report', 'r', '1', 'ready', '--', ''],
+  ]
+  for (const path of [sentinel, 'relative', '../escape', link]) {
+    invalid.push(['report', 'r', '1', 'ready', '--summary-file', path])
+    invalid.push(['mail', 'r', 'manager', '--text-file', path])
+    invalid.push(['mail', 'r', 'manager', '--wake', '--text-file', path])
+  }
+  for (const argv of invalid) {
+    const parsed = outboxArgv(JSON.stringify({ argv }))
+    expect(parsed && replayable(parsed, side, 'r')).toBeNull()
+  }
+  launched('r')
+  const { env, trace } = replayTrace(sentinel, 'yn9-grammar')
+  cluster('Running', { status: 'working', lines: invalid.map(argv => JSON.stringify({ argv })) })
+  expect(factory(['tick'], env).code).toBe(0)
+  expect(existsSync(trace)).toBe(false)
+  expect(inbox('r')).toBe('')
+  for (const argv of [
+    ['report', 'r', '1', 'ready', '--', sentinel],
+    ['mail', 'r', 'manager', '--', sentinel],
+    ['mail', 'r', 'manager', '--wake', '--', '--'],
+  ])
+    expect(replayable(argv, side, 'r')).toEqual(argv)
+})
+
+test('yn9ag AC2: refusals leave the next literal line usable and never copy file contents', () => {
+  const id = 'yn9-refuse'
+  const seq = launched(id)
+  const sentinel = join(home, 'text', 'yn9-private')
+  mkdirSync(join(home, 'text'), { recursive: true })
+  writeFileSync(sentinel, 'yn9 private sentinel contents')
+  const { trace, preload, env } = replayTrace(sentinel, 'yn9-next')
+  const rows = [
+    ['mail', id, 'manager', '--text-file', sentinel],
+    ['report', id, String(seq), 'ready', '--summary-file', sentinel],
+    ['mail', id, 'manager', '--', 'text', '--wake'],
+    ['report', id, String(seq), 'invalid-outcome', '--', 'no event'],
+    ['mail', id, 'missing-box', '--', 'no event'],
+    ['mail', id, 'manager', '--', sentinel],
+  ]
+  cluster('Running', {
+    status: 'working',
+    lines: rows.map(argv => JSON.stringify({ argv, from: 'manager', at: 1 })),
+  })
+  expect(factory(['tick'], env).code).toBe(0)
+  const events = inbox(id)
+    .split('\n')
+    .filter(Boolean)
+    .map(l => JSON.parse(l))
+  expect(events).toEqual([{ type: 'MAIL', from: 'a', to: 'manager', text: sentinel, at: expect.any(Number) }])
+  expect(called()).not.toContain('yn9 private sentinel contents')
+  const prompts = [...called().matchAll(/worker prompt (\S+)/g)].map(m =>
+    Buffer.from(m[1]!, 'base64').toString(),
+  )
+  expect(prompts.join('\n')).not.toContain('yn9 private sentinel contents')
+  expect(inbox(id)).not.toContain('yn9 private sentinel contents')
+  expect(
+    readFileSync(trace, 'utf8')
+      .trim()
+      .split('\n')
+      .map(l => JSON.parse(l)),
+  ).toEqual(['spawn', 'spawn', 'spawn'])
+  const probe = Bun.spawnSync([
+    'bun',
+    '--preload',
+    preload,
+    '-e',
+    `require('node:fs').readFileSync(${JSON.stringify(sentinel)})`,
+  ])
+  expect(probe.exitCode).toBe(0)
+  expect(readFileSync(trace, 'utf8')).toContain('"read"')
+})
+
+test('yn9ag AC3: blank producer text and malformed boundaries cause no append or beads sync', () => {
+  const outbox = join(dir, 'yn9-blank.jsonl')
+  const bd = fakeBd('yn9-blank')
+  const file = join(home, 'text', 'yn9-blank')
+  mkdirSync(join(home, 'text'), { recursive: true })
+  for (const text of ['', ' \n\t ']) {
+    writeFileSync(file, text)
+    for (const argv of [
+      ['report', 'r', '1', 'ready', '--summary-file', file],
+      ['mail', 'r', 'manager', '--text-file', file],
+      ['report', 'r', '1', 'ready', '--', text],
+      ['mail', 'r', 'manager', '--', text],
+      ['mail', 'r', 'manager', '--wake', '--', text],
+    ])
+      expect(factory(argv, bd.env(outbox)).code).toBe(1)
+  }
+  for (const argv of [
+    ['mail', 'r'],
+    ['mail', 'r', 'manager', '--', 'text', '--wake'],
+    ['report', 'r', '1', 'ready', '--', 'text', 'extra'],
+  ])
+    expect(factory(argv, bd.env(outbox)).code).toBe(1)
+  expect(existsSync(outbox)).toBe(false)
+  expect(existsSync(bd.marker)).toBe(false)
+})
+
+test('yn9ag AC3: outbox usage refuses each malformed literal form', () => {
+  for (const cmd of ['report', 'mail']) {
+    const prefix = cmd === 'report' ? ['r', '1', 'ready'] : ['r', 'manager']
+    const usage = cmd === 'report' ? worker.OUTBOX_USAGE.report : worker.OUTBOX_USAGE.mail
+    for (const tail of [['--'], ['--', ' '], ['--', 'text', 'extra']])
+      expect(worker.outboxUsage(cmd, [...prefix, ...tail])).toBe(usage)
+    expect(worker.outboxUsage(cmd, [...prefix, '--', '--wake'])).toBeNull()
+  }
+  expect(worker.outboxUsage('mail', ['r', 'manager', '--wake', '--', 'text', 'extra'])).toBe(
+    worker.OUTBOX_USAGE.mail,
+  )
+})
+
+test('yn9ag AC3: canonical argv byte cap includes boundaries and multibyte text', () => {
+  const argv = ['mail', 'r', 'manager', '--', 'é']
+  const prefix = argv.slice(0, -1).join('').length
+  argv[4] = 'é' + 'x'.repeat(worker.OUTBOX_MAX_BYTES - prefix - 2)
+  expect(worker.outboxTooBig(argv)).toBeUndefined()
+  expect(worker.outboxTooBig([...argv.slice(0, -1), argv[4] + 'x'])).toBe(102401)
+})
+
+test('yn9ag AC3: canonical producers replay at the byte cap and refuse one more byte before sync', () => {
+  const id = 'yn9-cap'
+  const seq = launched(id)
+  const outbox = join(dir, 'yn9-cap.jsonl')
+  const bd = fakeBd(id)
+  const prefix = ['mail', id, 'manager', '--']
+  const text = 'é' + 'x'.repeat(worker.OUTBOX_MAX_BYTES - prefix.join('').length - 2)
+  expect(factory([...prefix, text + 'x'], bd.env(outbox)).code).toBe(1)
+  expect(factory(['report', id, String(seq), 'ready', '--', text + 'x'], bd.env(outbox)).code).toBe(1)
+  expect(existsSync(outbox)).toBe(false)
+  expect(existsSync(bd.marker)).toBe(false)
+  expect(factory([...prefix, text], bd.env(outbox)).code).toBe(0)
+  expect(factory(['mail', id, 'manager', '--wake', '--', '--wake'], bd.env(outbox)).code).toBe(0)
+  expect(factory(['report', id, String(seq), 'ready', '--', '--summary-file'], bd.env(outbox)).code).toBe(0)
+  const lines = readFileSync(outbox, 'utf8').trim().split('\n')
+  const oversized = JSON.stringify({ argv: [...prefix, text + 'x'] })
+  const { env, trace } = replayTrace(join(dir, 'yn9-unused'), 'yn9-cap')
+  cluster('Running', { status: 'working', lines: [oversized, ...lines] })
+  expect(factory(['tick'], env).code).toBe(0)
+  const events = inbox(id)
+    .split('\n')
+    .filter(Boolean)
+    .map(l => JSON.parse(l))
+  expect(events).toEqual([
+    { type: 'MAIL', from: 'a', to: 'manager', text, at: expect.any(Number) },
+    { type: 'MAIL', from: 'a', to: 'manager', text: '--wake', wake: true, at: expect.any(Number) },
+    { type: 'DONE', seq, outcome: 'ready', summary: '--summary-file', at: expect.any(Number) },
+  ])
+  expect(readFileSync(trace, 'utf8').trim().split('\n')).toHaveLength(3)
+})
+
+test('yn9ag AC2: local handlers reject malformed literal args without events', () => {
+  const id = 'yn9-local'
+  const seq = launched(id)
+  for (const argv of [
+    ['report', id, String(seq), 'ready', '--'],
+    ['report', id, String(seq), 'ready', '--', 'text', 'extra'],
+    ['mail', id, 'manager', '--'],
+    ['mail', id, 'manager', '--', 'text', '--wake'],
+    ['mail', id, 'manager', '--wake', '--', ' '],
+  ])
+    expect(factory(argv).code).toBe(1)
+  expect(inbox(id)).toBe('')
+  expect(worker.literalText('mail', ['r', 'manager', '--', 7] as unknown as string[])).toBeNull()
+  expect(worker.literalText('report', ['r', '1', 'ready', '--', 7] as unknown as string[])).toBeNull()
+})
 
 test('a run fixture can remain until its test ends', () => {
   launched('cleanup-check')
@@ -3295,7 +3592,7 @@ test("inside a VM, a report carries the session's usage, subagents included (hr9
   }
   expect(factory(['report', 'r1', '1', 'ready', 'done'], env).code).toBe(0)
   const line = JSON.parse(readFileSync(outbox, 'utf8').trim())
-  expect(line.argv).toEqual(['report', 'r1', '1', 'ready', 'done'])
+  expect(line.argv).toEqual(['report', 'r1', '1', 'ready', '--', 'done'])
   expect(line.usage.map((u: { model: string }) => u.model).sort()).toEqual([
     'claude-haiku-5-5',
     'claude-opus-4-7',
@@ -4118,7 +4415,7 @@ describe('a bd schema skew on the VM (claude-factory-lahb)', () => {
     const lines = r.outbox.trim().split('\n')
     expect(lines).toHaveLength(1)
     const line = JSON.parse(lines[0]!)
-    expect(line.argv).toEqual(['report', 'r1', '1', 'ready', 'plan text'])
+    expect(line.argv).toEqual(['report', 'r1', '1', 'ready', '--', 'plan text'])
     expect(line.bdSkew).toBe(SKEW_OUT)
     expect(r.outbox).not.toContain('dolt.example.com')
     const out = r.p.stdout.toString()
@@ -4178,6 +4475,22 @@ describe('a bd schema skew on the VM (claude-factory-lahb)', () => {
     expect(inbox('sk3')).not.toContain('"outcome":"ready"')
     expect(existsSync(markerFile())).toBe(true)
     finish('sk3')
+  })
+
+  test('yn9ag AC3: a skew hold preserves literal report text', () => {
+    rmSync(markerFile(), { force: true })
+    const seq = launched('sk3literal')
+    const line = skewLine('sk3literal', seq, {
+      bdSkew: SKEW_OUT,
+      argv: ['report', 'sk3literal', String(seq), 'ready', '--', '--summary-file text'],
+    })
+    cluster('Running', { status: 'idle', session: 's1', lines: [line] })
+    factory(['tick'])
+    expect(ctxOfRun('sk3literal').log.at(-1).summary).toBe(
+      `needs the person: bd version skew on ax (\`${SKEW_OUT}\`). The worker wrote, unverified: ready: --summary-file text`,
+    )
+    expect(inbox('sk3literal')).not.toContain('"outcome":"ready"')
+    finish('sk3literal')
   })
 
   test('a skew hold strips ESC and U+202E from the outcome and the summary', () => {
@@ -4740,7 +5053,7 @@ test('inside a VM, an outbox command over 100 KiB is refused with exit 1, nothin
   expect(existsSync(outbox)).toBe(false)
   expect(existsSync(bd.marker)).toBe(false)
   // exactly at the cap still queues
-  const text = 'x'.repeat(102400 - 'mail'.length - 'r1'.length - 'manager'.length)
+  const text = 'x'.repeat(102400 - 'mail'.length - 'r1'.length - 'manager'.length - '--'.length)
   expect(factory(['mail', 'r1', 'manager', text], bd.env(outbox)).code).toBe(0)
   expect(readFileSync(outbox, 'utf8').trim().split('\n')).toHaveLength(1)
 })

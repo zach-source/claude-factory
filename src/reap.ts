@@ -26,6 +26,23 @@ function liveChildren() {
     .map(Number)
 }
 
+/** the pids of the zombie children of this process */
+function zombies() {
+  const me = String(process.pid)
+  return readdirSync('/proc')
+    .filter(n => /^\d+$/.test(n))
+    .filter(n => {
+      try {
+        const s = readFileSync(`/proc/${n}/stat`, 'utf8')
+        const [state, ppid] = s.slice(s.lastIndexOf(')') + 2).split(' ')
+        return ppid === me && state === 'Z'
+      } catch {
+        return false // gone
+      }
+    })
+    .map(Number)
+}
+
 function fail(msg: string): never {
   process.stderr.write(`reap: ${msg}\n`)
   process.exit(REAP_FAILED)
@@ -45,8 +62,23 @@ if (import.meta.main) {
       fail('cannot become a child subreaper')
     }
   }
+  // best effort: wait for the dead adopted children while the command runs. Never wait for p.pid: Bun does that.
+  let waitpid: ((pid: number, status: null, options: number) => number) | undefined
+  if (linux) {
+    try {
+      waitpid = dlopen('libc.so.6', { waitpid: { args: ['i32', 'ptr', 'i32'], returns: 'i32' } }).symbols
+        .waitpid
+    } catch {}
+  }
   const p = Bun.spawn(argv, { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit' })
+  const reapZombies = () => {
+    try {
+      for (const z of zombies()) if (z !== p.pid) waitpid!(z, null, 1 /* WNOHANG */)
+    } catch {}
+  }
+  const t = waitpid ? setInterval(reapZombies, 100) : undefined
   await p.exited
+  clearInterval(t)
   if (linux) {
     let left: number[] = []
     try {
@@ -63,7 +95,6 @@ if (import.meta.main) {
     } catch {
       fail('cannot list the processes of the turn')
     }
-    // ponytail: zombies of killed leftovers live until this process exits (one turn); add waitpid through bun:ffi if a turn leaves many
     if (left.length) fail(`${left.length} processes outlived the turn`)
   }
   process.exit(p.exitCode ?? 128 + (constants.signals[p.signalCode as keyof typeof constants.signals] ?? 1))

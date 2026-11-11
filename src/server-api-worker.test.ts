@@ -1,5 +1,16 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { check, revoke, sign } from './tokens'
@@ -541,5 +552,43 @@ describe('worker API', () => {
     expect(d.rows()['new-key-001']).toBeDefined()
     await d.post('/v1/report', REP, { key: 'old-key-001', token: tok })
     expect(d.calls.length).toBe(4)
+  })
+})
+
+describe('e0qu temp file', () => {
+  // the runner runs after the pending row is written and before the final write, so it plants the temp entry
+  const plant = (plantTmp: (tmp: string) => void) => {
+    let home = ''
+    const s = setup({
+      runner: async () => {
+        plantTmp(join(home, 'worker-calls.json.tmp'))
+        return { code: 0, out: 'done\n', err: '' }
+      },
+    })
+    home = s.home
+    return s
+  }
+  test('e0qu AC16 stale temp mode: the store ends with mode 0600', async () => {
+    const s = plant(tmp => {
+      writeFileSync(tmp, 'stale')
+      chmodSync(tmp, 0o644)
+    })
+    expect((await s.post('/v1/report', REP, { key: 'e0qu-key-1' })).status).toBe(200)
+    expect(statSync(s.file).mode & 0o777).toBe(0o600)
+    expect(existsSync(`${s.file}.tmp`)).toBe(false)
+    expect(s.rows()['e0qu-key-1']).toBeDefined()
+  })
+  test('e0qu AC17 symlink at the temp name: the victim keeps its text', async () => {
+    let victim = ''
+    const s = plant(tmp => {
+      victim = `${tmp}.victim`
+      writeFileSync(victim, 'keep')
+      symlinkSync(victim, tmp)
+    })
+    expect((await s.post('/v1/report', REP, { key: 'e0qu-key-2' })).status).toBe(200)
+    expect(lstatSync(s.file).isFile()).toBe(true)
+    expect(readFileSync(victim, 'utf8')).toBe('keep')
+    expect(existsSync(`${s.file}.tmp`)).toBe(false)
+    expect(s.rows()['e0qu-key-2']).toBeDefined()
   })
 })

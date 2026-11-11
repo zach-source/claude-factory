@@ -82,7 +82,7 @@ export function send(ctx: Ctx, a: { id: string; text: string; front: Front }): P
         res = await ctx.port.chatModel({
           system: stepPrompt('chat', { cli: CLI }),
           input: a.text,
-          model: 'claude-opus-5-5',
+          model: 'claude-fable-5-2',
           tools: 'Bash,Read,Grep,Glob,Write',
           maxTurns: 40,
           settings: { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } },

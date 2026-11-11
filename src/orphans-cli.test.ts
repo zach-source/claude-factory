@@ -187,6 +187,20 @@ test('AC9: an unreadable orphan-forks.json forks nothing and shows an error row;
   expect(runIds()).toHaveLength(1)
 })
 
+test('a halted home clears the error rows of an old failed pass', () => {
+  const src = setup()
+  fakeGh(src, SHA1)
+  writeFileSync(join(home(), 'orphan-forks.json'), '{not json')
+  pass()
+  expect(read('orphans.json')).toHaveLength(1)
+  writeFileSync(
+    join(home(), 'halt.json'),
+    JSON.stringify({ state: 'paused', at: Date.now(), told: {}, closed: {} }),
+  )
+  pass()
+  expect(read('orphans.json')).toEqual([])
+})
+
 test('a failed fork shows an error row with the URL, and a second pass forks nothing', () => {
   const src = setup()
   fakeGh(src, SHA1)

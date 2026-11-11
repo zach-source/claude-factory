@@ -8,6 +8,162 @@ const DECIDE = '/repo/bin/factory decide lifecycle-abc ship "looks good"'
 const ANSWER = '/repo/bin/factory decisions answer api api-7 "use postgres"'
 const START_OWNED = '/repo/bin/factory start lifecycle api api-9 --owned'
 
+test('ksx5 AC1: the actual question escapes controls and preserves the cut mark', SLOW, async ($, on) => {
+  mock.clock(on)
+  const questions: string[] = []
+  let ran = 0
+  on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
+    const question = e.questions[0]!.question
+    questions.push(question)
+    return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+  })
+  on('tool.call', { tool: 'Bash' }, () => {
+    ran++
+    return { result: { stdout: '', stderr: '', interrupted: false } }
+  })
+  const codes = [
+    ...Array.from({ length: 32 }, (_, i) => i),
+    127,
+    0x202a,
+    0x202b,
+    0x202c,
+    0x202d,
+    0x202e,
+    0x2066,
+    0x2067,
+    0x2068,
+    0x2069,
+  ]
+  for (const code of codes) {
+    const control = String.fromCharCode(code)
+    const escape =
+      code === 9
+        ? '\\t'
+        : code === 10
+          ? '\\n'
+          : code === 13
+            ? '\\r'
+            : code < 128
+              ? `\\x${code.toString(16).padStart(2, '0')}`
+              : `\\u${code.toString(16)}`
+    await $.tool.call({
+      tool: 'Bash',
+      command: `/repo/bin/factory decide r1 ship 'a${control}b'`,
+      description: 'x',
+    })
+    const q = questions.pop()!
+    expect(q).toContain(`a${escape}b`)
+    expect(q).not.toMatch(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/)
+    await $.tool.call({
+      tool: 'Bash',
+      command: `/repo/bin/factory decide r1 ship "${'a'.repeat(350)}a${control}b$(id)"`,
+      description: 'x',
+    })
+    const window = questions.pop()!
+    expect(window).toContain(`a${escape}b$(id)`)
+    expect(window).not.toMatch(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/)
+  }
+  await $.tool.call({
+    tool: 'Bash',
+    command: `/repo/bin/factory decide r1 ship '\x1b\r\u202e${'\n'.repeat(260)}'`,
+    description: 'x',
+  })
+  expect(questions[0]).toContain('\\x1b\\r\\u202e\\n')
+  expect(questions[0]).toContain('characters not shown')
+  expect(questions[0]).not.toMatch(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/)
+  expect(ran).toBe(0)
+})
+
+test(
+  'ksx5 AC3: compressed spaces retain a hidden second gate and exact source counts',
+  SLOW,
+  async ($, on) => {
+    mock.clock(on)
+    const questions: string[] = []
+    let ran = 0
+    on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
+      const question = e.questions[0]!.question
+      questions.push(question)
+      return { result: { questions: e.questions, answers: { [question]: 'Deny' } } }
+    })
+    on('tool.call', { tool: 'Bash' }, () => {
+      ran++
+      return { result: { stdout: '', stderr: '', interrupted: false } }
+    })
+    const prefix = `/repo/bin/factory decide${' '.repeat(300)}r1 reject '`
+    const command = `${prefix}${'a'.repeat(300)}' && factory decide r2 ship`
+    const shown = '/repo/bin/factory decide\\x20{300}r1 reject '
+    const sourceEnd = prefix.length + 300 - shown.length - 1
+    const result = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(result.deny).toContain('did not confirm')
+    expect(questions.length).toBe(1)
+    expect(questions[0]).toContain('\\x20{300}')
+    expect(questions[0]).toContain(
+      `… (${command.length - sourceEnd} of ${command.length} characters not shown)`,
+    )
+    expect(questions[0]).toMatch(/The text not shown holds[^.]*decide a factory gate/)
+    expect(questions[0]).not.toContain('factory decide r2 ship')
+    expect(ran).toBe(0)
+  },
+)
+
+test('ksx5 AC4: absent and invalid answers deny without a downstream call', SLOW, async ($, on) => {
+  mock.clock(on)
+  let answer: string | undefined
+  let ran = 0
+  on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => ({
+    result: { questions: e.questions, answers: answer ? { [e.questions[0]!.question]: answer } : {} },
+  }))
+  on('tool.call', { tool: 'Bash' }, () => {
+    ran++
+    return { result: { stdout: '', stderr: '', interrupted: false } }
+  })
+  for (const value of [undefined, 'yes', 'Allow please', 'Allow\n']) {
+    answer = value
+    const result = await $.tool.call({ tool: 'Bash', command: DECIDE, description: 'x' })
+    expect(result.deny, String(value)).toContain('did not confirm')
+  }
+  expect(ran).toBe(0)
+})
+
+test('ksx5 AC2: space counts expose arguments and Allow retains command bytes', SLOW, async ($, on) => {
+  mock.clock(on)
+  const questions: string[] = []
+  const commands: string[] = []
+  on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
+    const question = e.questions[0]!.question
+    questions.push(question)
+    return { result: { questions: e.questions, answers: { [question]: 'Allow' } } }
+  })
+  on('tool.call', { tool: 'Bash' }, (_, e) => {
+    commands.push(e.command)
+    return { result: { stdout: '', stderr: '', interrupted: false } }
+  })
+  const rows = [
+    `/repo/bin/factory decide${' '.repeat(300)}r2 ship`,
+    `/repo/bin/factory decisions answer acme w-1${' '.repeat(300)}yes`,
+    `/repo/bin/factory start lifecycle acme w-1${' '.repeat(300)}--owned`,
+    `/repo/bin/factory decide r2 ship 'a${' '.repeat(300)}b'`,
+    '/repo/bin/factory decide  r2 ship',
+    '/repo/bin/factory decide r2 ship 😀',
+    '/repo/bin/factory decide\tr2\nship',
+  ]
+  for (const command of rows) {
+    const result = await $.tool.call({ tool: 'Bash', command, description: 'x' })
+    expect(result.deny).toBeUndefined()
+    const q = questions.pop()!
+    expect(q).toContain(
+      command
+        .replace(/ {2,}/g, s => `\\x20{${s.length}}`)
+        .replace(/\t/g, '\\t')
+        .replace(/\n/g, '\\n'),
+    )
+    if (/ {2,}/.test(command)) expect(q).toContain('ASCII spaces')
+    expect(commands.pop()!).toContain(command)
+    expect(q).not.toContain('text not shown')
+  }
+})
+
 const MONITOR_DENY = 'Monitor is disabled in the factory mod. Use Bash for shell commands.'
 const monitorInputs = [
   { command: '/repo/bin/factory decide r1 ship' },
@@ -411,7 +567,7 @@ test('an even run of backslashes before a newline does not join the lines', SLOW
   expect(r.deny).toContain('did not confirm')
   expect(ran).toBe(0)
   expect(questions.length).toBe(1)
-  expect(questions[0]).toContain('ship \\\\\n/repo')
+  expect(questions[0]).toContain('ship \\\\\\n/repo')
   expect(questions[0]).not.toContain('ship \\/repo')
 
   // 3 backslashes: an escaped backslash, then a line continuation: the pair joins
@@ -466,7 +622,7 @@ test(
     })
     expect(questions.length).toBe(1)
     expect(questions[0]).not.toContain('#x/repo')
-    expect(questions[0]).toContain('#x\\\n/repo')
+    expect(questions[0]).toContain('#x\\\\n/repo')
     questions.length = 0
     await $.tool.call({
       tool: 'Bash',

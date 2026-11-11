@@ -40,7 +40,8 @@ export const LABEL = 'factory'
 /** a bead a station rejected: open, out of the queue until a person queues it again */
 export const REJECTED = 'rejected'
 /** A hold label: dispatch starts no bead that carries one; only `factory queue` removes it (claude-factory-9kou). */
-export const isHoldLabel = (l: string) => l === REJECTED || l === 'human' || l.startsWith('held:')
+export const isHoldLabel = (l: string) =>
+  l === OWNER || l === REJECTED || l === 'human' || l.startsWith('held:')
 /** a bead handed off to the rig's ship run: open, no `factory` label, so dispatch skips it */
 export const SHIP = 'ship'
 /** a bead a blocked run handed to its owner: open, no `factory` label, until `queue` puts it back */
@@ -232,22 +233,24 @@ export function backlogOf(
 }
 
 /**
- * unowned top-level work only: a child is a task of some run's plan (children inherit the label). With
- * `parents` (the rig's beads by id), a child also starts when its parent has no live run, if the child or
- * the parent has the `factory` label: no run carries it, so it would else wait for ever (claude-factory-2rik).
- * A labeled parent with open children never starts itself (dispatch skips it for "open children"), so its
- * children must start on their own.
+ * Select unassigned beads without live runs, up to the available room.
+ * With `parents`, a child can start if either bead has the factory label and its parent has no live run.
+ * Children of a held parent must wait for the person to release its hold.
  */
 export const dispatchable = (ready: Bead[], linked: Set<string>, room: number, parents?: Map<string, Bead>) =>
   ready
     .filter(b => !b.assignee && !linked.has(b.id) && (!b.parent || isOrphanChild(b, linked, parents)))
     .slice(0, Math.max(0, room))
 
-/** a child whose parent is in the listing and has no live run, where the child or the parent is a `factory` bead */
+/** A child can start if its parent has no hold or live run, and either bead has the factory label. */
 const isOrphanChild = (b: Bead, linked: Set<string>, parents?: Map<string, Bead>) => {
   const parent = b.parent ? parents?.get(b.parent) : undefined
   return (
-    !!parent && (!!b.labels?.includes(LABEL) || !!parent.labels?.includes(LABEL)) && !linked.has(parent.id)
+    !!parent &&
+    !parent.labels?.some(isHoldLabel) &&
+    !isOwned(parent) &&
+    (!!b.labels?.includes(LABEL) || !!parent.labels?.includes(LABEL)) &&
+    !linked.has(parent.id)
   )
 }
 
