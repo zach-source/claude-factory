@@ -8,19 +8,21 @@ import { join } from 'node:path'
 
 import { REPO, parseEgress, type Egress } from './ax'
 import { rmQuiet } from './home-guard'
-import { SECRETS } from './secrets'
+import { SECRETS, hideSecret } from './secrets'
 
 /**
- * `$FACTORY_HOME/devenv.json`: the buildx builder, a command printing the cache's push token, and the shell
- * the build runs to push $ROOTS with that token at /run/secrets/cache (`attic push ...`, say)
+ * `$FACTORY_HOME/devenv.json`: the builder (a buildx builder name, or the address of a BuildKit daemon where
+ * buildx is missing), a command printing the cache's push token, and the shell the build runs to push $ROOTS
+ * with that token at /run/secrets/cache (`attic push ...`, say). The optional `githubToken` is a command that
+ * prints a GitHub token for Nix; when it prints nothing, Nix fetches without a token.
  */
-export type DevenvConfig = { builder: string; token: string; push: string }
+export type DevenvConfig = { builder: string; token: string; push: string; githubToken?: string }
 
 /** the fields of devenv.json that are absent, not a string or empty */
 export const configMissing = (cfg: Record<string, unknown>) =>
   (['builder', 'token', 'push'] as const).filter(f => typeof cfg[f] !== 'string' || cfg[f] === '')
 
-export type Stamp = { key: string; ok: boolean; at: number; rev: string }
+export type Stamp = { key: string; ok: boolean; at: number; rev: string; why?: string }
 
 /** what a devenv's derivations depend on that a rig's repo changes: its devenv files, as git blobs */
 export const DEVENV_FILES = ['devenv.nix', 'devenv.yaml', 'devenv.lock']
@@ -36,21 +38,22 @@ export const cacheKey = (blobs: string, image: string) =>
 export const isDue = (stamp: Stamp | undefined, key: string, force = false) =>
   force || stamp?.key !== key || !stamp.ok
 
-// at REPO, the path the VM clones to: a devenv's derivations depend on its root
+// at REPO, the path the VM clones to: a devenv's derivations depend on its root. The source is a named build
+// context mounted from `src`, so the rig's .dockerignore does not apply. REPO gets a fresh git commit of it,
+// the same checkout devenv sees in a clone. A GitHub token (optional) goes to Nix only.
 export const DOCKERFILE = `# syntax=docker/dockerfile:1
 ARG IMAGE
 FROM \${IMAGE}
-ARG REMOTE
 ARG REV
 ARG PUSH
 ARG KEY
-RUN --mount=type=secret,id=gh,required=true --mount=type=secret,id=cache,required=true <<'EOF'
+RUN --mount=type=secret,id=cache,required=true --mount=type=secret,id=github,required=false --mount=type=bind,from=src,target=/src <<'EOF'
 set -eu
 echo "devenv $KEY"
-mkdir -p ${REPO} && cd ${REPO} && git init -q
-auth=$(printf 'x-access-token:%s' "$(cat /run/secrets/gh)" | base64 -w0)
-git -c http.https://github.com/.extraHeader="Authorization: Basic $auth" fetch -q --depth 1 "$REMOTE" "$REV"
-git checkout -q FETCH_HEAD
+mkdir -p ${REPO} && cp -a /src/. ${REPO}/ && cd ${REPO}
+git init -q && git add -f -A
+git -c user.name=factory -c user.email=factory@localhost commit -q -m "$REV"
+if [ -s /run/secrets/github ]; then export NIX_CONFIG="access-tokens = github.com=$(cat /run/secrets/github)"; fi
 devenv print-dev-env > /tmp/env.sh 2> /tmp/devenv.log || { tail -40 /tmp/devenv.log; exit 1; }
 ROOTS=$(for r in .devenv/gc/* .devenv/profile; do [ -e "$r" ] && readlink -f "$r"; done | sort -u | tr '\\n' ' ')
 export ROOTS
@@ -74,56 +77,98 @@ export function remoteDevenv(repo: string) {
   return { rev, blobs, hasDevenv: /\tdevenv\.nix$/m.test(blobs) }
 }
 
+/** the files of `rev` at `dir`: from a private index, so export-ignore and the rig's worktree do not matter */
+export function checkout(repo: string, rev: string, dir: string, tmp: string) {
+  const env = { ...process.env, GIT_INDEX_FILE: join(tmp, 'index') }
+  const r = run(['git', '-C', repo, 'read-tree', rev], { env })
+  if (!r.ok) return r
+  return run(['git', '-C', repo, 'checkout-index', '-a', `--prefix=${dir}/`], { env })
+}
+
+type Job = { cfg: DevenvConfig; image: string; rev: string; key: string; force?: boolean }
+type Paths = { ctx: string; src: string; ca: string }
+
+/** the build command: docker buildx where it exists, else buildctl (`prefix` runs it, `nix shell ...`, say) */
+export function buildCommand(j: Job, p: Paths, o: { buildx: boolean; github: boolean; prefix?: string[] }) {
+  const args = [`IMAGE=${j.image}`, `REV=${j.rev}`, `PUSH=${j.cfg.push}`, `KEY=${j.key}`]
+  const secrets = [
+    'id=cache,env=FACTORY_DEVENV_CACHE',
+    ...(o.github ? ['id=github,env=FACTORY_DEVENV_GH'] : []),
+  ]
+  if (o.buildx)
+    return [
+      ...['docker', 'buildx', 'build', '--builder', j.cfg.builder, '--platform', 'linux/amd64'],
+      ...['--progress', 'plain', '--build-context', `src=${p.src}`],
+      ...args.flatMap(a => ['--build-arg', a]),
+      ...secrets.flatMap(s => ['--secret', s]),
+      ...(j.force ? ['--no-cache'] : []),
+      ...['--output', 'type=cacheonly', p.ctx],
+    ]
+  return [
+    ...(o.prefix ?? []),
+    ...['buildctl', '--addr', j.cfg.builder, '--tlscacert', p.ca, 'build'],
+    ...['--frontend', 'dockerfile.v0', '--progress', 'plain'],
+    ...['--local', `context=${p.ctx}`, '--local', `dockerfile=${p.ctx}`, '--local', `src=${p.src}`],
+    ...['--opt', 'context:src=local:src', '--opt', 'platform=linux/amd64'],
+    ...args.flatMap(a => ['--opt', `build-arg:${a}`]),
+    ...secrets.flatMap(s => ['--secret', s]),
+    ...(j.force ? ['--no-cache'] : []),
+  ]
+}
+
+/** the CA bundle for buildctl and Nix: the system bundle plus the egress CA (FACTORY_CA, PEM text) */
+const caBundle = (env: Record<string, string | undefined>) => {
+  const sys = [env.SSL_CERT_FILE, env.NIX_SSL_CERT_FILE, '/etc/ssl/certs/ca-certificates.crt'].find(
+    f => f && existsSync(f),
+  )
+  return `${sys ? readFileSync(sys, 'utf8') : ''}\n${env.FACTORY_CA ?? ''}\n`
+}
+
+/** one line of a command's stderr for a reason: the first, hidden when it looks like a secret */
+const firstLine = (t: string) => hideSecret(t.split('\n')[0] ?? '')
+
 /**
- * builds one rig's devenv and pushes it; the log, whose secrets buildx never prints, goes to `log`.
- * The tokens reach the build only as buildx secrets, from this process's env
+ * builds one rig's devenv and pushes it; the log, whose secrets the build never prints, goes to `log`.
+ * The tokens reach the build only as BuildKit secrets, from this process's env. A reason that is not the build's
+ * own output goes to the log too, so `see log` is true
  */
 export function build(
   cfg: DevenvConfig,
-  a: { image: string; remote: string; rev: string; key: string; log: string; force?: boolean },
+  a: { image: string; repo: string; rev: string; key: string; log: string; force?: boolean },
 ) {
-  const ctx = mkdtempSync(join(tmpdir(), 'factory-devenv-'))
+  const tmp = mkdtempSync(join(tmpdir(), 'factory-devenv-'))
+  const bad = (why: string) => (writeFileSync(a.log, `${why}\n`), { ok: false, why })
   try {
-    writeFileSync(join(ctx, 'Dockerfile'), DOCKERFILE)
-    const gh = run(['gh', 'auth', 'token'])
+    const paths = { ctx: join(tmp, 'ctx'), src: join(tmp, 'src'), ca: join(tmp, 'ca.pem') }
+    mkdirSync(paths.ctx)
+    mkdirSync(paths.src)
+    writeFileSync(join(paths.ctx, 'Dockerfile'), DOCKERFILE)
     const token = run(['sh', '-c', cfg.token])
-    if (!gh.ok || !token.ok)
-      return {
-        ok: false,
-        why: `tokens: ${gh.ok ? '' : 'gh auth token failed; '}${token.ok ? '' : 'token command failed'}`,
-      }
-    const p = run(
-      [
-        ...[
-          'docker',
-          'buildx',
-          'build',
-          '--builder',
-          cfg.builder,
-          '--platform',
-          'linux/amd64',
-          '--progress',
-          'plain',
-        ],
-        ...[
-          '--build-arg',
-          `IMAGE=${a.image}`,
-          '--build-arg',
-          `REMOTE=${a.remote}`,
-          '--build-arg',
-          `REV=${a.rev}`,
-        ],
-        ...['--build-arg', `PUSH=${cfg.push}`, '--build-arg', `KEY=${a.key}`],
-        ...['--secret', 'id=gh,env=FACTORY_DEVENV_GH', '--secret', 'id=cache,env=FACTORY_DEVENV_CACHE'],
-        ...(a.force ? ['--no-cache'] : []),
-        ...['--output', 'type=cacheonly', ctx],
-      ],
-      { env: { ...process.env, FACTORY_DEVENV_GH: gh.out, FACTORY_DEVENV_CACHE: token.out } },
-    )
+    if (!token.ok) return bad(`tokens: token command failed: ${firstLine(token.err)}`.trimEnd())
+    const gh = cfg.githubToken ? run(['sh', '-c', cfg.githubToken]) : undefined
+    if (gh && !gh.ok) return bad(`tokens: githubToken command failed: ${firstLine(gh.err)}`.trimEnd())
+    const co = checkout(a.repo, a.rev, paths.src, tmp)
+    if (!co.ok) return bad(`source: cannot check out ${a.rev.slice(0, 7)}: ${firstLine(co.err)}`)
+    writeFileSync(paths.ca, caBundle(process.env))
+    const buildx = run(['docker', 'buildx', 'version']).ok
+    const cmd = buildCommand({ cfg, image: a.image, rev: a.rev, key: a.key, force: a.force }, paths, {
+      buildx,
+      github: !!gh?.out,
+      prefix: Bun.which('buildctl') ? [] : ['nix', 'shell', 'nixpkgs#buildkit', '-c'],
+    })
+    const p = run(cmd, {
+      env: {
+        ...process.env,
+        BUILDKIT_NO_CLIENT_TOKEN: 'true',
+        NIX_SSL_CERT_FILE: paths.ca,
+        FACTORY_DEVENV_CACHE: token.out,
+        FACTORY_DEVENV_GH: gh?.out,
+      },
+    })
     writeFileSync(a.log, `${p.out}\n${p.err}\n`)
     return { ok: p.ok, why: p.ok ? '' : p.err.split('\n').slice(-15).join('\n') }
   } finally {
-    rmQuiet(ctx, { recursive: true, force: true })
+    rmQuiet(tmp, { recursive: true, force: true })
   }
 }
 

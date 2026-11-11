@@ -148,12 +148,33 @@ export function managerLimitText(limited) {
   return `manager: Claude limited until ${hh}:${mm}`
 }
 
+/** a count of tokens for a header: 950, 55.1k, 1.2M */
+export const tokensText = n =>
+  n < 1000 ? String(n) : n < 1e6 ? `${(n / 1e3).toFixed(1)}k` : `${(n / 1e6).toFixed(1)}M`
+
+/** the manager.context value as one header part: 'manager claude-fable-5-2 · 55.1k tokens · 27.6% of 200.0k', else '' */
+export function managerContextText(c) {
+  if (!c || typeof c.model !== 'string' || typeof c.tokens !== 'number') return ''
+  return `manager ${c.model} · ${tokensText(c.tokens)} tokens · ${c.percent}% of ${tokensText(c.window)}`
+}
+
+/** the result of `factory snapshot --views manager`: the manager.context value, or null (no session, a failure) */
+export function parseContext(code, out) {
+  if (code !== 0) return null
+  try {
+    const c = JSON.parse(out).views?.manager
+    return c && typeof c.model === 'string' ? c : null
+  } catch {
+    return null
+  }
+}
+
 /** the board header when the manager's Codex key is refused (claude-factory-y3f8w.10), else '' */
 export function managerCodexAuthText(auth) {
   return auth ? 'manager codex: key refused' : ''
 }
 
-/** the result of `factory snapshot --views board,decisions`: { tick, decisions } for the tabs to share */
+/** the result of `factory snapshot --views board` or `--views decisions`: { tick, decisions } for the tabs to share */
 export function parseSnapshot(code, out, err) {
   if (code !== 0) return { tick: { error: line(err || out || `factory snapshot exited ${code}`, 300) } }
   let views
@@ -187,8 +208,16 @@ export function parseConfig(text) {
 /** the options that send an exec or a file read to the machine of a remote config */
 export const onOf = cfg => (cfg.machine ? { on: cfg.machine } : undefined)
 
-/** the one read-only call of a beat: the slim board and the decisions (claude-factory-hpmc.23) */
-export const SNAPSHOT_WORDS = ['snapshot', '--views', 'board,decisions']
+/**
+ * The read-only calls of a beat (claude-factory-hpmc.23, ql0jz). The board and the decisions are two calls, so the
+ * slow decisions (one bd call for each rig) never hold the board. `maxAge` (ms) lets the core answer from its cache.
+ */
+export const snapshotWords = (view, maxAge) => ['snapshot', '--views', view, '--max-age', String(maxAge)]
+/** the board is at most this old (ms) on each beat; the first beat takes any cached board, so a screen opens at once */
+export const BOARD_MAX_AGE = 4_000
+export const FIRST_MAX_AGE = 3_600_000
+/** the decisions are refreshed this often (ms) */
+export const DECISIONS_MS = 60_000
 
 /** the shell words of a control button; only these CLI commands are allowed */
 export function actionWords(action, arg) {

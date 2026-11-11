@@ -190,5 +190,23 @@
     "frontEnd": "herdr-mod",
     "bead": "claude-factory-zsuj2",
     "reason": "the Herdr app has no gc control; use the core operation after its generic client exists"
+  },
+  {
+    "op": "manager.context",
+    "frontEnd": "cli",
+    "bead": "claude-factory-97msz",
+    "reason": "the CLI does not show the manager model and context use yet"
+  },
+  {
+    "op": "manager.context",
+    "frontEnd": "web",
+    "bead": "claude-factory-bt31w",
+    "reason": "the web UI does not show the manager model and context use yet"
+  },
+  {
+    "op": "manager.context",
+    "frontEnd": "claude-mod",
+    "bead": "claude-factory-57d9j",
+    "reason": "the Claude mod does not show the manager model and context use yet"
   }
 ]

@@ -40,7 +40,7 @@ test('AC1: the real data has no problem, and the gaps print', async () => {
   expect(await checkParity(CATALOG, FRONT_ENDS, gaps)).toEqual([])
 })
 
-test('4px5z AC1: all 17 front-end gaps name their source tasks', () => {
+test('4px5z AC1: all 20 front-end gaps name their source tasks', () => {
   const row = (frontEnd: Gap['frontEnd'], bead: string) => ({
     op: 'catalog.echo',
     frontEnd,
@@ -55,7 +55,9 @@ test('4px5z AC1: all 17 front-end gaps name their source tasks', () => {
     ['runners.show', 19, 'Runners'],
     ['runs.screen', 20, 'AX worker screens'],
   ] as const
-  expect(parseGaps(readFileSync(GAPS_FILE, 'utf8')).filter(g => g.op !== 'gc.run')).toEqual([
+  expect(
+    parseGaps(readFileSync(GAPS_FILE, 'utf8')).filter(g => g.op !== 'gc.run' && g.op !== 'manager.context'),
+  ).toEqual([
     row('cli', 'claude-factory-hpmc.8'),
     row('claude-mod', 'claude-factory-hpmc.9'),
     row('herdr-mod', 'claude-factory-hpmc.10'),
@@ -84,7 +86,13 @@ test('4px5z AC1: all 17 front-end gaps name their source tasks', () => {
       reason,
     })),
   ])
-  expect(parseGaps(readFileSync(GAPS_FILE, 'utf8'))).toHaveLength(17)
+  expect(parseGaps(readFileSync(GAPS_FILE, 'utf8'))).toHaveLength(20)
+  const mc = parseGaps(readFileSync(GAPS_FILE, 'utf8')).filter(g => g.op === 'manager.context')
+  expect(mc.map(g => [g.frontEnd, g.bead])).toEqual([
+    ['cli', 'claude-factory-97msz'],
+    ['web', 'claude-factory-bt31w'],
+    ['claude-mod', 'claude-factory-57d9j'],
+  ])
 })
 
 test('n69b2 AC6 gc has exactly three explicit front-end gaps with open beads', () => {
@@ -363,7 +371,7 @@ printf '[{"id":"%s","status":"%s"}]' "$2" "$PARITY_STATUS"
     })
   const open = run('open')
   expect(open.exitCode).toBe(0)
-  expect(open.stdout.toString()).toContain('17 gaps, all beads open')
+  expect(open.stdout.toString()).toContain('20 gaps, all beads open')
   rmSync(join(dir, 'parity-gaps.json'))
   writeFileSync(join(dir, 'calls'), '')
   expect(run('open').exitCode).toBe(1)
