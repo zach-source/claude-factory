@@ -314,7 +314,7 @@ test('the server manifest secret env keys match the step filter', () => {
 test('server Codex steps get a cwd and retain an explicit cwd', async () => {
   const baseEnv = { FACTORY_STEP_ISOLATE: '1' }
   for (const cwd of [undefined, sdir]) {
-    await runStep(shome, 'pm', { ...CALL, baseEnv, codex: true, cwd }, async c => {
+    await runStep(shome, 'pm', { ...CALL, baseEnv, codex: 'gpt-5', cwd }, async c => {
       expect(c.cwd).toBe(cwd ?? join(shome, 'steps', 'pm'))
       expect(existsSync(c.cwd!)).toBe(true)
       return { isOk: true, text: 'done' }
