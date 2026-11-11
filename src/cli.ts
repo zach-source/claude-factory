@@ -889,10 +889,11 @@ const RIG_VALUE_FLAGS = [
  * mail <run> <box> [--wake] --text-file <path>, which counts only in that slot (a later whole word throws);
  * memory add --body-file <path>, which replaces the body words.
  * Report files use summaryArgs. Mail and memory files use textFileArg. Other args pass unchanged. A bad form throws.
+ * Mail text keeps trailing whitespace unless exact=false (the server client path).
  * A VM expands before it queues, so the laptop never reads a path that a VM chose.
  * ponytail: a body file whose text starts with "--" fails the unknown-flag check of memory add. Upgrade: skip that check for the body-file value.
  */
-export function fileArgs(cmd: string, args: string[]): string[] {
+export function fileArgs(cmd: string, args: string[], exact = true): string[] {
   if (cmd === 'report') return summaryArgs(args)
   if (cmd === 'mail') {
     const literal = worker.literalText(cmd, args)
@@ -906,7 +907,7 @@ export function fileArgs(cmd: string, args: string[]): string[] {
     }
     if (!args[at + 1] || args.length !== at + 2)
       return fail('usage: factory mail <run> <box> [--wake] --text-file <path> (one path, nothing after it)')
-    return [...args.slice(0, at), textFileArg('--text-file', args[at + 1]!, true)]
+    return [...args.slice(0, at), textFileArg('--text-file', args[at + 1]!, exact)]
   }
   const bad = cmd === 'memory' ? memory.bareValueFlag(args, MEMORY_ADD_VALUE_FLAGS) : undefined
   if (bad) return fail(`${bad} needs a value`)
@@ -13645,7 +13646,7 @@ if (queued) {
 if (import.meta.main && !outboxCmd && client.serverMode(process.env)) {
   let sent: number | null
   try {
-    sent = await client.main(cmd, args, process.env, undefined, undefined, a => fileArgs('mail', a))
+    sent = await client.main(cmd, args, process.env, undefined, undefined, a => fileArgs('mail', a, false))
   } catch (e) {
     console.error((e as Error).message)
     process.exit(1)
