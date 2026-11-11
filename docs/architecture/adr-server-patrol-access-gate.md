@@ -128,3 +128,12 @@ Do not read production secrets or start a live patrol to verify this PR.
 The existing WIP commit remains in history. Do not rewrite published commits.
 After access returns, the remaining scope targets one 120-minute implement pass.
 Do not report ready until the manager resolves the access prerequisite.
+
+## Resume check on 2026-11-11
+
+The rework pass retained the access prerequisite and requested a manager correction.
+It did not retry the denied test read or use another reader.
+After `bun install`, `bun test src/steps.test.ts` passed: 27 tests, 0 failures, 183 assertions.
+The formatter passed for `src/steps.ts`, `src/steps.test.ts`, and this ADR.
+The fetched `origin/main` had no commits beyond HEAD `f81e20b0`.
+T2 and T3 remain open. The full gate and AC1 through AC3 and AC5 through AC7 remain unverified.
