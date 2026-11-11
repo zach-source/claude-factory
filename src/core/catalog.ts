@@ -1,4 +1,6 @@
 /** The operation catalog. It imports node: modules, ./chat, ./guards, the operation files in ./ops, and types from ../metrics and ../once. */
+import { readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { FlowRun } from '../flows'
 import type { Factory } from '../machine'
 import type { ManagerUsage, RunRecord } from '../metrics'
@@ -350,7 +352,28 @@ const viewOp = (view: string): Op | undefined =>
       !o.inputs.some(i => i.required),
   )
 
-/** `factory snapshot --views a,b`: several read views in one call, so a front end polls once (hpmc.23) */
+const SNAP_CACHE = 'snapshot-cache.json'
+
+/** the cached views of a home: { view: { at, value } }. A missing or bad file is an empty cache. */
+function readSnapCache(home: string): Record<string, { at: number; value: unknown }> {
+  try {
+    return JSON.parse(readFileSync(join(home, SNAP_CACHE), 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
+/** true when `view` has a cached answer that is at most `maxAge` ms old */
+export const snapFresh = (home: string, view: string, maxAge: number, now = Date.now()): boolean => {
+  const c = readSnapCache(home)[view]
+  return !!c && now - c.at <= maxAge
+}
+
+/**
+ * `factory snapshot --views a,b`: several read views in one call, so a front end polls once (hpmc.23).
+ * With `maxAge` (ms), a view that was computed at most that long ago comes from `snapshot-cache.json`
+ * (ql0jz): a slow view, such as the decisions of a remote manager, does not block each call.
+ */
 export async function snapshot(ctx: Ctx, i: Input): Promise<RunResult> {
   const names = String(i.views ?? '')
     .split(',')
@@ -359,15 +382,34 @@ export async function snapshot(ctx: Ctx, i: Input): Promise<RunResult> {
   const bad = names.find((n, k) => !n || !ops[k] || names.indexOf(n) !== k)
   if (bad !== undefined || !names.length)
     return { code: 1, out: '', err: `factory: snapshot: not a view: ${bad || '(none)'}\n` }
+  const maxAge = i.maxAge === undefined ? -1 : Number(i.maxAge)
+  const cache = readSnapCache(ctx.home)
   const views: Record<string, unknown> = {}
+  let dirty = false
   for (const [k, o] of ops.entries()) {
+    const name = names[k]!
+    const hit = cache[name]
+    if (hit && Date.now() - hit.at <= maxAge) {
+      views[name] = hit.value
+      continue
+    }
     try {
       const r = await o!.run(ctx, o!.name === 'board.show' ? { slim: true } : {})
       const text = r.out.trim()
-      views[names[k]!] = r.code !== 0 ? { error: r.err.trim() || `exit ${r.code}` } : parseOr(text)
+      views[name] = r.code !== 0 ? { error: r.err.trim() || `exit ${r.code}` } : parseOr(text)
+      if (r.code === 0 && maxAge >= 0) {
+        cache[name] = { at: Date.now(), value: views[name] }
+        dirty = true
+      }
     } catch (e) {
-      views[names[k]!] = { error: (e as Error).message }
+      views[name] = { error: (e as Error).message }
     }
+  }
+  if (dirty) {
+    try {
+      writeFileSync(join(ctx.home, `${SNAP_CACHE}.tmp`), JSON.stringify(cache))
+      renameSync(join(ctx.home, `${SNAP_CACHE}.tmp`), join(ctx.home, SNAP_CACHE))
+    } catch {} // ponytail: a cache that cannot be written only costs speed
   }
   return { code: 0, out: JSON.stringify({ views }) + '\n', err: '' }
 }
@@ -447,7 +489,10 @@ export const CATALOG: Op[] = makeCatalog([
       summary: 'Show several read views in one call, for example board,decisions.',
       method: 'GET',
       path: '/v1/snapshot',
-      inputs: [f('views', 'text', true, 'the views, comma separated, for example board,decisions')],
+      inputs: [
+        f('views', 'text', true, 'the views, comma separated, for example board,decisions'),
+        f('maxAge', 'id', false, 'a view computed at most this many ms ago comes from the cache'),
+      ],
     },
     'json',
     (c, i) => snapshot(c, i),

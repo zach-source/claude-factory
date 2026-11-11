@@ -353,7 +353,7 @@ import {
   workerMarker,
 } from './core/caller'
 import type { Ctx as OpCtx, Env, Input as OpInput, Port, Print, RunResult as OpResult } from './core/catalog'
-import { slimBoard, snapshot as snapshotRun } from './core/catalog'
+import { slimBoard, snapFresh, snapshot as snapshotRun } from './core/catalog'
 import * as backlogOp from './core/ops/backlog'
 import * as decisionsOp from './core/ops/decisions'
 import * as gatesOp from './core/ops/gates'
@@ -14646,12 +14646,23 @@ if (import.meta.main && !outboxCmd)
       }
       case 'snapshot': {
         // claude-factory-hpmc.23: several read views in one call; the board view is the slim board
-        if (args[0] !== '--views' || !args[1] || args.length !== 2)
-          fail('usage: factory snapshot --views a,b')
-        const board = args[1]!.split(',').includes('board')
+        // claude-factory-ql0jz: --max-age <ms> takes a view from snapshot-cache.json when it is that fresh
+        const ageAt = args.indexOf('--max-age')
+        const maxAge = ageAt < 0 ? undefined : args[ageAt + 1]
+        const rest = ageAt < 0 ? args : args.filter((_a, k) => k !== ageAt && k !== ageAt + 1)
+        if (
+          rest[0] !== '--views' ||
+          !rest[1] ||
+          rest.length !== 2 ||
+          (ageAt >= 0 && !/^\d+$/.test(maxAge ?? ''))
+        )
+          fail('usage: factory snapshot --views a,b [--max-age ms]')
+        const needBoard =
+          rest[1]!.split(',').includes('board') && !(maxAge && snapFresh(HOME, 'board', Number(maxAge)))
+        const board = needBoard
           ? await readOnlyBoard(leases.readLease(HOME) ?? { holder: 'none', kind: 'none', at: Date.now() })
           : null
-        emit(await snapshotRun({ ...cliCtx(), board: () => board }, { views: args[1]! }))
+        emit(await snapshotRun({ ...cliCtx(), board: () => board }, defined({ views: rest[1]!, maxAge })))
         break
       }
       case 'flows': {

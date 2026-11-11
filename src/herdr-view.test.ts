@@ -130,10 +130,17 @@ test('every exec and file read of a remote config passes on: machine', () => {
   expect(herdr.onOf({ cli: 'x', home: '/h' })).toBeUndefined()
 })
 
-test('the mod reads one snapshot and never ticks, patrols or takes the lease', () => {
-  expect(herdr.SNAPSHOT_WORDS).toEqual(['snapshot', '--views', 'board,decisions'])
+test('the mod reads snapshots and never ticks, patrols or takes the lease', () => {
+  expect(herdr.snapshotWords('board', 4000)).toEqual(['snapshot', '--views', 'board', '--max-age', '4000'])
+  expect(herdr.snapshotWords('decisions', 60000)).toEqual([
+    'snapshot',
+    '--views',
+    'decisions',
+    '--max-age',
+    '60000',
+  ])
   for (const w of ['tick', 'patrol', 'brief', 'review', 'pm'])
-    expect(herdr.SNAPSHOT_WORDS.includes(w)).toBe(false)
+    expect(herdr.snapshotWords('board', 1).includes(w)).toBe(false)
   expect(herdr.beatJobs).toBeUndefined()
   expect(herdr.STEPS).toBeUndefined()
 })
