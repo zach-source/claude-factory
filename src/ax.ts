@@ -409,9 +409,19 @@ function stripRegistryHosts(extra: Egress[]): Egress[] {
     .filter(e => e.hosts.length > 0)
 }
 
-/** the gate's own egress rule: an https rule for https://, a Substrate HTTPRule ({http: ...}) for http:// */
-function gateRule(gateUrl: string) {
-  const u = new URL(gateUrl)
+/** the gate's own egress rule: an https rule for https://, a Substrate HTTPRule ({http: ...}) for http://.
+ * The host must be a plain name (HOST): a `*` there is a Substrate wildcard that opens the port on every host. */
+function gateRule(gateUrl: string, name = 'FACTORY_AX_PKG_GATE') {
+  let u: URL
+  try {
+    u = new URL(gateUrl)
+  } catch {
+    throw new Error(`${name} is not a URL`)
+  }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:')
+    throw new Error(`${name} must be an http or https URL`)
+  if (!HOST.test(u.hostname))
+    throw new Error(`${name} must name a plain host (no *, no IPv6, two labels or more)`)
   const defaultPort = u.protocol === 'https:' ? 443 : 80
   const port = u.port ? Number(u.port) : defaultPort
   const ports = port !== defaultPort ? { ports: { numbers: [port] } } : {}
@@ -420,7 +430,7 @@ function gateRule(gateUrl: string) {
     : { http: { hostnames: [u.hostname], ...ports } }
 }
 
-/** the factory server's egress rule (FACTORY_AX_WORKER_SERVER): https only, and never 8444, the person-CA listener */
+/** the factory server's egress rule (FACTORY_AX_WORKER_SERVER): https only, port 8443 only (the worker listener), and a plain host */
 function serverRule(url: string) {
   let u: URL
   try {
@@ -429,9 +439,8 @@ function serverRule(url: string) {
     throw new Error('FACTORY_AX_WORKER_SERVER is not a URL')
   }
   if (u.protocol !== 'https:') throw new Error('FACTORY_AX_WORKER_SERVER must be an https URL')
-  if (u.port === '8444')
-    throw new Error('FACTORY_AX_WORKER_SERVER must not use port 8444, the person-CA listener')
-  return gateRule(url)
+  if (u.port !== '8443') throw new Error('FACTORY_AX_WORKER_SERVER must use port 8443, the worker listener')
+  return gateRule(url, 'FACTORY_AX_WORKER_SERVER')
 }
 
 /** a GitLab host's one rule: glab sends an access token as `PRIVATE-TOKEN` (checked against glab 1.99) and git
@@ -512,15 +521,15 @@ const ownerOf = (url?: string) => {
  * installation token) only on /repos/<githubOwner>/<githubRepo>/ and /graphql (both names must be plain, or it throws); github.com uses `GITHUB_REVIEWER_BASIC` (base64 of `x-access-token:<reviewer installation token>`, contents read), so the task cannot push. Only with `manager` (and GITHUB_BASIC) does it add the
  * path-prefixed rules that give the zach-source repos their own keys. agent-vault reads them from their sources; the atespace's wildcard agent holds the grant.
  *
- * With FACTORY_AX_PKG_GATE=<scheme://host[:port]> set (on the laptop; unset leaves this byte-identical to
+ * With FACTORY_AX_PKG_GATE=<scheme://host[:port]> (http or https, a plain host: no `*`, or it throws) set (on the laptop; unset leaves this byte-identical to
  * before), the gate's own host is added and every REGISTRY_HOSTS host is stripped from the rig's extra rules
  * -- nix-provided go/npm/pip/uv included, since the strip is what enforces the gate's age check, not launch()'s
  * convenience env (below).
  *
- * With FACTORY_AX_WORKER_SERVER=<https://host[:port]> set (on the laptop; unset leaves this byte-identical to
+ * With FACTORY_AX_WORKER_SERVER=<https://host:8443> set (on the laptop; unset leaves this byte-identical to
  * before, and workers fall back to the outbox), every task gets one https rule to the factory server. The rule has no
- * vault effects: the worker CLI sends its own token. A value that is not an https URL, or that names port 8444 (the
- * person-CA listener), throws.
+ * vault effects: the worker CLI sends its own token. A value that is not an https URL, that uses a port other than 8443
+ * (8444 is the person-CA listener), or whose host is not a plain name, throws.
  */
 export function egressPolicy(
   vault = process.env.FACTORY_AX_VAULT,
