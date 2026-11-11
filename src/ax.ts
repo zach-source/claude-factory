@@ -1153,6 +1153,12 @@ export function withDoltEgress(egress: Egress[] | undefined, rig?: DoltRig): Egr
 }
 
 /** Codex's ChatGPT login: only the /backend-api/codex/ paths open, and the gateway injects the vault tokens */
+/** the BuildKit daemons that `factory devenv` builds on from the manager's VM: TLS to the Service port, no key */
+export const BUILDER_RULE: Egress = {
+  hosts: ['ax-builder.buildkit.svc.cluster.local', 'ax-builder-arm64.buildkit.svc.cluster.local'],
+  port: 443,
+}
+
 export const CODEX_CHATGPT_RULE: Egress = {
   hosts: ['chatgpt.com'],
   pathPrefixes: ['/backend-api/codex/'],
@@ -1232,6 +1238,7 @@ export function managerEgress(
     ...linear,
     OPENAI_RULE,
     CODEX_CHATGPT_RULE,
+    BUILDER_RULE,
     ...cursor,
   ]
 }

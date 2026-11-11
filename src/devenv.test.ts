@@ -4,6 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
+  buildCommand,
+  build,
+  checkout,
   cacheKey,
   cacheProposal,
   configMissing,
@@ -47,7 +50,65 @@ test("a rig's devenv is rebuilt when its devenv files or the worker image change
 }, 30_000) // real git init, commit and clone: about 17 git spawns
 
 test('the devenv builds at the path the VM clones to, since its derivations depend on it', () => {
-  expect(DOCKERFILE).toContain('mkdir -p /workspace/w/repo && cd /workspace/w/repo')
+  expect(DOCKERFILE).toContain('cp -a /src/. /workspace/w/repo/ && cd /workspace/w/repo')
+})
+
+test('the build mounts the source context, drops the gh secret, and uses a GitHub token only when present', () => {
+  expect(DOCKERFILE).toContain('--mount=type=bind,from=src,target=/src')
+  expect(DOCKERFILE).toContain('id=github,required=false')
+  expect(DOCKERFILE).not.toContain('id=gh,')
+  expect(DOCKERFILE).not.toContain('fetch')
+  expect(DOCKERFILE).toContain('if [ -s /run/secrets/github ]')
+  expect(DOCKERFILE).toContain('git add -f -A')
+})
+
+const job = { cfg: { builder: 'tcp://b:443', token: 't', push: 'p' }, image: 'img', rev: 'r1', key: 'k1' }
+const paths = { ctx: '/c', src: '/s', ca: '/ca.pem' }
+
+test('buildCommand uses buildx where it exists and buildctl with a source context where it does not', () => {
+  const x = buildCommand(job, paths, { buildx: true, github: false })
+  expect(x.slice(0, 3)).toEqual(['docker', 'buildx', 'build'])
+  expect(x).toContain('src=/s')
+  expect(x.join(' ')).not.toContain('id=github')
+  const c = buildCommand({ ...job, force: true }, paths, {
+    buildx: false,
+    github: true,
+    prefix: ['nix', 'shell'],
+  })
+  expect(c.slice(0, 4)).toEqual(['nix', 'shell', 'buildctl', '--addr'])
+  expect(c).toContain('tcp://b:443')
+  expect(c).toContain('context:src=local:src')
+  expect(c).toContain('src=/s')
+  expect(c).toContain('id=github,env=FACTORY_DEVENV_GH')
+  expect(c).toContain('--no-cache')
+  expect(c.join(' ')).not.toContain('x-access-token')
+})
+
+test('checkout writes every file of a rev, export-ignore files too', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'devenv-co-'))
+  const repo = join(dir, 'repo')
+  git(dir, 'init', '-q', '-b', 'main', repo)
+  writeFileSync(join(repo, '.gitattributes'), 'secret.txt export-ignore\n')
+  writeFileSync(join(repo, 'secret.txt'), 'kept\n')
+  writeFileSync(join(repo, '.dockerignore'), '*\n')
+  git(repo, 'add', '.')
+  git(repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'one')
+  const out = join(dir, 'out')
+  mkdirSync(out)
+  expect(checkout(repo, 'HEAD', out, dir).ok).toBe(true)
+  expect(readFileSync(join(out, 'secret.txt'), 'utf8')).toBe('kept\n')
+  expect(readFileSync(join(out, '.dockerignore'), 'utf8')).toBe('*\n')
+})
+
+test('build gives the reason of a failed token command, writes it to the log, and prints no token', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'devenv-b-'))
+  const log = join(dir, 'x.log')
+  const r = build({ ...job.cfg, token: 'echo no op here >&2; exit 1' }, { ...job, repo: dir, log })
+  expect(r.ok).toBe(false)
+  expect(r.why).toBe('tokens: token command failed: no op here')
+  expect(readFileSync(log, 'utf8')).toContain('token command failed')
+  const g = build({ ...job.cfg, token: 'echo t', githubToken: 'exit 3' }, { ...job, repo: dir, log })
+  expect(g.why).toContain('githubToken command failed')
 })
 
 test('configMissing names the fields that are absent, empty or not a string', () => {
