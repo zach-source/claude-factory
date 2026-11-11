@@ -51,6 +51,8 @@ import {
   flowJobWords,
   flowLayout,
   managerLimitText,
+  managerContextText,
+  parseContext,
   managerCodexAuthText,
   parseFlows,
   recentMovers,
@@ -133,6 +135,8 @@ export default class Factory extends View {
         const s = parseSnapshot(d.code, d.out, d.err)
         if (s.decisions) setShared('factory.decisions', s.decisions)
       }
+      const ctxJob = this.finished('context')
+      if (ctxJob) setShared('factory.context', parseContext(ctxJob.code, ctxJob.out))
       const fl = this.finished('flows')
       if (fl) {
         this.flow = parseFlows(fl.code, fl.out, fl.err)
@@ -141,6 +145,8 @@ export default class Factory extends View {
       // the Flow tab asks for the graph while it is shown
       if (this.tab === 'flow') this.start('flows', flowJobWords(this.flowFactory, this.flowWindow))
       // the first beat takes any cached board; later beats take one at most BOARD_MAX_AGE old
+      // the manager's model and context use: one read of its transcript, so each turn shows by the next beat
+      this.start('context', snapshotWords('manager', BOARD_MAX_AGE))
       this.start('snapshot', snapshotWords('board', this.beats++ ? BOARD_MAX_AGE : FIRST_MAX_AGE))
       if (Date.now() - this.decisionsAt >= DECISIONS_MS && !this.jobs.decisions) {
         this.decisionsAt = Date.now()
@@ -218,6 +224,7 @@ export default class Factory extends View {
         : [
             statusText(runs) || 'no live runs',
             managerLimitText(state.managerLimited),
+            managerContextText(shared('factory.context')),
             managerCodexAuthText(state.managerCodexAuth),
           ]
             .filter(Boolean)

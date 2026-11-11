@@ -148,6 +148,27 @@ export function managerLimitText(limited) {
   return `manager: Claude limited until ${hh}:${mm}`
 }
 
+/** a count of tokens for a header: 950, 55.1k, 1.2M */
+export const tokensText = n =>
+  n < 1000 ? String(n) : n < 1e6 ? `${(n / 1e3).toFixed(1)}k` : `${(n / 1e6).toFixed(1)}M`
+
+/** the manager.context value as one header part: 'manager claude-fable-5-2 · 55.1k tokens · 27.6% of 200.0k', else '' */
+export function managerContextText(c) {
+  if (!c || typeof c.model !== 'string' || typeof c.tokens !== 'number') return ''
+  return `manager ${c.model} · ${tokensText(c.tokens)} tokens · ${c.percent}% of ${tokensText(c.window)}`
+}
+
+/** the result of `factory snapshot --views manager`: the manager.context value, or null (no session, a failure) */
+export function parseContext(code, out) {
+  if (code !== 0) return null
+  try {
+    const c = JSON.parse(out).views?.manager
+    return c && typeof c.model === 'string' ? c : null
+  } catch {
+    return null
+  }
+}
+
 /** the board header when the manager's Codex key is refused (claude-factory-y3f8w.10), else '' */
 export function managerCodexAuthText(auth) {
   return auth ? 'manager codex: key refused' : ''
