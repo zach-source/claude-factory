@@ -241,6 +241,7 @@ import {
   httpsRemote,
   inAx,
   isLaptopPane,
+  inServer,
   mapRigs,
   mapRunRepo,
   mapRunWorktree,
@@ -606,7 +607,8 @@ async function launchAxManager(args: string[]) {
 }
 /** refuse to run a manager or a tick here while the AX manager task lives (claude-factory-192.6) */
 const lease = () => {
-  const m = ax.remoteManager()
+  // in the server pod the manager lease is the guard, not the AX task name (claude-factory-gogxc.4)
+  const m = inServer() ? undefined : ax.remoteManager()
   if (m) fail(m)
 }
 /**
@@ -622,7 +624,7 @@ function localLease(want = leases.asker(process.env, process.ppid)): leases.Leas
     return cur ?? { holder: 'unknown', kind: 'cli', at: Date.now() }
   }
   try {
-    const d = leases.take(HOME, want)
+    const d = leases.take(HOME, want, Date.now(), inServer())
     return d.ok ? undefined : d.lease
   } finally {
     release()
@@ -13949,7 +13951,13 @@ if (import.meta.main && !outboxCmd)
             if (c !== 0) throw new Error(`exit ${c}`)
           })
         }
-        server.main(args, HOME, () => tick(), corePort, backup)
+        // the pod's tick takes the manager lease like `factory tick`; a busy lease means no tick (claude-factory-gogxc.4)
+        const podTick = async () => {
+          const other = localLease(leases.podAsker(hostname()))
+          if (other) throw new Error(`no tick: ${leases.leaseLine(other, Date.now())}`)
+          return tick()
+        }
+        server.main(args, HOME, podTick, corePort, backup)
         break
       case 'cert': {
         refuseWorker('cert', true)
