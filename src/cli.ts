@@ -832,7 +832,8 @@ export function replayable(
 
 /**
  * `report <run> <seq> <outcome> --summary-file <path>` -> [run, seq, outcome, <file text>]; any other args pass
- * unchanged. The flag counts only right after the outcome, with exactly one path and a non-blank file. A bad form
+ * unchanged. The flag counts only right after the outcome, with exactly one path and a non-blank file. The path must
+ * sit inside the text roots (see textFilePath). A bad form
  * throws. A whole word `--summary-file` in a later slot also throws: it would post the flag as text and lose the
  * report. A VM expands it before it queues, so the laptop never reads a path a VM chose (see `replayable`)
  */
@@ -849,7 +850,7 @@ export function summaryArgs(args: string[]): string[] {
     return fail(
       'usage: factory report <run> <seq> <outcome> --summary-file <path> (one path, nothing after it)',
     )
-  const text = readTextFile('--summary-file', path)
+  const text = readTextFile('--summary-file', textFilePath('--summary-file', path))
   return [...args.slice(0, 3), text]
 }
 
@@ -890,7 +891,7 @@ const RIG_VALUE_FLAGS = [
  * report --summary-file (see summaryArgs);
  * mail <run> <box> [--wake] --text-file <path>, which counts only in that slot (a later whole word throws);
  * memory add --body-file <path>, which replaces the body words.
- * The path goes through textFileArg. Other args pass unchanged. A bad form throws.
+ * The report path goes through textFilePath, with no trim. The mail and memory paths go through textFileArg. Other args pass unchanged. A bad form throws.
  * A VM expands before it queues, so the laptop never reads a path that a VM chose.
  * ponytail: a body file whose text starts with "--" fails the unknown-flag check of memory add. Upgrade: skip that check for the body-file value.
  */
@@ -962,6 +963,13 @@ const UNSAFE_TEXT_UNICODE = /[\u202a-\u202e\u2066-\u2069\u2028\u2029]/u
  * success, or a gc pass.
  */
 function textFileArg(flag: string, path: string, checkUnsafeUnicode = false): string {
+  const text = readTextFile(flag, textFilePath(flag, path))
+  if (checkUnsafeUnicode && UNSAFE_TEXT_UNICODE.test(text)) refuseControlChar(flag, text)
+  return text.trimEnd()
+}
+
+/** The realpath of a file inside <FACTORY_HOME>/text/ or the real .scratch/ of the git toplevel. Any other file fails. */
+function textFilePath(flag: string, path: string): string {
   const dir = join(HOME, 'text')
   mkdirSync(dir, { recursive: true })
   let real: string
@@ -985,9 +993,7 @@ function textFileArg(flag: string, path: string, checkUnsafeUnicode = false): st
     return fail(
       `${flag} ${path} is outside ${dir} and the .scratch/ of the git worktree: write the text there first`,
     )
-  const text = readTextFile(flag, real)
-  if (checkUnsafeUnicode && UNSAFE_TEXT_UNICODE.test(text)) refuseControlChar(flag, text)
-  return text.trimEnd()
+  return real
 }
 
 /** Refuse Cc, U+202A-U+202E, U+2066-U+2069, U+2028, and U+2029. Descriptions can keep LF and tab. Errors name the code point. */
