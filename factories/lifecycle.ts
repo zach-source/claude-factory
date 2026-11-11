@@ -44,6 +44,7 @@ const claude = (model: string) => `{claude} --dangerously-skip-permissions --mod
 const SONNET = claude('exec_model')
 const OPUS = claude('judge_model')
 const FABLE = claude('security_model')
+const PLAN = claude('plan_model')
 // A share of runs launch implement, verify and security as codex (cli.ts splitPick). A rig sets the share
 // to 0 to turn the tier off. plan and review (design and review) go to codex only when a rig sets
 // codex_judge_share; check and incident never do.
@@ -98,7 +99,8 @@ export default {
     base_branch: '', // the branch runs start from and open pull requests against; empty is the rig's default branch
     claude: 'claude-smart --new --no-channels', // the Claude Code launcher
     exec_model: 'claude-sonnet-5-5[1m]', // execution
-    judge_model: 'claude-opus-5-5[1m]', // planning, judgment, review
+    judge_model: 'claude-fable-5-2[1m]', // judgment and review
+    plan_model: 'claude-opus-5-5[1m]', // planning: Opus or Sonnet 5.5 (owner 2026-11-11)
     security_model: 'claude-fable-5-2', // security and architecture
     codex: 'codex --dangerously-bypass-approvals-and-sandbox', // the codex launcher (the deny hook stays on)
     codex_exec_model: 'gpt-6.1-sol', // codex in place of exec_model
@@ -171,7 +173,7 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
     // ── shaping: what to build, measured or pinned first ─────────────────────
     plan: {
       skills: ['asd-ste100', 'egm'],
-      agent: OPUS,
+      agent: PLAN,
       split: { agent: CODEX_JUDGE, share: 'codex_judge_share' },
       timeoutMin: 45,
       prompt: `Write the spec every later station works from: your summary is that spec. Cover:

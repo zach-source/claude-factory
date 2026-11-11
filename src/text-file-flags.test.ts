@@ -93,10 +93,10 @@ test('mail --text-file mails the file text as written; a flag inside a longer wo
   const f = join(wt, '.scratch', 'm.md')
   writeFileSync(f, TEXT)
   expect(factory(['mail', 'r1', 'manager', '--text-file', f], {}, wt).code).toBe(0)
-  expect(events().at(-1).text).toBe(TEXT.trimEnd())
+  expect(events().at(-1).text).toBe(TEXT)
   const w = factory(['mail', 'r1', 'manager', '--wake', '--text-file', f], {}, wt)
   expect(w.code).toBe(0)
-  expect(events().at(-1)).toMatchObject({ text: TEXT.trimEnd(), wake: true })
+  expect(events().at(-1)).toMatchObject({ text: TEXT, wake: true })
   expect(factory(['mail', 'r1', 'manager', 'use --text-file <path>']).code).toBe(0)
   expect(events().at(-1).text).toBe('use --text-file <path>')
   expect(existsSync(join(wt, 'pwned'))).toBe(false)
@@ -195,7 +195,7 @@ test('inside a VM, mail --text-file and memory add --body-file queue the text, n
     .split('\n')
     .map(l => JSON.parse(l).argv)
   expect(argv).toEqual([
-    ['mail', 'r1', 'manager', TEXT.trimEnd()],
+    ['mail', 'r1', 'manager', '--', TEXT],
     ['memory', 'add', '--kind', 'fact', 'a plain summary', TEXT.trimEnd()],
   ])
 })

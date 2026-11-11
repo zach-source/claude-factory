@@ -1044,7 +1044,7 @@ test('a local split picks codex only when the host has the unified_exec pin file
 
 test('the manager and the mod subagents name a full model id, never an alias', () => {
   const c = managerCommand()
-  expect(c[c.indexOf('--model') + 1]).toBe('claude-opus-5-5')
+  expect(c[c.indexOf('--model') + 1]).toBe('claude-fable-5-2')
   const src = readFileSync(new URL('../mod/hooks/register.tsx', import.meta.url), 'utf8')
   const models = [...src.matchAll(/^\s+model: '([^']+)'/gm)].map(m => m[1])
   expect(models).toEqual(['claude-sonnet-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-sonnet-5-5'])

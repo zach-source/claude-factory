@@ -9,6 +9,112 @@ const F = '/repo/bin/factory'
 // the question the person would see: a substitution alone is denied with no dialog, so read it from the gate
 const question = (command: string) => gatedCommand(command)!.question
 
+test('ksx5 AC1: the substitution window escapes every control', SLOW, async () => {
+  const codes = [
+    ...Array.from({ length: 32 }, (_, i) => i),
+    127,
+    0x202a,
+    0x202b,
+    0x202c,
+    0x202d,
+    0x202e,
+    0x2066,
+    0x2067,
+    0x2068,
+    0x2069,
+  ]
+  for (const code of codes) {
+    const c = String.fromCharCode(code)
+    const escape =
+      code === 9
+        ? '\\t'
+        : code === 10
+          ? '\\n'
+          : code === 13
+            ? '\\r'
+            : code < 128
+              ? `\\x${code.toString(16).padStart(2, '0')}`
+              : `\\u${code.toString(16)}`
+    const q = question(`${F} decide r1 ship "${'a'.repeat(350)}x${c}y$(id)z${c}w"`)
+    expect(q).toContain(`x${escape}y$(id)z${escape}w`)
+    expect(q).not.toMatch(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/)
+  }
+  const q = question(`${F} decide r1 ship "${'a'.repeat(350)}\x1b\r\u202e$(id)${'\n'.repeat(260)}"`)
+  expect(q).toContain('\\x1b\\r\\u202e$(id)\\n')
+  expect(q).toContain('characters not shown')
+  expect(q).not.toMatch(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/)
+  const spacedWindow = question(`${F} decide r1 ship "${'a'.repeat(350)}x  $(id)  y"`)
+  expect(spacedWindow).toContain('x\\x20{2}$(id)\\x20{2}y')
+  expect(spacedWindow).toContain('ASCII spaces')
+})
+
+test('ksx5 AC3: display cuts use source extents and complete tokens', SLOW, async () => {
+  const prefix = `${F} decide r1 ship `
+  for (const n of [299, 300, 301]) {
+    const c = prefix + 'a'.repeat(n - prefix.length)
+    const q = question(c)
+    if (n <= 300) expect(q).toContain(`${c}. Allow it?`)
+    else expect(q).toContain('… (1 of 301 characters not shown)')
+  }
+  for (const [token, display] of [
+    ['\x1b', '\\x1b'],
+    ['\u202e', '\\u202e'],
+    ['😀', '😀'],
+    ['  ', '\\x20{2}'],
+  ]) {
+    for (let left = 0; left <= display!.length; left++) {
+      const head = prefix + 'a'.repeat(300 - prefix.length - left)
+      const c = head + token + 'tail'
+      const fits = display!.length <= left
+      const used = head.length + (fits ? token!.length : 0) + (fits ? Math.min(left - display!.length, 4) : 0)
+      const q = question(c)
+      expect(q).toContain(`… (${c.length - used} of ${c.length} characters not shown)`)
+      expect(q).toContain(`${head}${fits ? display + 'tail'.slice(0, left - display!.length) : ''}…`)
+      expect(q).not.toContain('\uFFFD')
+    }
+  }
+  const compressed = `${prefix}${' '.repeat(300)}&& ${F} decide r2 ship`
+  expect(question(compressed)).toContain('decide r2 ship')
+  expect(question(compressed)).not.toContain('text not shown holds')
+  const visibleHits = `${prefix}${' '.repeat(300)}$x $y`
+  expect(question(visibleHits)).not.toContain('more dollar signs')
+  const joinedHits = `${prefix}${'\\\n'.repeat(180)}$x ${'a'.repeat(50)} $y`
+  expect(question(joinedHits)).not.toContain('more dollar signs')
+  const hitPrefix = `${prefix}$x `
+  const lateJoin = `${hitPrefix}${'a'.repeat(300 - hitPrefix.length)}$y \\\ntail`
+  expect(question(lateJoin)).toContain('1 more dollar signs')
+  const spacedCut = `${prefix}${' '.repeat(300)}${'a'.repeat(300)}`
+  const shownSource = prefix.length - 1 + 301 + (300 - (prefix.length - 1) - '\\x20{301}'.length)
+  expect(question(spacedCut)).toContain(
+    `… (${spacedCut.length - shownSource} of ${spacedCut.length} characters not shown)`,
+  )
+  const unreadable = `${prefix}# note\\\n${'\u202e'.repeat(100)}; ${F} decide r2 ship`
+  expect(question(unreadable)).not.toMatch(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/)
+  expect(question(unreadable)).toContain('text not shown holds')
+  const expanded = `${prefix}${'\u202e'.repeat(60)} $x ${'a'.repeat(100)} $y`
+  expect(question(expanded)).toContain('1 more dollar signs')
+  for (const tail of [
+    `${F} decide r2 ship`,
+    `${F} decisions answer acme w-1 yes`,
+    `${F} start lifecycle acme w-1 --owned`,
+    `${F} wiki init`,
+    `${F} image`,
+    `${F} token use slot`,
+    `${F} settings set model x`,
+  ]) {
+    expect(question(`${prefix}${'\u202e'.repeat(100)}; ${tail}`)).toContain('text not shown holds')
+  }
+  const bounded = question(`${prefix}"${'\u202e'.repeat(100)}$(id)${'\u202e'.repeat(100)}"`)
+  expect(bounded.split('«')[1]!.split('»')[0]!.length).toBeLessThanOrEqual(494)
+  for (const [command, kind] of [
+    [`${F} decide${' '.repeat(300)}r2 ship`, 'decide'],
+    [`${F} decisions answer acme w-1${' '.repeat(300)}yes`, 'answer'],
+    [`${F} start lifecycle acme w-1${' '.repeat(300)}--owned`, 'owned'],
+  ]) {
+    expect(gatedCommand(command!)!.kinds).toEqual([kind])
+  }
+})
+
 const GATED = [
   `${F} file-elsewhere acme --from widget:w-1 --title "$(id)"`,
   `${F} decisions propose k "${BT}id${BT}" o`,

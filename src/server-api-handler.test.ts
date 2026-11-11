@@ -1,6 +1,16 @@
 import { describe, expect, test } from 'bun:test'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Port } from './core/catalog'
@@ -995,5 +1005,30 @@ describe('serveSocket event transport', () => {
     sock.destroy()
     await tick()
     expect(h.subscribers()).toBe(0)
+  })
+})
+
+describe('e0qu temp file', () => {
+  const store = (t: ReturnType<typeof setup>) => join(t.home, 'client-idempotency.json')
+  test('e0qu AC14 stale temp mode: the store ends with mode 0600', async () => {
+    const t = setup()
+    const tmp = `${store(t)}.tmp`
+    writeFileSync(tmp, 'stale')
+    chmodSync(tmp, 0o644)
+    expect((await post(t.h, '/v1/halt', { mode: 'stop' }, {}, 'key-e0qu-0001')).status).toBe(200)
+    expect(statSync(store(t)).mode & 0o777).toBe(0o600)
+    expect(existsSync(tmp)).toBe(false)
+    expect(Object.keys(JSON.parse(readFileSync(store(t), 'utf8')))).toContain('key-e0qu-0001')
+  })
+  test('e0qu AC15 symlink at the temp name: the victim keeps its text', async () => {
+    const t = setup()
+    const victim = join(t.home, 'victim.txt')
+    writeFileSync(victim, 'keep')
+    symlinkSync(victim, `${store(t)}.tmp`)
+    expect((await post(t.h, '/v1/halt', { mode: 'stop' }, {}, 'key-e0qu-0002')).status).toBe(200)
+    expect(lstatSync(store(t)).isFile()).toBe(true)
+    expect(readFileSync(victim, 'utf8')).toBe('keep')
+    expect(existsSync(`${store(t)}.tmp`)).toBe(false)
+    expect(Object.keys(JSON.parse(readFileSync(store(t), 'utf8')))).toContain('key-e0qu-0002')
   })
 })

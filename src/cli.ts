@@ -17,6 +17,7 @@ import {
   unsetSetting,
 } from './settings'
 import { tokenCommand } from './claude-token'
+import { writeFresh } from './write-fresh'
 import { buildImage, IMAGE_KEY, type Target } from './image'
 import {
   appendFileSync,
@@ -556,7 +557,7 @@ const tickError = (id: string) =>
   existsSync(tickErrorFile(id)) ? readFileSync(tickErrorFile(id), 'utf8').trim() : undefined
 const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, 'utf8'))
 /** written and fsynced: a report or snapshot outlives a power cut, not just a crash */
-function durable(path: string, text: string, flag: 'w' | 'a') {
+function durable(path: string, text: string, flag: 'a') {
   const fd = openSync(path, flag)
   try {
     writeSync(fd, text)
@@ -565,9 +566,8 @@ function durable(path: string, text: string, flag: 'w' | 'a') {
     closeSync(fd)
   }
 }
-function writeJson(path: string, value: unknown) {
-  durable(`${path}.tmp`, JSON.stringify(value, null, 2), 'w')
-  renameSync(`${path}.tmp`, path) // atomic: a reader never sees half a snapshot
+export function writeJson(path: string, value: unknown) {
+  writeFresh(path, JSON.stringify(value, null, 2)) // atomic: a reader never sees half a snapshot
 }
 /** `factory manager --ax [args]`: run the manager as the long-lived AX task (claude-factory-192.2) */
 async function launchAxManager(args: string[]) {
@@ -805,6 +805,12 @@ export function replayable(
   run: string,
 ): string[] | null {
   const [cmd, id, seq] = argv
+  const literal = worker.literalText(cmd!, argv.slice(1))
+  if (literal === null) return null
+  if (literal !== undefined)
+    return (cmd === 'report' && id === run && seq === String(side.seq)) || (cmd === 'mail' && id === run)
+      ? argv
+      : null
   // a VM expands --summary-file, --text-file and --body-file before it queues; a line that still has it would read a laptop file
   if (cmd === 'report' && id === run && seq === String(side.seq))
     return argv[4] === '--summary-file' ? null : argv
@@ -824,9 +830,13 @@ export function replayable(
  * unchanged. The flag counts only right after the outcome, with exactly one path and a non-blank file. The path must
  * sit inside the text roots (see textFilePath). A bad form
  * throws. A whole word `--summary-file` in a later slot also throws: it would post the flag as text and lose the
- * report. A VM expands it before it queues, so the laptop never reads a path a VM chose (see `replayable`)
+ * report. A literal boundary skips the file parse. A VM expands it before it queues, so the laptop never reads a
+ * path a VM chose (see `replayable`)
  */
 export function summaryArgs(args: string[]): string[] {
+  const literal = worker.literalText('report', args)
+  if (literal === null) return fail(worker.OUTBOX_USAGE.report)
+  if (literal) return [...args.slice(0, 3), literal.text]
   if (args[3] !== '--summary-file') {
     if (args.slice(3).includes('--summary-file'))
       return fail(
@@ -881,12 +891,16 @@ const RIG_VALUE_FLAGS = [
  * mail <run> <box> [--wake] --text-file <path>, which counts only in that slot (a later whole word throws);
  * memory add --body-file <path>, which replaces the body words.
  * The report path goes through textFilePath, with no trim. The mail and memory paths go through textFileArg. Other args pass unchanged. A bad form throws.
+ * Mail text keeps trailing whitespace unless exact=false (the server client path).
  * A VM expands before it queues, so the laptop never reads a path that a VM chose.
  * ponytail: a body file whose text starts with "--" fails the unknown-flag check of memory add. Upgrade: skip that check for the body-file value.
  */
-export function fileArgs(cmd: string, args: string[]): string[] {
+export function fileArgs(cmd: string, args: string[], exact = true): string[] {
   if (cmd === 'report') return summaryArgs(args)
   if (cmd === 'mail') {
+    const literal = worker.literalText(cmd, args)
+    if (literal === null) return fail(worker.OUTBOX_USAGE.mail)
+    if (literal) return args
     const at = args[2] === '--wake' ? 3 : 2
     if (args[at] !== '--text-file') {
       if (args.slice(at).includes('--text-file'))
@@ -895,7 +909,7 @@ export function fileArgs(cmd: string, args: string[]): string[] {
     }
     if (!args[at + 1] || args.length !== at + 2)
       return fail('usage: factory mail <run> <box> [--wake] --text-file <path> (one path, nothing after it)')
-    return [...args.slice(0, at), textFileArg('--text-file', args[at + 1]!)]
+    return [...args.slice(0, at), textFileArg('--text-file', args[at + 1]!, exact)]
   }
   const bad = cmd === 'memory' ? memory.bareValueFlag(args, MEMORY_ADD_VALUE_FLAGS) : undefined
   if (bad) return fail(`${bad} needs a value`)
@@ -947,14 +961,15 @@ const UNSAFE_TEXT_UNICODE = /[\u202a-\u202e\u2066-\u2069\u2028\u2029]/u
 /**
  * claude-factory-2z48: untrusted text (a bead, a Linear issue) reaches a verb by file, never in a shell argument.
  * The file must sit inside <FACTORY_HOME>/text/, or inside the real .scratch/ folder (not a symlink) of the git toplevel, and only when the cwd
- * is inside that toplevel, so injected text cannot steer a flag to a secret such as a token file. Returns the text without trailing whitespace.
+ * is inside that toplevel, so injected text cannot steer a flag to a secret such as a token file.
+ * With exact=true, return all text. Other calls remove trailing whitespace.
  * ponytail: the verb does not delete the file, so text/ grows by one small file per filing. Upgrade: unlink after
  * success, or a gc pass.
  */
-function textFileArg(flag: string, path: string, checkUnsafeUnicode = false): string {
+function textFileArg(flag: string, path: string, exact = false, checkUnsafeUnicode = false): string {
   const text = readTextFile(flag, textFilePath(flag, path))
   if (checkUnsafeUnicode && UNSAFE_TEXT_UNICODE.test(text)) refuseControlChar(flag, text)
-  return text.trimEnd()
+  return exact ? text : text.trimEnd()
 }
 
 /** The realpath of a file inside <FACTORY_HOME>/text/ or the real .scratch/ of the git toplevel. Any other file fails. */
@@ -1451,7 +1466,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
         status: 'gone',
         agent: 'ax',
         bdSkew: skew,
-        failed: `needs the person: bd version skew on ax (\`${skew}\`). The worker wrote, unverified: ${cleanText(argv![3] ?? '', 40)}: ${clipReport(cleanText(argv!.slice(4).join(' '), Infinity))}`,
+        failed: `needs the person: bd version skew on ax (\`${skew}\`). The worker wrote, unverified: ${cleanText(argv![3] ?? '', 40)}: ${clipReport(cleanText(worker.literalText('report', argv!.slice(1))?.text ?? argv!.slice(4).join(' '), Infinity))}`,
       }
   }
   // a line this laptop already counted as replayed, now missing from the outbox: the worker edited it after
@@ -4124,7 +4139,7 @@ const MANAGER_TOOLS = 'Bash,Read,Edit,Write,Grep,Glob,AskUserQuestion,Skill,Agen
 export const managerCommand = (extra: string[] = [], dirs = process.env['CLAUDE_CODE_PLUGIN_DIRS'] ?? '') => [
   'claude',
   '--model',
-  'claude-opus-5-5', // not [1m]: Claude Code compacts it near 200k, and every call re-reads the whole context
+  'claude-fable-5-2', // not [1m]: Claude Code compacts it near 200k, and every call re-reads the whole context
   // the person's own default mode (auto) refuses the production reads a patrol needs
   ...['--permission-mode', 'bypassPermissions'],
   '--strict-mcp-config', // and no --mcp-config: no MCP servers
@@ -6619,7 +6634,7 @@ function storeDreamUsage(start: number, codexHome?: string) {
 }
 
 const removedLine = (r: { path: string; target: string; skipped?: true }[]) =>
-  `removed symlinks: ${r.map(l => (l.skipped ? l.path + ' (directory changed during the scan, not entered)' : l.path + ' -> ' + l.target)).join(', ')}\n`
+  `removed symlinks: ${r.map(l => (l.skipped ? l.path + ' (skipped: changed or unreadable during the scan)' : l.path + ' -> ' + l.target)).join(', ')}\n`
 
 async function dream() {
   const release = hold('dream.lock')
@@ -6641,7 +6656,7 @@ async function dream() {
     // git tracks .usage.jsonl itself, so counts survive a clone or a lost file (claude-factory-503.3).
     // Only its crash-safe temp file (memory.ts:584-601) and the search index cache stay ignored.
     const pre = memory.dropLinks(MEMORY)
-    memory.writeStore(join(MEMORY, '.gitignore'), '.index.json*\n.usage.jsonl.tmp\n')
+    memory.writeStore(MEMORY, join(MEMORY, '.gitignore'), '.index.json*\n.usage.jsonl.tmp\n')
     const codexLinked = pre.some(l => l.path === '.codex') // a removed .codex link still refuses this dream
     if (pre.length) appendFileSync(join(HOME, 'dream.log'), removedLine(pre))
     if (!commitMemory('notes since the last dream')) return MEMORY_REFUSED
@@ -6701,6 +6716,8 @@ async function dream() {
     }
     const gitPre = gitDirPre(MEMORY)
     if ('why' in gitPre) return refuse(gitPreLine('dream', gitPre.why))
+    // ponytail: spawnSync kills only the direct child, so a codex grandchild can plant a link after the last dropLinks.
+    // The memory readers skip a link and the writers refuse it, and the next dream removes it. Upgrade path: spawn in its own process group and kill the group.
     // claude: edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = codexHome
       ? Bun.spawnSync(
@@ -9173,6 +9190,8 @@ function refusePatrolDiscovered(b: ReturnType<typeof beads>, x: Bead) {
       // next stays null: refused below
     }
     if (!next) return no(`has a parent ${p} the patrol cannot read`)
+    if (seen.size === 1 && (next.labels?.some(isHoldLabel) || isOwned(next)))
+      no(`has a parent ${p} with a hold`)
     cur = next
   }
 }
@@ -10451,7 +10470,13 @@ function rigFacts(
   const candidates = linear.rigs.has(rig.name)
     ? []
     : dispatchable(ready, linked, Infinity, byId(every))
-        .filter(x => !isOwned(x) && !openChildrenOf(x.id).length && !linear.ids.has(x.id))
+        .filter(
+          x =>
+            !isOwned(x) &&
+            !x.labels?.some(isHoldLabel) &&
+            !openChildrenOf(x.id).length &&
+            !linear.ids.has(x.id),
+        )
         .slice(0, 40)
         .map(c => ({
           id: c.id,
@@ -11462,10 +11487,11 @@ function axSweep() {
             seq: c.seq,
             pane: c.pane,
             over: ['done', 'aborted'].includes(where(value)[0]),
+            sub: where(value)[1],
           })
         } catch {
           // no readable state: keep an owner that never gets a delete (seq -1)
-          runs.push({ id, seq: -1, pane: null, over: false })
+          runs.push({ id, seq: -1, pane: null, over: false, sub: '' })
         }
       const picked = axSweepNames([...tasks, ...workspaces], runs, ax.managerTask())
       let removed = 0
@@ -12330,7 +12356,7 @@ function fileElsewhere(args: string[]) {
   for (const k of ['--title', '--description']) {
     const file = flags.get(`${k}-file`)
     if (file === undefined) continue
-    const text = textFileArg(`${k}-file`, file, true)
+    const text = textFileArg(`${k}-file`, file, false, true)
     flags.set(k, text)
   }
   refuseControlChar('title', flags.get('--title')!)
@@ -12685,7 +12711,7 @@ function reviewFacts(key: string | undefined) {
   const installedFile = join(memory.skillsDir(MEMORY), item!.name, 'SKILL.md')
   const installed =
     item!.kind === 'skill' && existsSync(installedFile)
-      ? clip(memory.tryRead(installedFile) ?? '', 16384)
+      ? clip(memory.tryRead(MEMORY, installedFile) ?? '', 16384)
       : undefined
   const { key: k, kind, name, change, text } = item!
   return {
@@ -13592,7 +13618,13 @@ const outboxCmd =
 let queuedArgs = args
 if (outboxCmd)
   try {
-    queuedArgs = fileArgs(cmd!, args)
+    if (cmd === 'memory') queuedArgs = fileArgs(cmd, args)
+    else if (!worker.outboxUsage(cmd!, args) && !worker.literalText(cmd!, args)) {
+      // Parse options before file text. Queue one literal value after the boundary.
+      const expanded = fileArgs(cmd!, args)
+      const at = cmd === 'report' ? 3 : args[2] === '--wake' ? 3 : 2
+      queuedArgs = [...expanded.slice(0, at), '--', expanded.slice(at).join(' ')]
+    }
   } catch (e) {
     console.error((e as Error).message)
     process.exit(cmd === 'memory' ? 2 : 1)
@@ -13651,7 +13683,7 @@ if (queued) {
 if (import.meta.main && !outboxCmd && client.serverMode(process.env)) {
   let sent: number | null
   try {
-    sent = await client.main(cmd, args, process.env, undefined, undefined, a => fileArgs('mail', a))
+    sent = await client.main(cmd, args, process.env, undefined, undefined, a => fileArgs('mail', a, false))
   } catch (e) {
     console.error((e as Error).message)
     process.exit(1)
@@ -14663,7 +14695,7 @@ if (import.meta.main && !outboxCmd)
           }
           const isOwn = /^own:/.test(key!)
           if (!files.has('--question-file') || (!isOwn && !files.has('--options-file'))) fail(usage)
-          const read = (k: string) => (files.has(k) ? textFileArg(k, files.get(k)!, true) : undefined)
+          const read = (k: string) => (files.has(k) ? textFileArg(k, files.get(k)!, false, true) : undefined)
           // an own: key ignores --options-file, as the positional form does: do not read it
           decisionsPropose(
             key!,
@@ -14840,15 +14872,11 @@ if (import.meta.main && !outboxCmd)
       }
       case 'mail': {
         // --wake comes right after the box; in a later word it stays text
-        const wake = args[2] === '--wake'
         const [id, to, ...rest] = fileArgs('mail', args)
-        const text = wake ? rest.slice(1) : rest
-        emit(
-          await runsOp.mail(
-            cliCtx(),
-            defined({ id, to, text: text.join(' '), wake: wake || undefined, cwd: here() }),
-          ),
-        )
+        const literal = worker.literalText('mail', args)
+        const wake = literal ? literal.wake === true : args[2] === '--wake'
+        const text = literal ? literal.text : (wake ? rest.slice(1) : rest).join(' ')
+        emit(await runsOp.mail(cliCtx(), defined({ id, to, text, wake: wake || undefined, cwd: here() })))
         break
       }
       case 'poke': {

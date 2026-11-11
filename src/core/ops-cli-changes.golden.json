@@ -272,7 +272,7 @@
         "type": "MAIL",
         "from": "manager",
         "to": "review",
-        "text": "hi from file"
+        "text": "hi from file\n"
       }
     ]
   },
