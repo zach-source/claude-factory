@@ -567,14 +567,14 @@ export function humanLines(blameBefore: string, after: string, factoryEmail: str
  * It keeps a path when its author is not the factory and it is a page path outside rigs/.
  * The log must list the newest commit first (`--topo-order`): log order decides, not author date, which a rebase or amend can change.
  * A path is a tombstone when its newest person event is a delete; the tombstone date is that delete's date.
- * A newest person add lifts a person delete only when `isAncestor(deleteSha, addSha)` is true. Without a callback or a sha, the add lifts every older delete.
+ * A newest person add lifts a person delete only when both commits have a sha and isAncestor(deleteSha, addSha) is true; a missing sha keeps the tombstone.
  * A person delete that is not an ancestor of the add (a parallel branch) keeps the tombstone, at that delete's date.
  * An add or delete by the factory is ignored. One entry per path.
  */
 export function tombstones(
   log: string,
   factoryEmail: string,
-  isAncestor?: (del: string, add: string) => boolean,
+  isAncestor: (del: string, add: string) => boolean,
 ) {
   const ev = new Map<string, { kind: string; at: string; sha?: string }[]>()
   let who: { at: string; sha?: string } | undefined
@@ -600,9 +600,7 @@ export function tombstones(
       out.push({ path, at: first.at })
       continue
     }
-    const keep = e.find(
-      d => d.kind === 'D' && !!isAncestor && !!d.sha && !!first.sha && !isAncestor(d.sha, first.sha),
-    )
+    const keep = e.find(d => d.kind === 'D' && (!d.sha || !first.sha || !isAncestor(d.sha, first.sha)))
     if (keep) out.push({ path, at: keep.at })
   }
   return out
