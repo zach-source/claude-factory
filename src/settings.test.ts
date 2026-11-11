@@ -1,5 +1,16 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -326,5 +337,29 @@ describe('AC8 ax.env', () => {
     const { file } = fresh()
     expect(() => setSetting(file, 'ax.env', v)).toThrow()
     expect(existsSync(file)).toBe(false)
+  })
+})
+
+describe('e0qu temp file', () => {
+  test('e0qu AC5 stale temp mode: settings.json ends with mode 0600', () => {
+    const { d, file } = fresh()
+    const tmp = `${file}.${process.pid}.tmp`
+    writeFileSync(tmp, 'stale')
+    chmodSync(tmp, 0o644)
+    setSetting(file, 'kubectl', 'k')
+    expect(statSync(file).mode & 0o777).toBe(0o600)
+    expect(readdirSync(d)).toEqual(['settings.json'])
+    expect(readFileSync(file, 'utf8')).toContain('"k"')
+  })
+  test('e0qu AC6 symlink at the temp name: the victim keeps its text', () => {
+    const { d, file } = fresh()
+    const victim = join(d, 'victim.txt')
+    writeFileSync(victim, 'keep')
+    symlinkSync(victim, `${file}.${process.pid}.tmp`)
+    setSetting(file, 'kubectl', 'k')
+    expect(lstatSync(file).isFile()).toBe(true)
+    expect(readFileSync(victim, 'utf8')).toBe('keep')
+    expect(existsSync(`${file}.${process.pid}.tmp`)).toBe(false)
+    expect(readFileSync(file, 'utf8')).toContain('"k"')
   })
 })
