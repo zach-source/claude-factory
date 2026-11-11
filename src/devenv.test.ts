@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
+  run,
   buildCommand,
   build,
   checkout,
@@ -247,4 +248,8 @@ test('writeGhcrConfig writes a placeholder ghcr.io login and no real secret', ()
   const dir = writeGhcrConfig(join(mkdtempSync(join(tmpdir(), 'devenv-g-')), 'docker'))
   const c = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'))
   expect(Buffer.from(c.auths['ghcr.io'].auth, 'base64').toString()).toBe('placeholder:placeholder')
+})
+
+test('run: a command that is not on PATH fails and does not throw', () => {
+  expect(run(['factory-no-such-command-x']).ok).toBe(false)
 })

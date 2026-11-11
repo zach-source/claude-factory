@@ -130,20 +130,21 @@ export function applyRigChange<R extends object>(
 }
 
 const HIDDEN = '<hidden>'
-const SECRET_KEY = /(TOKEN|SECRET|KEY|PASSWORD)/i
+const SECRET_KEY = /(TOKEN|SECRET|KEY|PASSWORD|PASS|PAT|AUTH|CREDENTIAL|PRIVATE|CERT)/i
 
 /**
  * Return a copy of the rig that is safe to print. Each string that matches SECRETS becomes `<hidden>`.
- * In `env` and `params`, each string value with a secret-like key also becomes `<hidden>`.
+ * In `env` and `params`, at any depth, each value with a secret-like key also becomes `<hidden>`.
+ * The key match is a substring match, so `PATH` and `AUTHOR` are hidden too.
  * ponytail: a secret of unknown shape outside `env` and `params` is not found. Upgrade: a field table.
  */
 export function redactRig<R extends object>(rig: R): R {
   const walk = (v: unknown, keyed: boolean): unknown => {
     if (typeof v === 'string') return SECRETS.some(p => p.test(v)) ? HIDDEN : v
-    if (Array.isArray(v)) return v.map(x => walk(x, false))
+    if (Array.isArray(v)) return v.map(x => walk(x, keyed))
     if (v && typeof v === 'object')
       return Object.fromEntries(
-        Object.entries(v).map(([k, x]) => [k, keyed && SECRET_KEY.test(k) ? HIDDEN : walk(x, false)]),
+        Object.entries(v).map(([k, x]) => [k, keyed && SECRET_KEY.test(k) ? HIDDEN : walk(x, keyed)]),
       )
     return v
   }
