@@ -235,14 +235,14 @@ test('9ydy AC2/AC3: mail refuses a word that starts with --text-file=; a longer 
 })
 
 test('9ydy AC3: memory add refuses --body-file= with exit 2 and writes nothing', () => {
-  mkdirSync(home, { recursive: true })
+  mkdirSync(wt, { recursive: true })
   const f = txt('eq.md', 'body')
   expect(factory([...ADD, `--body-file=${f}`, 's'], {}, wt).code).toBe(2)
   expect(notes()).toEqual([])
 })
 
 test('9ydy AC4: inside a VM, equals-form flags queue nothing', () => {
-  mkdirSync(home, { recursive: true })
+  mkdirSync(wt, { recursive: true })
   const outbox = join(dir, 'outbox-eq.jsonl')
   const env = { FACTORY_OUTBOX: outbox, FACTORY_FROM: 'a' }
   const f = txt('eq.md', 'body')
