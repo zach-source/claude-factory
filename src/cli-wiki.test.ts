@@ -842,6 +842,68 @@ test('953a commit order decides, not author date, in both directions', () => {
   ).toEqual([p, q])
 })
 
+test('953a a person add lifts only a delete that is its ancestor, in both parent orders', () => {
+  for (const order of ['y-into-main', 'main-into-y']) {
+    setup()
+    expect(factory(['wiki', 'init']).code).toBe(0)
+    const p = 'solutions/2026-11/p.md'
+    const put = () => {
+      mkdirSync(join(wiki(), 'solutions', '2026-11'), { recursive: true })
+      writeFileSync(join(wiki(), p), page('topic', p))
+    }
+    const by = (msg: string, date: string) =>
+      git('-c', 'user.name=p', '-c', 'user.email=person@acme.example', 'commit', '-qm', msg, `--date=${date}`)
+    put()
+    git('add', p)
+    by('add', '2026-11-01T10:00:00+00:00')
+    git('checkout', '-q', '-b', 'y')
+    git('rm', '-q', p)
+    by('y delete', '2026-11-02T10:00:00+00:00')
+    git('checkout', '-q', 'main')
+    git('rm', '-q', p)
+    by('main delete', '2026-11-03T10:00:00+00:00')
+    put()
+    git('add', p)
+    by('main re-add', '2026-11-04T10:00:00+00:00')
+    if (order === 'y-into-main') git('merge', '-q', '--no-edit', 'y')
+    else (git('checkout', '-q', 'y'), git('merge', '-q', '--no-edit', 'main'))
+    expect(git('ls-files').split('\n')).not.toContain(p)
+    put()
+    const r = 'solutions/2026-11/r.md'
+    writeFileSync(join(wiki(), r), page('topic', r))
+    expect(commitPass('again').exitCode).toBe(0)
+    expect(git('ls-files').split('\n')).toContain(r)
+    expect(git('ls-files').split('\n')).not.toContain(p)
+    expect(state().tombstones.map((x: { path: string }) => x.path)).toEqual([p])
+  }
+})
+
+test('953a a person re-add with an older author date still lifts the delete after a factory delete', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const p = 'solutions/2026-11/p.md'
+  const put = () => {
+    mkdirSync(join(wiki(), 'solutions', '2026-11'), { recursive: true })
+    writeFileSync(join(wiki(), p), page('topic', p))
+  }
+  const by = (email: string, msg: string, date: string) =>
+    git('-c', 'user.name=p', '-c', `user.email=${email}`, 'commit', '-qm', msg, `--date=${date}`)
+  put()
+  git('add', p)
+  by('person@acme.example', 'add', '2026-11-01T10:00:00+00:00')
+  git('rm', '-q', p)
+  by('person@acme.example', 'delete', '2026-11-05T10:00:00+00:00')
+  put()
+  git('add', p)
+  by('person@acme.example', 're-add, older date', '2026-11-02T10:00:00+00:00')
+  git('rm', '-q', p)
+  by(`factory@${hostname()}`, 'factory delete', '2026-11-06T10:00:00+00:00')
+  put()
+  expect(commitPass('again').exitCode).toBe(0)
+  expect(git('ls-files').split('\n')).toContain(p)
+  expect(wikiLog()).not.toContain('tombstoned path')
+})
+
 test('5ezo a failed seed commit exits 1, sets no origin and calls no gh', () => {
   for (const args of [[], ['--remote', URL_]]) {
     setup()

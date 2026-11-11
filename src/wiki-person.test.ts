@@ -71,9 +71,9 @@ test('tombstones keeps the page paths that a person deleted, with the newest dat
     { path: 'b.md', at: '2026-11-02T10:00:00+00:00' },
   ])
   expect(tombstones('', F)).toEqual([])
-  expect(tombstones(`${H(P, 'junk')}\nD\tb.md\n${H(P, '2026-11-01T10:00:00Z')}\x01x\nD\tc.md\n`, F)).toEqual(
-    [],
-  )
+  expect(
+    tombstones(`${H(P, 'junk')}\nD\tb.md\n${H(P, '2026-11-01T10:00:00Z')}\x01x\x01y\nD\tc.md\n`, F),
+  ).toEqual([])
   expect(tombstones('D\tb.md\n', F)).toEqual([])
 })
 
@@ -90,6 +90,11 @@ test('tombstones lifts an older person delete when a newer person add follows', 
     ['delete only', ev([P, D1, 'D\tb.md']), [{ path: 'b.md', at: D1 }]],
     ['person add lifts', ev([P, D1, 'D\tb.md'], [P, A1, 'A\tb.md']), []],
     ['person add lifts, factory delete', ev([P, D1, 'D\tb.md'], [P, A1, 'A\tb.md'], [F, D2, 'D\tb.md']), []],
+    [
+      'person delete, then factory delete',
+      ev([P, D1, 'D\tb.md'], [F, D2, 'D\tb.md']),
+      [{ path: 'b.md', at: D1 }],
+    ],
     ['factory add never lifts', ev([P, D1, 'D\tb.md'], [F, A1, 'A\tb.md']), [{ path: 'b.md', at: D1 }]],
     ['older add changes nothing', ev([P, D1, 'A\tb.md'], [P, A1, 'D\tb.md']), [{ path: 'b.md', at: A1 }]],
     [
@@ -111,7 +116,7 @@ test('tombstones lifts an older person delete when a newer person add follows', 
     ['bad header before an add', ev([P, D1, 'D\tb.md'], [P, 'junk', 'A\tb.md']), [{ path: 'b.md', at: D1 }]],
     [
       '4-field header before an add',
-      `${ev([P, D1, 'D\tb.md'])}\n${H(P, A1)}\x01x\nA\tb.md`,
+      `${ev([P, D1, 'D\tb.md'])}\n${H(P, A1)}\x01x\x01y\nA\tb.md`,
       [{ path: 'b.md', at: D1 }],
     ],
   ]
@@ -135,4 +140,11 @@ test('flagLine masks a token and keeps one line of at most 200 characters', () =
   expect(f).not.toContain('\n')
   expect(f).not.toContain('ghp_')
   expect(f.length).toBeLessThanOrEqual('- `a.md` line 3: '.length + 200)
+})
+
+test('tombstones keeps a person delete that is not an ancestor of the newest person add', () => {
+  const log = `${H(P, A1)}\x01aaa\nA\tb.md\n${H(P, D1)}\x01ddd\nD\tb.md\n`
+  expect(tombstones(log, F, () => true)).toEqual([])
+  expect(tombstones(log, F, (d, a) => [d, a].join() !== 'ddd,aaa')).toEqual([{ path: 'b.md', at: D1 }])
+  expect(tombstones(log, F)).toEqual([])
 })

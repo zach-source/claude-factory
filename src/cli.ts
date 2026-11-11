@@ -5652,14 +5652,18 @@ function wikiTombstones(dir: string) {
     '--diff-filter=AD',
     '--no-renames',
     '--name-status',
-    '--format=%x01%ae%x01%aI',
+    '--format=%x01%ae%x01%aI%x01%H',
     'HEAD',
   ])
   const tracked = wikiGit(dir, ['ls-tree', '-r', '-z', '--name-only', 'HEAD'])
   if (log.code !== 0 || tracked.code !== 0)
     return (wikiLog('wiki: tombstone read failed, stored list used'), old)
   const here = new Set(tracked.out.toString().split('\0'))
-  const list = tombstones(log.out.toString(), WIKI_EMAIL).filter(t => !here.has(t.path))
+  const list = tombstones(
+    log.out.toString(),
+    WIKI_EMAIL,
+    (del, add) => wikiGit(dir, ['merge-base', '--is-ancestor', del, add]).code === 0,
+  ).filter(t => !here.has(t.path))
   if (JSON.stringify(list) !== JSON.stringify(old)) writeWikiState({ ...readWikiState(), tombstones: list })
   return list
 }

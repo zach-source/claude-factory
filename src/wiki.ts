@@ -561,31 +561,49 @@ export function humanLines(blameBefore: string, after: string, factoryEmail: str
 }
 
 /**
- * Deleted pages by a person, from `git log --topo-order --diff-filter=AD --no-renames --name-status --format=%x01%ae%x01%aI`.
- * A header is `\x01<email>\x01<date>` with a valid date; a bad header clears the author.
+ * Deleted pages by a person, from `git log --topo-order --diff-filter=AD --no-renames --name-status --format=%x01%ae%x01%aI%x01%H`.
+ * A header is `\x01<email>\x01<date>` with an optional `\x01<sha>` and a valid date; a bad header clears the author.
  * Only `A\t<path>` and `D\t<path>` lines count; every other line is ignored.
  * It keeps a path when its author is not the factory and it is a page path outside rigs/.
  * The log must list the newest commit first (`--topo-order`): log order decides, not author date, which a rebase or amend can change.
  * A path is a tombstone when its newest person event is a delete; the tombstone date is that delete's date.
+ * A newest person add lifts a person delete only when `isAncestor(deleteSha, addSha)` is true. Without a callback or a sha, the add lifts every older delete.
+ * A person delete that is not an ancestor of the add (a parallel branch) keeps the tombstone, at that delete's date.
  * An add or delete by the factory is ignored. One entry per path.
  */
-export function tombstones(log: string, factoryEmail: string) {
-  const seen = new Set<string>()
-  const out: { path: string; at: string }[] = []
-  let at: string | undefined
+export function tombstones(
+  log: string,
+  factoryEmail: string,
+  isAncestor?: (del: string, add: string) => boolean,
+) {
+  const ev = new Map<string, { kind: string; at: string; sha?: string }[]>()
+  let who: { at: string; sha?: string } | undefined
   for (const l of log.split('\n')) {
     if (l.startsWith('\x01')) {
       const p = l.split('\x01')
-      at = p.length === 3 && p[1] !== factoryEmail && !Number.isNaN(Date.parse(p[2]!)) ? p[2] : undefined
+      who =
+        (p.length === 3 || p.length === 4) && p[1] !== factoryEmail && !Number.isNaN(Date.parse(p[2]!))
+          ? { at: p[2]!, sha: p[3] }
+          : undefined
       continue
     }
     const m = /^([AD])\t(.+)$/.exec(l)
-    if (!m || !at) continue
+    if (!m || !who) continue
     const path = m[2]!
     if (!WIKI_PAGE_PATH.test(path) || path.split('/').includes('..') || path.startsWith('rigs/')) continue
-    if (seen.has(path)) continue
-    seen.add(path)
-    if (m[1] === 'D') out.push({ path, at })
+    ev.set(path, [...(ev.get(path) ?? []), { kind: m[1]!, ...who }])
+  }
+  const out: { path: string; at: string }[] = []
+  for (const [path, e] of ev) {
+    const first = e[0]!
+    if (first.kind === 'D') {
+      out.push({ path, at: first.at })
+      continue
+    }
+    const keep = e.find(
+      d => d.kind === 'D' && !!isAncestor && !!d.sha && !!first.sha && !isAncestor(d.sha, first.sha),
+    )
+    if (keep) out.push({ path, at: keep.at })
   }
   return out
 }

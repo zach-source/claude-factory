@@ -97,7 +97,7 @@
 
 ## R9. Deleted pages (FR-017)
 
-- **Decision**: a page that a person's commit removed goes into `wiki-state.json` `tombstones` with its path and date. The factory finds these with `git log --topo-order --diff-filter=AD` and the author check. The newest person commit for a path decides: a delete keeps the tombstone, and an add by a person lifts it. Commit order decides, not author date, because a rebase or an amend can change a date. An add by the factory never lifts it. The write prompt lists the tombstones, and code refuses to make a tombstoned path again. The agent can write a new page on that topic only for a bead that closed after the tombstone date. The new path must end in `-<YYYY-MM>`.
+- **Decision**: a page that a person's commit removed goes into `wiki-state.json` `tombstones` with its path and date. The factory finds these with `git log --topo-order --diff-filter=AD` and the author check. The newest person commit for a path decides: a delete keeps the tombstone, and an add by a person lifts it only when every person delete of that path is an ancestor of the add (`git merge-base --is-ancestor`); a delete on a parallel branch keeps the tombstone. Commit order decides, not author date, because a rebase or an amend can change a date. An add by the factory never lifts it. The write prompt lists the tombstones, and code refuses to make a tombstoned path again. The agent can write a new page on that topic only for a bead that closed after the tombstone date. The new path must end in `-<YYYY-MM>`.
 - **Rationale**: the rule is simple and enforced in code, and it agrees with "until new work arrives".
 
 ## R10. Find (FR-015)
