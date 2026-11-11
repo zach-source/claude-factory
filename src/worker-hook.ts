@@ -10399,7 +10399,14 @@ function denyAtScan(
     if (
       !state.hookControl &&
       hookControlWrite(
-        words,
+        modelCacheCopy(
+          words,
+          g.cwd ?? root ?? process.cwd(),
+          root ?? process.cwd(),
+          g.hookDir ?? dirname(import.meta.dir),
+        )
+          ? words.filter((_, k) => k !== 2)
+          : words,
         operandSkip,
         b === 'cd' || b === 'pushd' || b === 'popd' || b === 'chdir',
         g.cwd ?? root ?? process.cwd(),
@@ -11140,6 +11147,22 @@ const HOOK_CONTROL_MAY_RE = /[\/$`~*?[{<>\\]|\.claude|settings|worker-hook|home-
  * that is not a reader. A git or text-operand segment skips its operands. A cd, pushd or popd into a hook-control
  * dir or any `.claude` dir denies. The value of an `--opt=value` word is tested too.
  */
+const MODEL_CACHE = '/node_modules/@huggingface/transformers/.cache'
+const ABS_DIR_RE = /^(\/[A-Za-z0-9_.@-]+)+$/
+
+/**
+ * claude-factory-qn8a.122: true for exactly `cp -R <hookDir>/<MODEL_CACHE> <root>/<MODEL_CACHE>`, the worker
+ * model cache copy. The caller then drops the source word from the hook control scan; the destination scan stays.
+ * ponytail: one literal command only. Other cp options, tools and relative paths stay denied; widen with a new ADR row.
+ */
+function modelCacheCopy(words: string[], cwd: string, root: string, hookDir: string): boolean {
+  if (words.length !== 4 || words[0] !== 'cp' || words[1] !== '-R') return false
+  if (words[2] !== hookDir + MODEL_CACHE || words[3] !== root + MODEL_CACHE) return false
+  for (const d of [root, hookDir])
+    if (!ABS_DIR_RE.test(d) || d.split('/').some(c => c === '.' || c === '..')) return false
+  return fileWriteReason(root + MODEL_CACHE, cwd, undefined, root, hookDir) === undefined
+}
+
 function hookControlWrite(
   words: string[],
   skip: OperandSkip,
