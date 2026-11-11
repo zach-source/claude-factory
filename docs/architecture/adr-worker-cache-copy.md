@@ -105,18 +105,13 @@ Code sketch (implement can change the names):
 // ponytail: only the image model cache copy qualifies (claude-factory-qn8a.122).
 // A wider copy needs its own operand grammar.
 const MODEL_CACHE = '/node_modules/@huggingface/transformers/.cache'
-const LITERAL_DIR_RE = /^(?:\/(?!\.\.?(?:\/|$))[A-Za-z0-9_.@-]+)+$/
+const ABS_DIR_RE = /^(\/[A-Za-z0-9_.@-]+)+$/
 function modelCacheCopy(words: string[], cwd: string, root: string, hookDir: string): boolean {
-  return (
-    words.length === 4 &&
-    words[0] === 'cp' &&
-    words[1] === '-R' &&
-    LITERAL_DIR_RE.test(root) &&
-    LITERAL_DIR_RE.test(hookDir) &&
-    words[2] === hookDir + MODEL_CACHE &&
-    words[3] === root + MODEL_CACHE &&
-    fileWriteReason(root + MODEL_CACHE, cwd, undefined, root, hookDir) === undefined
-  )
+  if (words.length !== 4 || words[0] !== 'cp' || words[1] !== '-R') return false
+  if (words[2] !== hookDir + MODEL_CACHE || words[3] !== root + MODEL_CACHE) return false
+  for (const d of [root, hookDir])
+    if (!ABS_DIR_RE.test(d) || d.split('/').some(c => c === '.' || c === '..')) return false
+  return fileWriteReason(root + MODEL_CACHE, cwd, undefined, root, hookDir) === undefined
 }
 ```
 
@@ -220,8 +215,9 @@ Restore the file with Edit after each run. `git status --short` must be empty af
 | Remove `words[1] === '-R'` | `cp -a S D` |
 | Remove the source match | `cp -R <hookDir>/src D` |
 | Remove the destination match | the other-root destination row |
-| Remove the root `LITERAL_DIR_RE` test | root `/w/ac me` |
-| Remove the hookDir `LITERAL_DIR_RE` test | hookDir `/f/acme+factory` |
+| Remove the root `ABS_DIR_RE` test | root `/w/ac me` |
+| Remove the hookDir `ABS_DIR_RE` test | hookDir `/f/acme+factory` |
+| Remove the dot-component check | root `/w/acme/../x` |
 | Remove the `fileWriteReason` check | both symlink rows |
 
 No AC is must-see-live. The guard is a unit with no live state.
