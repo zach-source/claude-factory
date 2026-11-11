@@ -81,6 +81,7 @@ import {
 import { otelOf, type Otel } from './otel'
 import { watchDecide, WATCH_FAIL_PASSES, type Seen, type WatchedPr } from './watch'
 import { sweepNames as axSweepNames, type SweepRun } from './axsweep'
+import { epicRows } from './ui-data'
 import { ORPHAN_CAP, orphanSweep, type OrphanCtx, type OrphanPr } from './orphans'
 import {
   actorOf,
@@ -12556,7 +12557,10 @@ async function backlog() {
     try {
       const b = beads(rig.repo, 'factory')
       // three listings a rig, whatever its size: ready, blocked and every bead (child counts)
-      return { ...w, ...backlogOf(b.ready(), b.unqueued(), b.blocked(), b.every()) }
+      const all = b.every()
+      // the epic progress is the one of `factory ui` (src/ui-data.ts), so the web page needs no logic of its own
+      const epics = epicRows(all.map(x => ({ ...x, parent: parentOf(x) })))
+      return { ...w, ...backlogOf(b.ready(), b.unqueued(), b.blocked(), all), epics }
     } catch (err) {
       return { ...w, queued: [], unqueued: [], error: (err as Error).message }
     }

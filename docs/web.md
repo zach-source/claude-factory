@@ -19,7 +19,9 @@ The page holds no factory logic. It calls the `/v1` routes of the catalog and sh
 | Mail              | `/v1/mail`                                  |
 | Manager           | `/v1/decisions`, `/v1/steps`, `/v1/metrics` |
 
-The page shows an array of objects as a table. It shows any other answer as text.
+The Epics and backlog section shows one block for each rig: the epic progress (`epics` field of `/v1/backlog`, the same counts as `factory ui`), then the queued and unqueued beads. The core computes the counts. The page only lays them out.
+
+The page shows any other array of objects as a table. It shows any other answer as text.
 
 ## Certificate and listen config
 
