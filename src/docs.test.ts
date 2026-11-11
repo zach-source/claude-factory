@@ -57,6 +57,7 @@ test('README.md and docs/*.md name no deleted script', () => {
     const text = readFileSync(f, 'utf8')
     expect(text).not.toContain('bin/factory' + '-up')
     expect(text).not.toContain('push' + '-worker')
+    expect(text).not.toContain('bin/' + 'up')
   }
 })
 
@@ -93,4 +94,26 @@ test('the settings usage line names the devenv keys', () => {
     .split('\n')
     .find(l => l.startsWith('  settings [list]'))
   expect(line).toContain('devenv.builder')
+})
+
+test('docs/server.md names worker routes, each owner step, both modes and the way back; README links it', () => {
+  const text = readFileSync(join(root, 'docs/server.md'), 'utf8')
+  for (const s of [
+    'S2',
+    'dm-g14',
+    'S8',
+    'SVID',
+    'FACTORY_SERVER',
+    'port 8444',
+    'PVC',
+    'person CA',
+    'Local mode',
+    'Server mode',
+    'The way back',
+  ])
+    expect(text).toContain(s)
+  expect(text).toContain('The worker API serves report, mail and progress (FR-017).')
+  expect(text).toContain('--worker-port 8443 --worker-key <path>')
+  expect(text).not.toContain('no worker API route today')
+  expect(readFileSync(join(root, 'README.md'), 'utf8')).toContain('docs/server.md')
 })

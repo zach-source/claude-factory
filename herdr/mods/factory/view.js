@@ -131,10 +131,26 @@ export function parseTick(code, out, err) {
       rigs: res.rigs ?? [],
       halt: res.halt,
       readOnly: res.readOnly,
+      managerLimited: res.managerLimited ?? null,
+      managerCodexAuth: res.managerCodexAuth ?? null,
     }
   } catch {
     return { error: line(`factory tick printed no JSON: ${out || err}`, 300) }
   }
+}
+
+/** the board header when the manager's Claude is limited: 'manager: Claude limited until HH:MM', else '' */
+export function managerLimitText(limited) {
+  if (!limited || typeof limited.until !== 'number') return ''
+  const d = new Date(limited.until)
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  return `manager: Claude limited until ${hh}:${mm}`
+}
+
+/** the board header when the manager's Codex key is refused (claude-factory-y3f8w.10), else '' */
+export function managerCodexAuthText(auth) {
+  return auth ? 'manager codex: key refused' : ''
 }
 
 /** the result of `factory snapshot --views board,decisions`: { tick, decisions } for the tabs to share */
@@ -171,28 +187,8 @@ export function parseConfig(text) {
 /** the options that send an exec or a file read to the machine of a remote config */
 export const onOf = cfg => (cfg.machine ? { on: cfg.machine } : undefined)
 
-/** the step names and how often each runs (ms). A step that is due and finds no work makes no model call. */
-export const STEPS = { patrol: 60_000, brief: 120_000, review: 300_000, pm: 3_600_000, decisions: 300_000 }
-
-/**
- * The factory commands one beat starts, as { name, words }.
- * A remote mod only reads: one `snapshot` call returns the slim board and the decisions (hpmc.23).
- * It never runs tick, patrol, brief, review or pm, so it never takes the manager lease.
- */
-export function beatJobs(cfg, state, ran, now) {
-  if (cfg.machine) return [{ name: 'snapshot', words: ['snapshot', '--views', 'board,decisions'] }]
-  const jobs = [{ name: 'tick', words: ['tick', '--keep-mail'] }]
-  // a manager without the lease only shows the board (claude-factory-s01d.2)
-  if (state.readOnly || state.halt) return jobs
-  for (const [name, every] of Object.entries(STEPS))
-    if (now - (ran[name] ?? 0) >= every)
-      jobs.push({
-        name,
-        words:
-          name === 'decisions' ? ['decisions'] : name === 'review' ? ['review', '--once'] : [name, '--once'],
-      })
-  return jobs
-}
+/** the one read-only call of a beat: the slim board and the decisions (claude-factory-hpmc.23) */
+export const SNAPSHOT_WORDS = ['snapshot', '--views', 'board,decisions']
 
 /** the shell words of a control button; only these CLI commands are allowed */
 export function actionWords(action, arg) {
@@ -201,8 +197,22 @@ export function actionWords(action, arg) {
   throw new Error(`no such action: ${action}`)
 }
 
-/** the terminal command for the manager chat of a remote config, or null for a local one */
-export const chatArgv = cfg => (cfg.machine ? ['hc', 'attach', `${cfg.machine}/manager`] : null)
+/**
+ * the terminal command for the manager chat of a remote config, or null for a local one. While the manager's Claude
+ * is limited (board managerLimited), it starts a Codex chat in a terminal named manager-codex on the machine, if
+ * none is live, and attaches to it. The values travel as arguments of sh, so no quoting is needed.
+ */
+export function chatArgv(cfg, limited = null) {
+  if (!cfg.machine) return null
+  if (!limited) return ['hc', 'attach', `${cfg.machine}/manager`]
+  const script =
+    'hc run --bg --on "$0" --name manager-codex env "FACTORY_HOME=$1" "$2" manager chat --codex >/dev/null 2>&1; ' +
+    'exec hc attach "$0/manager-codex"'
+  return ['sh', '-c', script, cfg.machine, cfg.home, cfg.cli]
+}
+
+/** the label of the manager chat button */
+export const chatLabel = limited => (limited ? 'Manager chat (codex)' : 'Manager chat')
 
 /** the exec call of a remote job: [command, args]. It runs in the foreground, since hc exec kills what a command leaves behind. */
 export const directJob = (cfg, words) => ['env', [`FACTORY_HOME=${cfg.home}`, cfg.cli, ...words]]

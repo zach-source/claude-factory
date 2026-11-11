@@ -1,7 +1,7 @@
 // claude-factory-3u1.3.1 (FR-018, research R8): the dream finds failure classes and re-learned lessons,
 // and writes at most 3 proposals one rung up the learning ladder.
 import { expect, test } from 'bun:test'
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -18,7 +18,138 @@ import {
   relearned,
   withCoreLine,
   withFrontmatter,
+  skillSources,
+  skillsDir,
 } from './memory'
+
+const lockCommands = [
+  ['skills', 'install', 'sample'],
+  ['skills', 'reject', 'sample', 'reason'],
+  ['proposals', 'install', 'sample'],
+  ['proposals', 'install', 'sample', '--rig', 'widget'],
+  ['proposals', 'reject', 'sample', 'reason'],
+]
+
+function lockFixture(index: number) {
+  const home = join(tmpdir(), `ot1ew-memory-${process.pid}-${index}`)
+  rmSync(home, { recursive: true, force: true })
+  const memory = join(home, 'memory')
+  const bin = join(home, 'bin')
+  const log = join(home, 'calls')
+  const lock = join(home, 'dream.lock')
+  for (const dir of [bin, join(memory, '.proposals'), join(skillSources(memory), 'sample')])
+    mkdirSync(dir, { recursive: true })
+  writeFileSync(join(memory, 'CORE.md'), '- Keep the original line.\n')
+  writeFileSync(
+    join(skillSources(memory), 'sample', 'SKILL.md'),
+    '---\ndescription: sample\n---\nUse the tool.\n',
+  )
+  writeFileSync(
+    join(memory, '.proposals', 'sample.md'),
+    `---\nrung: ${index === 3 ? 'instruction' : 'core'}\ntarget: CORE.md\nstatus: pending\n---\nCheck the result.\n`,
+  )
+  writeFileSync(
+    join(home, 'rigs.json'),
+    JSON.stringify([{ name: 'widget', repo: memory, factory: 'unused' }]),
+  )
+  const realGit = Bun.which('git')!
+  const git = (...args: string[]) => {
+    const p = Bun.spawnSync([realGit, '-C', memory, ...args])
+    expect(p.exitCode, p.stderr.toString()).toBe(0)
+    return p.stdout.toString().trim()
+  }
+  git('init', '-q')
+  git('add', '-A')
+  git('-c', 'user.name=t', '-c', 'user.email=t@acme.example', 'commit', '-qm', 'seed')
+  for (const tool of ['git', 'bd', 'gh']) {
+    writeFileSync(
+      join(bin, tool),
+      `#!/bin/sh\npid=$(cat '${lock}/pid' 2>/dev/null || true)\nheld=no\nif [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && ! mkdir '${lock}' 2>/dev/null; then held=yes; fi\nprintf '%s:%s:%s\\n' '${tool}' "$pid" "$held" >> '${log}'\n` +
+        (tool === 'git' ? `exec '${realGit}' "$@"\n` : 'printf \'%s\' \'{"id":"acme-1"}\'\n'),
+    )
+    chmodSync(join(bin, tool), 0o755)
+  }
+  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_PATROL, ...env } = process.env
+  const run = (args: string[], extra: Record<string, string> = {}) => {
+    const p = Bun.spawnSync([join(import.meta.dir, '..', 'bin', 'factory'), ...args], {
+      env: {
+        ...env,
+        FACTORY_HOME: home,
+        FACTORY_SELF_UPDATE: '0',
+        FACTORY_NO_KICK: '1',
+        PATH: `${bin}:${env.PATH}`,
+        ...extra,
+      },
+      timeout: 30_000,
+    })
+    return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
+  }
+  const calls = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [])
+  return { home, memory, lock, log, git, run, calls }
+}
+
+test.each(lockCommands.map((args, i) => [i, args] as const))('ot1ew memory busy matrix %i', (i, args) => {
+  const f = lockFixture(i)
+  try {
+    const before = f.git('status', '--porcelain')
+    const core = readFileSync(join(f.memory, 'CORE.md'), 'utf8')
+    const proposal = readFileSync(join(f.memory, '.proposals', 'sample.md'), 'utf8')
+    const skill = readFileSync(join(skillSources(f.memory), 'sample', 'SKILL.md'), 'utf8')
+    mkdirSync(f.lock)
+    writeFileSync(join(f.lock, 'pid'), String(process.pid))
+    const r = f.run(args)
+    expect([r.code, r.out, r.err.trim()]).toEqual([1, '', 'memory: busy'])
+    expect(f.calls()).toEqual([])
+    expect(readFileSync(join(f.lock, 'pid'), 'utf8')).toBe(String(process.pid))
+    expect(readFileSync(join(f.memory, 'CORE.md'), 'utf8')).toBe(core)
+    expect(readFileSync(join(f.memory, '.proposals', 'sample.md'), 'utf8')).toBe(proposal)
+    expect(readFileSync(join(skillSources(f.memory), 'sample', 'SKILL.md'), 'utf8')).toBe(skill)
+    expect(f.git('status', '--porcelain')).toBe(before)
+    for (const extra of [{ FACTORY_RUN: 'r1' }, { FACTORY_PATROL: '1' }] as Record<string, string>[]) {
+      const denied = f.run(args, extra)
+      expect(denied.code).toBe(1)
+      expect(denied.err).toContain('cannot')
+      expect(f.calls()).toEqual([])
+    }
+    for (const command of ['skills', 'proposals']) expect(f.run([command]).code).toBe(0)
+    expect(f.calls()).toEqual([])
+  } finally {
+    rmSync(f.home, { recursive: true, force: true })
+  }
+})
+
+test.each(lockCommands.map((args, i) => [i, args] as const))(
+  'ot1ew lock lifetime and unlocked controls %i',
+  (i, args) => {
+    const f = lockFixture(i)
+    try {
+      mkdirSync(join(f.home, 'wiki.lock'))
+      writeFileSync(join(f.home, 'wiki.lock', 'pid'), String(process.pid))
+      const r = f.run(args)
+      expect(r.code, r.err).toBe(0)
+      expect(f.calls().length).toBeGreaterThan(0)
+      for (const call of f.calls()) expect(call).toMatch(/^(git|bd):[1-9][0-9]*:yes$/)
+      expect(f.calls().filter(c => c.startsWith('bd:')).length).toBe(i === 3 ? 1 : 0)
+      expect(existsSync(f.lock)).toBe(false)
+      expect(f.git('status', '--porcelain')).toBe('')
+      expect(f.git('rev-list', '--count', 'HEAD')).toBe('2')
+      if (i === 0) expect(existsSync(join(skillsDir(f.memory), 'sample', 'SKILL.md'))).toBe(true)
+      if (i === 1) expect(existsSync(join(skillSources(f.memory), 'sample'))).toBe(false)
+      if (i === 2) expect(readFileSync(join(f.memory, 'CORE.md'), 'utf8')).toContain('- Check the result.')
+      if (i >= 2)
+        expect(readFileSync(join(f.memory, '.proposals', 'sample.md'), 'utf8')).toContain(
+          i === 4 ? 'rejected' : 'installed',
+        )
+      const failed = f.run(args.map(a => (a === 'sample' ? 'absent' : a)))
+      expect(failed.code).toBe(1)
+      expect(existsSync(f.lock)).toBe(false)
+      expect(f.run(['skills', 'install', 'absent']).err).toContain('no proposed skill')
+      expect(existsSync(f.lock)).toBe(false)
+    } finally {
+      rmSync(f.home, { recursive: true, force: true })
+    }
+  },
+)
 
 test.each([
   ['Tests FAILED in src/foo.test.ts: 3 of 12', 'tests failed in src/foo.test.ts: of'],

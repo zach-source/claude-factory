@@ -1,5 +1,17 @@
 import { afterAll, beforeEach, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { applyRigChange, editRigs, redactRig } from './rigs-edit'
@@ -152,4 +164,33 @@ test('applyRigChange keeps key order and drops unset keys; redactRig hides secre
     beadsRemote: { name: 'o', user: 'u', url: '<hidden>' },
     egress: [{ hosts: ['h'], key: 'VAULT_KEY' }],
   })
+})
+
+test('e0qu AC1 stale temp mode: rigs.json ends with mode 0600', () => {
+  const tmp = `${file}.tmp`
+  writeFileSync(tmp, 'stale')
+  chmodSync(tmp, 0o644)
+  editRigs(file, rigs => [...rigs, rig('a')])
+  expect(statSync(file).mode & 0o777).toBe(0o600)
+  expect(existsSync(tmp)).toBe(false)
+  expect(readFileSync(file, 'utf8')).toContain('"a"')
+})
+
+test('e0qu AC2 symlink at the temp name: the victim keeps its text, rigs.json is a file', () => {
+  const victim = join(dir, 'victim.txt')
+  writeFileSync(victim, 'keep')
+  symlinkSync(victim, `${file}.tmp`)
+  editRigs(file, rigs => [...rigs, rig('a')])
+  expect(lstatSync(file).isFile()).toBe(true)
+  expect(readFileSync(victim, 'utf8')).toBe('keep')
+  expect(existsSync(`${file}.tmp`)).toBe(false)
+  expect(readFileSync(file, 'utf8')).toContain('"a"')
+})
+
+test('e0qu AC2 dangling symlink at the temp name: the victim is not created', () => {
+  const victim = join(dir, 'missing.txt')
+  symlinkSync(victim, `${file}.tmp`)
+  editRigs(file, rigs => [...rigs, rig('a')])
+  expect(lstatSync(file).isFile()).toBe(true)
+  expect(existsSync(victim)).toBe(false)
 })

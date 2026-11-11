@@ -743,11 +743,72 @@ test('a factory bead with a hold label: dispatch starts no run and records the s
 })
 
 test('a label that only resembles a hold still starts (claude-factory-9kou)', () => {
-  for (const label of ['humane', 'held', 'rejected-by', 'xheld:y', 'Human']) {
+  for (const label of ['ownerish', 'Owner', 'humane', 'held', 'rejected-by', 'xheld:y', 'Human']) {
     precheckReset({ labels: ['factory', label] })
     pfactory(['beads'], { GH_JSON: '[]' })
     expect(runDirs()).toHaveLength(1)
   }
+})
+
+for (const precheck of ['0', '1']) {
+  test(`jmvx AC3 dispatch refuses children of held parents with precheck ${precheck}`, () => {
+    precheckReset()
+    const parents: Record<string, unknown>[] = []
+    const children: { id: string; title: string; parent: string; labels: string[] }[] = []
+    for (const hold of [
+      'owner',
+      'human',
+      'rejected',
+      'held:',
+      'held:station',
+      'held:cluster:acme',
+      'decisions',
+    ]) {
+      for (const [childFactory, parentFactory] of [
+        [true, false],
+        [false, true],
+        [true, true],
+      ]) {
+        const id = `acme-${parents.length + 1}`
+        parents.push({
+          id,
+          title: 'parent',
+          labels: [...(parentFactory ? ['factory'] : []), ...(hold === 'decisions' ? [] : [hold])],
+          ...(hold === 'decisions' && { metadata: { owner_decisions: ['wait'] } }),
+        })
+        children.push({ id: `${id}.1`, title: 'child', parent: id, labels: childFactory ? ['factory'] : [] })
+      }
+    }
+    writeFileSync(
+      join(pbin, 'bd'),
+      [
+        '#!/bin/sh',
+        `echo "bd $*" >> '${bdCallsLog}'`,
+        'case "$1" in',
+        `ready) printf '%s' '${JSON.stringify(children)}';;`,
+        `list) printf '%s' '${JSON.stringify([...parents, ...children])}';;`,
+        "children) printf '%s' '[]';;",
+        'esac',
+      ].join('\n'),
+    )
+    expect(pfactory(['beads'], { FACTORY_PRECHECK: precheck, GH_JSON: '[]' }).code).toBe(0)
+    expect(runDirs()).toEqual([])
+    const calls = readFileSync(bdCallsLog, 'utf8')
+    expect(calls).not.toMatch(/^bd (claim|update|comment)\b/m)
+    const skips = JSON.parse(readFileSync(join(phome, 'dispatch.json'), 'utf8')) as {
+      id: string
+      skip?: string
+    }[]
+    for (const child of children)
+      expect(skips.some(row => row.id === child.id && row.skip?.includes(child.parent))).toBe(true)
+  })
+}
+
+test('jmvx AC2 dispatch preserves owner decisions after a person queue', () => {
+  precheckReset({ metadata: { owner_decisions: ['wait'] } })
+  expect(pfactory(['beads'], { GH_JSON: '[]' }).code).toBe(0)
+  expect(runDirs()).toEqual([])
+  expect(readFileSync(bdCallsLog, 'utf8')).not.toMatch(/^bd claim\b/m)
 })
 
 test('FACTORY_PRECHECK=0 turns the whole check off: 0 gh calls, the run starts as before', () => {
@@ -1752,14 +1813,14 @@ function writeFixtureFactory(repo: string, name: string, def: Factory) {
   writeFileSync(join(repo, '.factory', `${name}.json`), JSON.stringify(def))
 }
 
-/** fake bd: `ready` answers exactly the beads given. Every call is logged, as `fakePrecheckBd` does. */
-function fixtureBd(beads: Record<string, unknown>[]) {
+/** Fake bd returns separate ready and list rows. It logs each call. */
+function fixtureBd(beads: Record<string, unknown>[], ready = beads) {
   mkdirSync(pbin, { recursive: true })
   const script = [
     '#!/bin/sh',
     `echo "bd $*" >> "${bdCallsLog}"`,
     'case "$1" in',
-    `  ready) printf '%s' '${JSON.stringify(beads)}';;`,
+    `  ready) printf '%s' '${JSON.stringify(ready)}';;`,
     // dispatch()'s flood guard calls `bd list --all --brief --json -n 0` (b.every()) once per
     // rig, ahead of `ready`. With no `list` case here, that call fell to `*) exit 0` with no
     // stdout, `b.every()` threw on the empty JSON, and dispatch() skipped the whole rig.
@@ -1773,7 +1834,7 @@ function fixtureBd(beads: Record<string, unknown>[]) {
   chmodSync(join(pbin, 'bd'), 0o755)
 }
 
-function fixtureReset(beads: Record<string, unknown>[]) {
+function fixtureReset(beads: Record<string, unknown>[], ready = beads) {
   rmSync(pdir, { recursive: true, force: true })
   mkdirSync(pClaudeConfig, { recursive: true })
   writeFileSync(join(pClaudeConfig, '.claude.json'), JSON.stringify({ projects: {} }))
@@ -1782,11 +1843,59 @@ function fixtureReset(beads: Record<string, unknown>[]) {
   writeFileSync(join(phome, 'orphans.stamp'), '') // and the orphan pass's
   const r = precheckRepo()
   writeFixtureFactory(r, 'release', RELEASE_FIXTURE)
-  fixtureBd(beads)
+  fixtureBd(beads, ready)
   fakeGh()
   fakePrecheckHerdr()
   writeFileSync(join(phome, 'rigs.json'), JSON.stringify([{ name: 'a', repo: r, factory: 'lifecycle' }]))
 }
+
+test('p99sx AC4: repair releases an absent run but keeps a bad def bead live', () => {
+  const id = 'ship-p99sxbad'
+  const bead = (id: string, run: string) => ({
+    id,
+    title: 't',
+    status: 'in_progress',
+    labels: ['factory'],
+    assignee: `factory/${run}/implement`,
+    lease_expires_at: '2026-01-01T00:00:00Z',
+  })
+  fixtureReset([bead('acme-2', 'lifecycle-gone'), bead('acme-3', id)], [])
+  const d = join(phome, 'runs', id)
+  const wt = join(pdir, id)
+  mkdirSync(d, { recursive: true })
+  mkdirSync(wt, { recursive: true })
+  const def: Factory = {
+    name: 'ship',
+    start: 'implement',
+    nodes: { implement: { prompt: 'do it', runner: 'nope', next: { ready: 'done' } } },
+  }
+  const file = join(d, 'factory.ts')
+  writeFileSync(file, `export default ${JSON.stringify(def)}`)
+  writeFileSync(
+    join(d, 'run.json'),
+    JSON.stringify({
+      id,
+      factory: file,
+      repo: join(pdir, 'repo'),
+      goal: 'g',
+      ws: 'w1',
+      worktree: wt,
+      branch: 'b',
+      bead: 'acme-3',
+    }),
+  )
+  const actor = createActor(compile(def)).start()
+  actor.send({ type: 'TICK', at: 0 })
+  actor.send({ type: 'SPAWNED', seq: 1, pane: 'w1:p1', at: 1 })
+  actor.send({ type: 'FAIL', seq: 1, reason: 'flaky', hold: Date.now() + 9e8, at: 100 })
+  writeFileSync(join(d, 'state.json'), JSON.stringify({ cursor: 0, snapshot: actor.getPersistedSnapshot() }))
+  writeFileSync(join(d, 'inbox.jsonl'), '')
+  rmSync(join(phome, 'labels.stamp'))
+  expect(pfactory(['beads'], { GH_JSON: '[]' }).code).toBe(0)
+  const calls = readFileSync(bdCallsLog, 'utf8')
+  expect(calls).toContain('bd unclaim acme-2 --force')
+  expect(calls).not.toContain('unclaim acme-3')
+})
 
 /** the pinned factory a started run compiled from (its `name` field), or undefined if none started */
 function pinnedFactoryName(): string | undefined {

@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { join, relative } from 'node:path'
+import { createHash } from 'node:crypto'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import { claudeFiles } from './migrate'
 import { gitFenced } from './memory'
@@ -34,7 +35,12 @@ export type BackupCfg = {
   excludes?: string[]
   /** test hook: the gitleaks binary (default `gitleaks` on PATH) */
   gitleaks?: string
+  /** test hook: the gitleaks time limit in ms (default SCAN_MS) */
+  scanMs?: number
 }
+
+/** the gitleaks time limit: a real home took 300 to 380 s of the old 600 s */
+export const SCAN_MS = 1_800_000
 
 /** gitignore rules, relative to the workspace: what never goes in the backup */
 export const EXCLUDES = [
@@ -143,7 +149,7 @@ function init(cfg: BackupCfg) {
   git(cfg, ['symbolic-ref', 'HEAD', `refs/heads/${cfg.branch}`])
   const x = join(GIT_DIR(cfg.ws), 'info')
   mkdirSync(x, { recursive: true })
-  // memory goes in through its own index (snapshotMemory), never as a nested repo or a gitlink
+  // memory uses its own index in snapshot, never a nested repo or a gitlink
   const rules = [...(cfg.excludes ?? EXCLUDES), '/home/memory/']
   writeFileSync(join(x, 'exclude'), rules.join('\n') + '\n')
 }
@@ -151,12 +157,13 @@ function init(cfg: BackupCfg) {
 const PUSH_MS = 600_000
 
 /**
+ * Stage the home before the memory index update can hide racy file changes (ohn03).
  * Put the memory work tree in the main index as plain files. A second index takes the files (the memory
  * .gitignore applies, a nested .git never counts), then its tree replaces home/memory/ in the main index.
  * Only the files leave the VM, so the secret scan of the staged files covers memory too.
  * Also keeps home/memory-dream.at: the time of the last "dream:" commit, for restore. Returns an error text.
  */
-function snapshotMemory(cfg: BackupCfg): string | undefined {
+function snapshot(cfg: BackupCfg): string | undefined {
   const mem = memDir(cfg.ws)
   if (existsSync(join(mem, '.git')) && !gitFenced(mem)) {
     const l = Bun.spawnSync(['git', '-C', mem, 'log', '-1', '--grep=^dream:', '--format=%at'], {
@@ -166,6 +173,8 @@ function snapshotMemory(cfg: BackupCfg): string | undefined {
     const had = existsSync(DREAM_AT(cfg.ws)) ? readFileSync(DREAM_AT(cfg.ws), 'utf8').trim() : ''
     if (l.exitCode === 0 && at && at !== had) writeFileSync(DREAM_AT(cfg.ws), at + '\n')
   }
+  const home = git(cfg, ['add', '-A', '--', ...pathspecs(cfg.ws)])
+  if (!home.ok) return `git add: ${home.err}`
   const rm = git(cfg, ['rm', '-r', '-q', '--cached', '--ignore-unmatch', '--', 'home/memory'])
   if (!rm.ok) return `git rm memory: ${rm.err}`
   if (!existsSync(mem)) return undefined
@@ -236,7 +245,7 @@ export function redact(text: Buffer, leaks: Leak[]): Buffer {
  * gitleaks over the files of dir; the findings, or an error. The report holds the secrets: it goes to a pipe
  * only (stdout), never to a file or a log, and no error text gets any of it
  */
-function gitleaks(bin: string, dir: string): Leak[] | { error: string } {
+function gitleaks(bin: string, dir: string, ms: number): Leak[] | { error: string } {
   const p = Bun.spawnSync(
     [
       bin,
@@ -252,7 +261,7 @@ function gitleaks(bin: string, dir: string): Leak[] | { error: string } {
       '--report-path',
       '-',
     ],
-    { stdout: 'pipe', stderr: 'pipe', timeout: 600_000 },
+    { stdout: 'pipe', stderr: 'pipe', timeout: ms },
   )
   if (p.exitCode !== 0) return { error: `gitleaks exit ${p.exitCode}` }
   try {
@@ -322,11 +331,24 @@ function scrub(cfg: BackupCfg, staged: Staged[]): { redacted: string[] } | { err
   const r = git(cfg, ['cat-file', '--batch'], 120_000, { input: staged.map(s => s.blob).join('\n') + '\n' })
   if (!r.ok) return { error: `git cat-file: ${r.err}` }
   const blobs = splitBatch(r.buf)
+  const t0 = Date.now()
+  // d289.27: a big file that only grew since the last backup scans (and redacts) its new bytes alone
+  const state = readScanned(cfg)
+  const bases = new Map<number, { prior: Buffer; rawLen: number }>() // index -> the committed copy of the scanned part
+  for (const [i, b] of blobs.entries()) {
+    const st = state[staged[i]!.path]
+    if (b.length < TAIL_OVER || !st || b.length <= st.rawLen || sha(b.subarray(0, st.rawLen)) !== st.rawSha)
+      continue
+    const prior = committed(cfg, staged[i]!.path)
+    if (prior && prior.length >= st.outLen && sha(prior.subarray(0, st.outLen)) === st.outSha)
+      bases.set(i, { prior: prior.subarray(0, st.outLen), rawLen: st.rawLen })
+  }
+  const piece = (i: number, b: Buffer) => (bases.has(i) ? b.subarray(bases.get(i)!.rawLen) : b)
   const scan = (files: Map<number, Buffer>) => {
     const dir = mkdtempSync(join(cfg.ws, '.backup-scan-')) // the workspace disk: /tmp can be small; no pathspec covers it
     try {
       for (const [i, b] of files) writeFileSync(join(dir, String(i)), b)
-      const leaks = gitleaks(bin, dir)
+      const leaks = gitleaks(bin, dir, cfg.scanMs ?? SCAN_MS)
       if ('error' in leaks) return leaks
       const by = new Map<number, Leak[]>()
       for (const l of leaks) {
@@ -338,10 +360,29 @@ function scrub(cfg: BackupCfg, staged: Staged[]): { redacted: string[] } | { err
       rmSync(dir, { recursive: true, force: true })
     }
   }
-  const found = scan(new Map(blobs.map((b, i) => [i, b])))
+  const found = scan(new Map(blobs.map((b, i) => [i, piece(i, b)])))
   if ('error' in found) return { error: `backup refused: ${found.error}` }
-  const fixed = new Map([...found].map(([i, leaks]) => [i, redact(blobs[i]!, leaks)]))
-  const left = scan(fixed)
+  // the output of each blob: the committed scanned part, then the redacted new part. A split at a line end is
+  // recorded, so the next backup starts there. ponytail: a secret over two lines is not seen across the split
+  const out = blobs.map((b, i) => {
+    const leaks = found.get(i) ?? []
+    const base = bases.get(i)
+    const body = base ? b.subarray(base.rawLen) : b
+    const cut = body.lastIndexOf(10) + 1
+    const a = redact(body.subarray(0, cut), leaks)
+    const rest = redact(body.subarray(cut), leaks)
+    const head = base ? base.prior : Buffer.alloc(0)
+    return {
+      buf: Buffer.concat([head, a, rest]),
+      outLen: head.length + a.length,
+      rawLen: (base?.rawLen ?? 0) + cut,
+    }
+  })
+  const fixed = new Map<number, Buffer>()
+  for (const [i, o] of out.entries()) if (!o.buf.equals(blobs[i]!)) fixed.set(i, o.buf)
+  const left = scan(
+    new Map([...fixed].map(([i, b]) => [i, bases.has(i) ? b.subarray(bases.get(i)!.prior.length) : b])),
+  )
   if ('error' in left) return { error: `backup refused: ${left.error}` }
   if (left.size)
     return {
@@ -353,10 +394,55 @@ function scrub(cfg: BackupCfg, staged: Staged[]): { redacted: string[] } | { err
     const u = git(cfg, ['update-index', '--cacheinfo', `${staged[i]!.mode},${h.out},${staged[i]!.path}`])
     if (!u.ok) return { error: `git update-index: ${u.err}` }
   }
+  for (const [i, b] of blobs.entries()) {
+    const o = out[i]!
+    if (b.length >= TAIL_OVER && o.rawLen > 0)
+      state[staged[i]!.path] = {
+        rawLen: o.rawLen,
+        rawSha: sha(b.subarray(0, o.rawLen)),
+        outLen: o.outLen,
+        outSha: sha(o.buf.subarray(0, o.outLen)),
+      }
+  }
+  writeScanned(cfg, state)
+  console.error(
+    `backup scan: ${Date.now() - t0} ms, ${blobs.length} files, ${bases.size} by tail only, ${found.size} with findings`,
+  )
   return {
     redacted: [...found].flatMap(([i, leaks]) => [
       ...new Set(leaks.map(l => `${l.RuleID} ${staged[i]!.path}`)),
     ]),
+  }
+}
+
+/** d289.27: a file this big or bigger is scanned by its new tail when the last backup scanned its start */
+const TAIL_OVER = 1_000_000
+const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex')
+type Scanned = Record<string, { rawLen: number; rawSha: string; outLen: number; outSha: string }>
+/** hashes only, never text: outside every pathspec, so it stays in the workspace */
+const scannedFile = (cfg: BackupCfg) => join(cfg.ws, '.backup-scanned.json')
+function readScanned(cfg: BackupCfg): Scanned {
+  try {
+    return JSON.parse(readFileSync(scannedFile(cfg), 'utf8')) as Scanned
+  } catch {
+    return {}
+  }
+}
+function writeScanned(cfg: BackupCfg, s: Scanned) {
+  try {
+    writeFileSync(scannedFile(cfg), JSON.stringify(s))
+  } catch {}
+}
+/** the file as the last backup committed it (a big one is stored as <path>.gz), else undefined */
+function committed(cfg: BackupCfg, path: string): Buffer | undefined {
+  const plain = git(cfg, ['cat-file', 'blob', `HEAD:${path}`])
+  if (plain.ok) return plain.buf
+  const gz = git(cfg, ['cat-file', 'blob', `HEAD:${path}.gz`])
+  if (!gz.ok) return undefined
+  try {
+    return gunzipSync(gz.buf)
+  } catch {
+    return undefined
   }
 }
 
@@ -434,7 +520,39 @@ export function backup(
   lock: () => (() => void) | null = () => () => {},
 ): Outcome {
   if (!cfg.remote) return { skipped: 'no remote' }
-  const remote = cfg.remote
+  // one backup per workspace, manual or host: both use backup.git and its index.lock
+  const run = runLock(cfg)
+  if (!run) return { skipped: 'lock' }
+  try {
+    return backupLocked(cfg, ready, lock)
+  } finally {
+    run()
+  }
+}
+
+/** a pid file in the workspace (outside home, so not in the backup); a dead holder's file is taken over */
+function runLock(cfg: BackupCfg): (() => void) | null {
+  const f = join(cfg.ws, 'backup-run.lock')
+  for (let n = 0; n < 2; n++) {
+    try {
+      writeFileSync(f, String(process.pid), { flag: 'wx' })
+      return () => rmSync(f, { force: true })
+    } catch {
+      try {
+        const pid = Number(readFileSync(f, 'utf8'))
+        process.kill(pid, 0)
+        return null // alive
+      } catch (e) {
+        if ((e as { code?: string }).code === 'EPERM') return null
+        rmSync(f, { force: true }) // dead or unreadable
+      }
+    }
+  }
+  return null
+}
+
+function backupLocked(cfg: BackupCfg, ready: boolean, lock: () => (() => void) | null): Outcome {
+  const remote = cfg.remote!
   const fail = (error: string) => {
     const o = { error }
     record(cfg, o)
@@ -468,14 +586,11 @@ export function backup(
         git(cfg, ['reset', '-q'])
       }
     }
-    // memory first: it also writes home/memory-dream.at, which the add below picks up
-    const mem = snapshotMemory(cfg)
+    const mem = snapshot(cfg)
     if (mem) {
       git(cfg, ['reset', '-q'])
       return fail(mem)
     }
-    const add = git(cfg, ['add', '-A', '--', ...pathspecs(cfg.ws)])
-    if (!add.ok) return fail(`git add: ${add.err}`)
     // the staged blobs are what leaves the VM: scan them, not the work tree file
     const raw = git(cfg, ['diff', '--cached', '--raw', '--no-renames', '--diff-filter=d', '-z']).out.split(
       '\0',

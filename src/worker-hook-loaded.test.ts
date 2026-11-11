@@ -195,6 +195,46 @@ describe('loadedTexts and the home guard', () => {
     expect(run('make', d)).toBe(HOME_REASON)
   })
 
+  // claude-factory-ty63u: the minimal lines of two real rig scripts that a Makefile names. Each has a
+  // delete word and a home word on different lines. The guard denied every command in both trees.
+  const Q = String.fromCharCode(36)
+  const named = {
+    // a CI gate script: the bash =~ operator and mv
+    regex: [
+      '#!/usr/bin/env bash',
+      '# (it returns uuid.Nil / a default instead of an error when context is',
+      `    [[ "${Q}c" =~ ^0*[1-9][0-9]*${Q} ]] || die "bad count"`,
+      `    mv "${Q}tmp" "${Q}EXEMPTIONS"`,
+    ].join('\n'),
+    // a container check script: docker rm and a $HOME test in a container
+    container: [
+      '#!/usr/bin/env bash',
+      `  docker rm -f "${Q}be" "${Q}fe" >/dev/null 2>&1 || true`,
+      `    'test "${Q}(id -u)" = 10001 && test "${Q}HOME" = /opt/app' || {`,
+    ].join('\n'),
+  }
+  test.each(Object.keys(named))('allows each command in a tree whose Makefile names the %s script', k => {
+    const d = repo()
+    put(d, 'Makefile', 'check:\n\t./hack/check.sh\n')
+    put(d, 'hack/check.sh', named[k as keyof typeof named])
+    for (const cmd of ['pwd', 'git status', 'factory report --summary-file s.md', 'make check'])
+      expect(run(cmd, d)).toBeUndefined()
+  })
+
+  test.each([
+    ['one line', bad()],
+    ['cd, then a delete', 'cd ~\nr' + 'm -rf *\n'],
+    ['an assignment, then a delete', `H="${Q}HOME"\nr` + `m -rf "${Q}H"\n`],
+    ['a home API, then a delete', 'h = Path.home()\nshutil.rm' + 'tree(h)\n'],
+    ['a line join', 'r' + `m -rf \\\n  "${Q}HOME"\n`],
+  ])('still denies a home delete in a Makefile-named script: %s', (_, text) => {
+    const d = repo()
+    put(d, 'Makefile', 'clean:\n\t./hack/clean.sh\n')
+    put(d, 'hack/clean.sh', text)
+    expect(run('make clean', d)).toBe(HOME_REASON)
+    expect(run('pwd', d)).toBe(HOME_REASON)
+  })
+
   test.each(["sh -c 'bunx prettier --write .'", 'bun run fmt'])(
     'denies a bin that a command or script names: %s',
     cmd => {

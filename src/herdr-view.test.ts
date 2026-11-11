@@ -130,22 +130,12 @@ test('every exec and file read of a remote config passes on: machine', () => {
   expect(herdr.onOf({ cli: 'x', home: '/h' })).toBeUndefined()
 })
 
-test('a remote mod never ticks, never patrols and takes no lease', () => {
-  const remote = { cli: 'factory', home: '/w/home', machine: 'f-manager' }
-  const local = { cli: 'x', home: '/h' }
-  const now = 10_000_000
-  const jobs = (cfg: unknown, state = {}) =>
-    herdr.beatJobs(cfg, state, {}, now).map((j: { name: string }) => j.name)
-  expect(jobs(remote)).toEqual(['snapshot'])
-  expect(jobs(remote, { halt: { state: 'stopping' } })).toEqual(['snapshot'])
-  const words = herdr.beatJobs(remote, {}, {}, now).flatMap((j: { words: string[] }) => j.words)
-  for (const w of ['tick', 'patrol', 'brief', 'review', 'pm']) expect(words.includes(w)).toBe(false)
-  expect(herdr.beatJobs(remote, {}, {}, now)[0].words).toEqual(['snapshot', '--views', 'board,decisions'])
-  expect(jobs(local)).toEqual(['tick', 'patrol', 'brief', 'review', 'pm', 'decisions'])
-  expect(jobs(local, { readOnly: 'x' })).toEqual(['tick'])
-  expect(
-    herdr.beatJobs(local, {}, { patrol: now - 1 }, now).some((j: { name: string }) => j.name === 'patrol'),
-  ).toBe(false)
+test('the mod reads one snapshot and never ticks, patrols or takes the lease', () => {
+  expect(herdr.SNAPSHOT_WORDS).toEqual(['snapshot', '--views', 'board,decisions'])
+  for (const w of ['tick', 'patrol', 'brief', 'review', 'pm'])
+    expect(herdr.SNAPSHOT_WORDS.includes(w)).toBe(false)
+  expect(herdr.beatJobs).toBeUndefined()
+  expect(herdr.STEPS).toBeUndefined()
 })
 
 test('a remote action calls the factory CLI; the chat opens the hc terminal of the manager', () => {
@@ -244,7 +234,15 @@ test('interviewItems counts the beads of `factory decisions` once each, plus the
 test('parseSnapshot splits one snapshot into the board result and the decisions (claude-factory-hpmc.23)', () => {
   const out = JSON.stringify({ views: { board: { runs: [], manager: [] }, decisions: { rigs: [] } } })
   expect(herdr.parseSnapshot(0, out, '')).toEqual({
-    tick: { runs: [], manager: [], rigs: [], halt: undefined, readOnly: undefined },
+    tick: {
+      runs: [],
+      manager: [],
+      rigs: [],
+      halt: undefined,
+      readOnly: undefined,
+      managerLimited: null,
+      managerCodexAuth: null,
+    },
     decisions: { rigs: [] },
   })
   const bad = JSON.stringify({ views: { board: { error: 'no tick yet' }, decisions: { error: 'x' } } })
@@ -351,4 +349,44 @@ test('parseFlows gives the graph or the reason', () => {
 
 test('flowJobWords asks for JSON for one factory and one window', () => {
   expect(herdr.flowJobWords('ship', '7d')).toEqual(['flows', '--json', '--factory', 'ship', '--since', '7d'])
+})
+
+test('the board header names a limited manager, and parseTick carries the field', () => {
+  const until = new Date(2026, 10, 10, 14, 5).getTime()
+  expect(herdr.managerLimitText({ kind: 'seven_day', until })).toBe('manager: Claude limited until 14:05')
+  expect(herdr.managerLimitText(null)).toBe('')
+  const res = herdr.parseTick(
+    0,
+    JSON.stringify({ runs: [], manager: [], managerLimited: { kind: 'x', until } }),
+    '',
+  )
+  expect(res.managerLimited).toEqual({ kind: 'x', until })
+})
+
+test('chatArgv picks a codex chat on the machine while the manager is limited', () => {
+  const cfg = { cli: '/c/factory', home: '/h', machine: 'f-manager' }
+  expect(herdr.chatArgv(cfg, { kind: 'x', until: 1 })).toEqual([
+    'sh',
+    '-c',
+    expect.stringContaining('manager chat --codex'),
+    'f-manager',
+    '/h',
+    '/c/factory',
+  ])
+  expect(herdr.chatArgv(cfg, null)).toEqual(['hc', 'attach', 'f-manager/manager'])
+  expect(herdr.chatArgv({ cli: 'x', home: '/h' }, { kind: 'x', until: 1 })).toBeNull()
+  expect(herdr.chatLabel({ kind: 'x', until: 1 })).toBe('Manager chat (codex)')
+  expect(herdr.chatLabel(null)).toBe('Manager chat')
+})
+
+test('the board header names a refused manager codex key, and parseTick carries the field', () => {
+  expect(herdr.managerCodexAuthText({ at: 1, text: 'x' })).toBe('manager codex: key refused')
+  expect(herdr.managerCodexAuthText(null)).toBe('')
+  const res = herdr.parseTick(
+    0,
+    JSON.stringify({ runs: [], manager: [], managerCodexAuth: { at: 1, text: 'x' } }),
+    '',
+  )
+  expect(res.managerCodexAuth).toEqual({ at: 1, text: 'x' })
+  expect(herdr.parseTick(0, JSON.stringify({ runs: [], manager: [] }), '').managerCodexAuth).toBeNull()
 })

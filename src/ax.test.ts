@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, expect, test } from 'bun:test'
+import { afterAll, beforeEach, expect, spyOn, test } from 'bun:test'
 import {
   chmodSync,
   cpSync,
@@ -24,6 +24,7 @@ import * as worker from './worker'
 const parentEnv = { ...process.env }
 for (const key of Object.keys(process.env))
   if (key.startsWith('FACTORY_') || key.startsWith('BEADS_')) delete process.env[key]
+delete process.env.DEVENV_TASK_FILE
 
 const dir = join(tmpdir(), `ax-${process.pid}`)
 const calls = join(dir, 'calls.log')
@@ -35,11 +36,12 @@ writeFileSync(
   `#!/bin/sh
 echo "$*" >> ${calls}
 echo "\${AX_AUTH_TOKEN:+set}" >> ${dir}/auth
+[ -f ${dir}/axerr ] && { cat ${dir}/axerr >&2; exit 1; }
 case "$3 $4" in
   "apply -f") cat > ${dir}/applied; echo created ;;
-  "get task") [ -f ${dir}/get ] && cat ${dir}/get || { echo 'getting task: rpc error: code = NotFound' >&2; exit 1; } ;;
+  "get task") [ -f ${dir}/get ] && cat ${dir}/get || { printf 'Error: getting task "%s": rpc error: code = NotFound desc = task "%s" not found in atespace "%s"\\n' "$5" "$5" "$2" >&2; exit 1; } ;;
   "get tasks"|"get workspaces") [ -f ${dir}/listfail ] && { cat ${dir}/list; exit 1; }; [ -f ${dir}/list ] && cat ${dir}/list || { echo 'boom' >&2; exit 1; } ;;
-  "get workspace") [ -f ${dir}/wsfail ] && { echo 'boom' >&2; exit 1; }; [ -f ${dir}/ws ] && cat ${dir}/ws || { echo 'getting workspace: rpc error: code = NotFound' >&2; exit 1; } ;;
+  "get workspace") [ -f ${dir}/wsfail ] && { echo 'boom' >&2; exit 1; }; [ -f ${dir}/ws ] && cat ${dir}/ws || { printf 'Error: getting workspace "%s": rpc error: code = NotFound desc = workspace "%s" not found in atespace "%s"\\n' "$5" "$5" "$2" >&2; exit 1; } ;;
   "delete task") if [ -f ${dir}/deltask ]; then cat ${dir}/deltask >&2; exit 1; fi ;;
   "delete workspace") if [ -f ${dir}/delws ]; then cat ${dir}/delws >&2; exit 1; fi ;;
   ssh*) cat ${dir}/ssh ;;
@@ -91,6 +93,7 @@ beforeEach(() => {
     'updated',
     'ws',
     'wsfail',
+    'axerr',
   ])
     rmSync(join(dir, f), { force: true })
 })
@@ -103,7 +106,7 @@ test('the AX fixtures ignore inherited worker and Beads settings', () => {
       'test',
       import.meta.filename,
       '-t',
-      '^the worker briefs once|^syncBeads recovers a real bd',
+      '^the worker briefs once|^the AX fixture clears inherited settings',
     ],
     {
       env: {
@@ -113,9 +116,34 @@ test('the AX fixtures ignore inherited worker and Beads settings', () => {
         FACTORY_BEADS_REMOTE: '',
         BEADS_DIR: join(dir, 'parent-beads'),
       },
-      timeout: 20_000,
+      timeout: 30_000,
     },
   )
+  expect(p.exitCode, p.stderr.toString()).toBe(0)
+})
+
+test('the AX fixture clears inherited settings before any test', () => {
+  for (const key of ['FACTORY_HARNESS', 'FACTORY_REPO', 'FACTORY_BEADS_REMOTE', 'BEADS_DIR'])
+    expect(process.env[key]).toBeUndefined()
+})
+
+test('the AX fixtures ignore inherited service tasks', () => {
+  const tasks = join(dir, 'parent-tasks.json')
+  writeFileSync(
+    tasks,
+    JSON.stringify([
+      {
+        name: 'devenv:processes:web',
+        type: 'process',
+        command: 'exit 0',
+        process: { start: { enable: true }, ready: { exec: 'exit 0' } },
+      },
+    ]),
+  )
+  const p = Bun.spawnSync([process.execPath, 'test', import.meta.filename, '-t', '^the worker briefs once'], {
+    env: { ...process.env, DEVENV_TASK_FILE: tasks },
+    timeout: 20_000,
+  })
   expect(p.exitCode, p.stderr.toString()).toBe(0)
 })
 
@@ -177,14 +205,36 @@ test('names lists the first column, and is null on a failure or a table with no 
   expect(ax.names('tasks')).toEqual([]) // an empty cluster is a list, not a failure
 })
 
+const NF_DEL_TASK =
+  'Error: deleting task a/f-a-1: rpc error: code = NotFound desc = task "f-a-1" not found in atespace "a"'
+const NF_DEL_WS =
+  'Error: deleting workspace a/f-a-1: rpc error: code = NotFound desc = workspace "f-a-1" not found in atespace "a"'
+const NEG = (kind: string) => [
+  'Error: context "x" not found',
+  'sh: ax-wrap: command not found',
+  'rpc error: code = NotFound',
+  `Error: rpc error: code = NotFound desc = ${kind} "f-other" not found in atespace "a"`,
+  `Error: rpc error: code = NotFound desc = ${kind === 'task' ? 'workspace' : 'task'} "f-a-1" not found in atespace "a"`,
+]
+
 test('remove runs both deletes and returns the failure text, not a not-found', () => {
   expect(ax.remove('f-a-1')).toBeUndefined()
   expect(logged().filter(l => l.includes('delete '))).toHaveLength(2)
-  writeFileSync(join(dir, 'deltask'), 'rpc error: code = NotFound')
-  writeFileSync(join(dir, 'delws'), 'rpc error: code = NotFound')
+  writeFileSync(join(dir, 'deltask'), NF_DEL_TASK)
+  writeFileSync(join(dir, 'delws'), NF_DEL_WS)
   expect(ax.remove('f-a-1')).toBeUndefined()
-  writeFileSync(join(dir, 'deltask'), 'forbidden')
+  writeFileSync(join(dir, 'axerr'), 'Error: context "x" not found')
+  rmSync(join(dir, 'deltask'))
   rmSync(join(dir, 'delws'))
+  const both = ax.remove('f-a-1')!
+  expect(both).toContain('delete task:')
+  expect(both).toContain('delete workspace:')
+  expect(both).toContain('context "x" not found')
+  rmSync(join(dir, 'axerr'))
+  writeFileSync(join(dir, 'deltask'), NF_DEL_TASK.replaceAll('f-a-1', 'f-other'))
+  expect(ax.remove('f-a-1')).toContain('delete task:')
+  rmSync(join(dir, 'deltask'))
+  writeFileSync(join(dir, 'deltask'), 'forbidden')
   expect(ax.remove('f-a-1')).toContain('forbidden')
   expect(logged().at(-1)).toContain('delete workspace f-a-1') // the second delete ran anyway
   writeFileSync(join(dir, 'deltask'), 'x'.repeat(500))
@@ -337,6 +387,15 @@ test('workspaceExists: true when ax has it, false when not found, and any other 
   writeFileSync(join(dir, 'wsfail'), '')
   expect(() => ax.workspaceExists('f-manager')).toThrow('boom')
   expect(logged().at(-1)).toEndWith('get workspace f-manager')
+})
+
+test('workspaceExists: only the NotFound text for this workspace name is false', () => {
+  expect(ax.workspaceExists('f-a-1')).toBe(false)
+  const neg = NEG('workspace')
+  for (const e of [neg[0]!, neg[3]!, neg[4]!]) {
+    writeFileSync(join(dir, 'axerr'), e)
+    expect(() => ax.workspaceExists('f-a-1')).toThrow(/^ax get workspace: /)
+  }
 })
 
 test('launchIdOf reads FACTORY_AX_LAUNCH_ID from the task YAML, and launchId gets the task', () => {
@@ -679,6 +738,15 @@ test("a task's phase is read from ax get, and a deleted task has none", () => {
   expect(ax.phase('t')).toBeNull()
   writeFileSync(join(dir, 'get'), 'metadata:\n  name: t\nstatus:\n  phase: Suspended\n  actor: t\n')
   expect(ax.phase('t')).toBe('Suspended')
+})
+
+test('only the NotFound text for this task name reads as a deleted task', () => {
+  expect(ax.read('f-a-1')).toEqual({ phase: null })
+  for (const e of NEG('task')) {
+    writeFileSync(join(dir, 'axerr'), e)
+    expect(() => ax.read('f-a-1')).toThrow(/^ax get task: /)
+    expect(() => ax.read('f-a-1')).toThrow(e)
+  }
 })
 
 const AS_WORKER = [
@@ -2768,6 +2836,19 @@ test('remoteManager skips AX with no cluster and refuses a running manager', () 
     expect(ax.remoteManager()).toMatch(/factory attach/)
     rmSync(join(dir, 'get'))
     expect(ax.remoteManager()).toBeUndefined() // not found: no manager task
+    const warn = spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      expect(ax.remoteManager()).toBeUndefined()
+      expect(warn).toHaveBeenCalledTimes(0)
+      writeFileSync(join(dir, 'axerr'), 'Error: context "x" not found')
+      expect(ax.remoteManager()).toBeUndefined()
+      expect(warn).toHaveBeenCalledTimes(1)
+      const msg = String(warn.mock.calls[0]?.[0])
+      expect(msg).toContain('warning: AX unreachable, manager lease not checked:')
+      expect(msg).toContain('context "x" not found')
+    } finally {
+      warn.mockRestore()
+    }
   } finally {
     process.env = saved
   }
@@ -2803,7 +2884,7 @@ test('launchManager applies the manager task with its command and env, then retr
     const prefixed = JSON.parse(readFileSync(join(dir, 'policy'), 'utf8')).rules.flatMap(
       (x: any) => x.https?.pathPrefixes ?? [],
     )
-    expect(prefixed).toEqual(['/repos/zach-source/', '/zach-source/'])
+    expect(prefixed).toEqual(['/repos/zach-source/', '/zach-source/', '/backend-api/codex/'])
     expect(task.spec.debug).toBe(true)
     expect(task.spec.command).toEqual(['factory', 'manager', 'host', '--model', 'opus'])
     const env = Object.fromEntries(
@@ -2828,7 +2909,7 @@ test('launchManager applies the manager task with its command and env, then retr
     expect(
       rules.some((x: { https?: { hostnames: string[] } }) => x.https?.hostnames.includes('claude.ai')),
     ).toBe(true)
-    expect(rules.slice(-3)).toEqual([
+    expect(rules.filter((x: { http?: unknown }) => x.http)).toEqual([
       { http: { hostnames: ['ax.example.svc'], ports: { numbers: [8080] } } },
       { http: { hostnames: ['router.example.svc'], ports: { numbers: [80] } } },
       { http: { hostnames: ['broker.example.svc'], ports: { numbers: [8080] } } },
@@ -2856,12 +2937,18 @@ test('managerEnv sets the token swap to a broker POST only when the broker is se
   ).toBe('curl -sSf -m 25 -X POST http://broker.example.svc:8080/token/best')
 })
 
+// the Codex fallback rules (y3f8w.1) follow the manager's other rules
+const CODEX = [ax.OPENAI_RULE, ax.CODEX_CHATGPT_RULE]
 test('managerEgress adds an http rule for each in-cluster address that is a URL', () => {
-  expect(ax.managerEgress({})).toEqual([{ hosts: ['claude.ai'] }])
-  expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'not a url' })).toEqual([{ hosts: ['claude.ai'] }])
+  expect(ax.managerEgress({})).toEqual([{ hosts: ['claude.ai'] }, ...CODEX])
+  expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'not a url' })).toEqual([
+    { hosts: ['claude.ai'] },
+    ...CODEX,
+  ])
   expect(ax.managerEgress({ FACTORY_AX_MANAGER_ROUTER: 'http://r.example.svc' })).toEqual([
     { hosts: ['claude.ai'] },
     { hosts: ['r.example.svc'], port: 80, http: true },
+    ...CODEX,
   ])
 })
 
@@ -2964,6 +3051,7 @@ test('managerEgress adds one Dolt rule for each beadsRemote host:port, and none 
     { hosts: ['claude.ai'] },
     dolt(['beads-dolt.beads.svc.cluster.local'], 50051),
     dolt(['dolt.example.com'], 443),
+    ...CODEX,
   ])
   const own = rig('g', 'https://own.example.com:8443/x', [
     { hosts: ['own.example.com'], port: 8443, key: 'ACME_DOLT', header: 'X-Auth', prefix: 'T ' },
@@ -2975,15 +3063,16 @@ test('managerEgress adds one Dolt rule for each beadsRemote host:port, and none 
     prefix: 'T ',
     port: 8443,
   })
-  expect(ax.managerEgress({}, [rig('d')])).toEqual([{ hosts: ['claude.ai'] }])
+  expect(ax.managerEgress({}, [rig('d')])).toEqual([{ hosts: ['claude.ai'] }, ...CODEX])
 })
 
 test('managerEgress adds the Linear rule only for a rig with --linear', () => {
   const linear = { linear: { team: 't' } }
-  expect(ax.managerEgress({}, [{}])).toEqual([{ hosts: ['claude.ai'] }])
+  expect(ax.managerEgress({}, [{}])).toEqual([{ hosts: ['claude.ai'] }, ...CODEX])
   expect(ax.managerEgress({}, [linear])).toEqual([
     { hosts: ['claude.ai'] },
     { hosts: ['api.linear.app'], key: 'LINEAR', header: 'Authorization', prefix: '' },
+    ...CODEX,
   ])
 })
 
@@ -3243,6 +3332,7 @@ test('managerEgress gives an https AX server a keyed rule and no http rule', () 
   expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'https://ax.example.svc:8443' })).toEqual([
     { hosts: ['claude.ai'] },
     { hosts: ['ax.example.svc'], port: 8443, key: 'AX_AUTH', header: 'Authorization', prefix: 'Bearer ' },
+    ...CODEX,
   ])
   expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'https://ax.example.svc' })[1]).toMatchObject({
     port: 443,
@@ -3272,7 +3362,9 @@ test('launchManager with an https AX server injects AX_AUTH and sets a placehold
     expect(env.AX_AUTH_TOKEN).toBe('placeholder')
     expect(env.AX_SERVER).toBe('https://ax.example.svc:8443')
     const rules = JSON.parse(readFileSync(join(dir, 'policy'), 'utf8')).rules
-    expect(rules.at(-1)).toEqual({
+    expect(
+      rules.find((x: { https?: { hostnames: string[] } }) => x.https?.hostnames.includes('ax.example.svc')),
+    ).toEqual({
       https: {
         hostnames: ['ax.example.svc'],
         ports: { numbers: [8443] },

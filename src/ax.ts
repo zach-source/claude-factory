@@ -311,6 +311,9 @@ function ax(args: string[], stdin?: string, timeout = 30_000) {
     err: p.stderr.toString().trim(),
   }
 }
+/** ax's stderr says KIND NAME does not exist: the AX server's NotFound text, with this name (stigenai/ax internal/server/server.go) */
+const missing = (err: string, kind: 'task' | 'workspace', name: string) =>
+  err.includes(`code = NotFound desc = ${kind} ${JSON.stringify(name)} not found`)
 function must(args: string[], stdin?: string) {
   const r = ax(args, stdin)
   if (!r.ok) throw new Error(`ax ${args.slice(0, 2).join(' ')}: ${r.err || r.out.trim()}`)
@@ -724,7 +727,7 @@ export function read(task: string): { phase: string | null; failure?: string; qu
       failure: failureOf(r.out),
       queued: phaseOf(r.out) === 'Pending' && isCapacityWait(r.out),
     }
-  if (/not ?found/i.test(r.err)) return { phase: null }
+  if (missing(r.err, 'task', task)) return { phase: null }
   throw new Error(`ax get task: ${r.err}`)
 }
 export const phase = (task: string) => read(task).phase
@@ -733,7 +736,7 @@ export const phase = (task: string) => read(task).phase
 export function workspaceExists(name: string) {
   const r = ax(['get', 'workspace', name])
   if (r.ok) return true
-  if (/not ?found/i.test(r.err)) return false
+  if (missing(r.err, 'workspace', name)) return false
   throw new Error(`ax get workspace: ${r.err}`)
 }
 
@@ -923,9 +926,9 @@ export const resume = (task: string) => must(['resume', 'task', task])
  */
 export function remove(task: string) {
   const fails: string[] = []
-  for (const kind of ['task', 'workspace']) {
+  for (const kind of ['task', 'workspace'] as const) {
     const r = ax(['delete', kind, task])
-    if (!r.ok && !/not ?found/i.test(r.err))
+    if (!r.ok && !missing(r.err, kind, task))
       fails.push(`delete ${kind}: ${(r.err || r.out.trim()).slice(0, 200)}`)
   }
   return fails.length ? fails.join('; ') : undefined
@@ -958,7 +961,7 @@ export function remoteManager(): string | undefined {
   const task = managerTask()
   const r = ax(['get', 'task', task], undefined, 5_000)
   if (r.ok) return managerRefusal(phaseOf(r.out), process.env, task)
-  if (!/not ?found/i.test(r.err))
+  if (!missing(r.err, 'task', task))
     console.error(`warning: AX unreachable, manager lease not checked: ${r.err}`)
   return undefined
 }
@@ -1149,11 +1152,29 @@ export function withDoltEgress(egress: Egress[] | undefined, rig?: DoltRig): Egr
   return has ? egress : [...(egress ?? []), rule]
 }
 
+/** Codex's ChatGPT login: only the /backend-api/codex/ paths open, and the gateway injects the vault tokens */
+export const CODEX_CHATGPT_RULE: Egress = {
+  hosts: ['chatgpt.com'],
+  pathPrefixes: ['/backend-api/codex/'],
+  headers: [
+    { header: 'Authorization', prefix: 'Bearer ', key: 'CODEX_CHATGPT' },
+    { header: 'ChatGPT-Account-ID', prefix: '', key: 'CODEX_CHATGPT_ACCOUNT' },
+  ],
+}
+/** Codex's API-key login: the gateway injects the vault key OPENAI */
+export const OPENAI_RULE: Egress = {
+  hosts: ['api.openai.com'],
+  key: 'OPENAI',
+  header: 'Authorization',
+  prefix: 'Bearer ',
+}
+
 /**
  * the manager's egress beyond a worker's defaults (Anthropic, GitHub, the caches): claude.ai for Claude's login,
  * and plain-HTTP (h2c) rules for the in-cluster services its VM calls: the AX server, the atenet router and the
  * policy broker. Through the gateway, plain HTTP to a service needs an `http` rule; an `https` rule fails.
  * A value that is not a URL adds no rule. A rig's beadsRemote adds its Dolt rule, and a --linear rig adds Linear's.
+ * The OpenAI API and the Codex ChatGPT login let the manager fall back to Codex when Claude is limited (y3f8w.1).
  * A laptop CURSOR_API_KEY (the pool meter) adds the api2.cursor.sh rules, with the vault key CURSOR_API_KEY on /auth/.
  */
 export function managerEgress(
@@ -1204,7 +1225,15 @@ export function managerEgress(
         { hosts: ['api2.cursor.sh'] },
       ]
     : []
-  return [{ hosts: ['claude.ai'] }, ...rules, ...dolt.values(), ...linear, ...cursor]
+  return [
+    { hosts: ['claude.ai'] },
+    ...rules,
+    ...dolt.values(),
+    ...linear,
+    OPENAI_RULE,
+    CODEX_CHATGPT_RULE,
+    ...cursor,
+  ]
 }
 
 /**

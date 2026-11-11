@@ -1,6 +1,6 @@
 // claude-factory-hpmc.7: the front-end parity check (spec 008, FR-018, FR-019).
 import { afterAll, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { CATALOG } from './core/catalog'
@@ -40,7 +40,7 @@ test('AC1: the real data has no problem, and the gaps print', async () => {
   expect(await checkParity(CATALOG, FRONT_ENDS, gaps)).toEqual([])
 })
 
-test('AC2: the gap file holds the four seed gaps and the Herdr mod tab gaps (hpmc.14)', () => {
+test('4px5z AC1: all 17 front-end gaps name their source tasks', () => {
   const row = (frontEnd: Gap['frontEnd'], bead: string) => ({
     op: 'catalog.echo',
     frontEnd,
@@ -55,21 +55,21 @@ test('AC2: the gap file holds the four seed gaps and the Herdr mod tab gaps (hpm
     ['runners.show', 19, 'Runners'],
     ['runs.screen', 20, 'AX worker screens'],
   ] as const
-  expect(parseGaps(readFileSync(GAPS_FILE, 'utf8'))).toEqual([
+  expect(parseGaps(readFileSync(GAPS_FILE, 'utf8')).filter(g => g.op !== 'gc.run')).toEqual([
     row('cli', 'claude-factory-hpmc.8'),
     row('claude-mod', 'claude-factory-hpmc.9'),
     row('herdr-mod', 'claude-factory-hpmc.10'),
     ...tabs.map(([op, n, tab]) => ({
       op,
       frontEnd: 'herdr-mod' as const,
-      bead: `claude-factory-hpmc.${n}`,
+      bead: 'claude-factory-hpmc.10',
       reason: `the Herdr app mod has no ${tab} tab`,
     })),
     row('web', 'claude-factory-hpmc.11'),
     ...(['claude-mod', 'web'] as const).map(frontEnd => ({
       op: 'snapshot.show',
       frontEnd,
-      bead: 'claude-factory-hpmc.30',
+      bead: frontEnd === 'web' ? 'claude-factory-hpmc.11' : 'claude-factory-hpmc.9',
       reason: expect.any(String),
     })),
     ...(
@@ -80,10 +80,37 @@ test('AC2: the gap file holds the four seed gaps and the Herdr mod tab gaps (hpm
     ).map(([frontEnd, n, reason]) => ({
       op: 'flows.show',
       frontEnd,
-      bead: `claude-factory-hpmc.${n}`,
+      bead: frontEnd === 'web' ? 'claude-factory-hpmc.11' : 'claude-factory-hpmc.9',
       reason,
     })),
   ])
+  expect(parseGaps(readFileSync(GAPS_FILE, 'utf8'))).toHaveLength(17)
+})
+
+test('n69b2 AC6 gc has exactly three explicit front-end gaps with open beads', () => {
+  const gaps = parseGaps(readFileSync(GAPS_FILE, 'utf8')).filter(g => g.op === 'gc.run')
+  expect(gaps.map(g => [g.frontEnd, g.bead])).toEqual([
+    ['web', 'claude-factory-5aweq'],
+    ['claude-mod', 'claude-factory-j3zj6'],
+    ['herdr-mod', 'claude-factory-zsuj2'],
+  ])
+  expect(() => parseGaps(JSON.stringify([...gaps, gaps[0]]))).toThrow('duplicate')
+  expect(() => parseGaps(JSON.stringify([{ ...gaps[0], op: 'unknown.gc' }]))).toThrow('not in the catalog')
+  for (const status of ['open', 'closed']) {
+    const lines: string[] = []
+    expect(
+      parity({
+        file: GAPS_FILE,
+        print: line => lines.push(line),
+        show: id => ({
+          code: 0,
+          out: JSON.stringify([{ id, status: gaps.some(g => g.bead === id) ? status : 'open' }]),
+          err: '',
+        }),
+      }),
+    ).toBe(status === 'open' ? 0 : 1)
+    if (status === 'closed') expect(lines.filter(line => line.includes('gc.run'))).toHaveLength(3)
+  }
 })
 
 test('AC3: a generic view that cannot run catalog.echo is a problem unless a gap covers it', async () => {
@@ -299,3 +326,50 @@ test('AC8: a missing or bad gap file runs show zero times', () => {
   expect(runParity(f, show)).toEqual({ code: 1, lines: ['parity: parity-gaps.json: not an array'] })
   expect(calls).toBe(0)
 })
+
+test('4px5z AC2: a relocated CLI uses its own data and refuses closed beads', () => {
+  const root = resolve(import.meta.dir, '..')
+  mkdirSync(join(root, '.scratch'), { recursive: true })
+  const dir = mkdtempSync(join(root, '.scratch/parity-package-'))
+  gapDirs.push(dir)
+  for (const name of ['bin', 'src', 'mod', 'factories', 'package.json'])
+    cpSync(join(root, name), join(dir, name), { recursive: true })
+  symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'))
+  const docker = readFileSync(join(root, 'Dockerfile.worker'), 'utf8')
+  if (/^COPY .* parity-gaps.json \.\/$/m.test(docker)) cpSync(GAPS_FILE, join(dir, 'parity-gaps.json'))
+  const tools = join(dir, 'tools')
+  mkdirSync(tools)
+  writeFileSync(
+    join(tools, 'bd'),
+    `#!/bin/sh
+printf '%s\\n' "$2" >> '${dir}/calls'
+printf '[{"id":"%s","status":"%s"}]' "$2" "$PARITY_STATUS"
+`,
+    { mode: 0o755 },
+  )
+  const { FACTORY_OUTBOX, FACTORY_FROM, ...env } = process.env
+  void [FACTORY_OUTBOX, FACTORY_FROM]
+  const run = (status: string) =>
+    Bun.spawnSync([join(dir, 'bin/factory'), 'parity'], {
+      cwd: root,
+      timeout: 25_000,
+      env: {
+        ...env,
+        PATH: `${tools}:${env.PATH}`,
+        FACTORY_HOME: join(dir, 'home'),
+        FACTORY_SELF_UPDATE: '0',
+        PARITY_STATUS: status,
+      },
+    })
+  const open = run('open')
+  expect(open.exitCode).toBe(0)
+  expect(open.stdout.toString()).toContain('17 gaps, all beads open')
+  rmSync(join(dir, 'parity-gaps.json'))
+  writeFileSync(join(dir, 'calls'), '')
+  expect(run('open').exitCode).toBe(1)
+  expect(readFileSync(join(dir, 'calls'), 'utf8')).toBe('')
+  cpSync(GAPS_FILE, join(dir, 'parity-gaps.json'))
+  const closed = run('closed')
+  expect(closed.exitCode).toBe(1)
+  expect(closed.stdout.toString()).toContain('status closed')
+}, 30_000)

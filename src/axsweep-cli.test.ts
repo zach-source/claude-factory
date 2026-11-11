@@ -184,6 +184,50 @@ test('AC7: a halted home and a home with no ax rig make no ax call', () => {
   expect(calls()).toEqual([])
 })
 
+test('a halted home clears the error rows of an old failed pass', () => {
+  setup()
+  // tasks.txt is missing: the pass fails and shows an error row
+  pass()
+  expect(JSON.parse(readFileSync(join(home(), 'ax-sweep.json'), 'utf8'))).toHaveLength(1)
+  writeFileSync(
+    join(home(), 'halt.json'),
+    JSON.stringify({ state: 'paused', at: Date.now(), told: {}, closed: {} }),
+  )
+  pass()
+  expect(JSON.parse(readFileSync(join(home(), 'ax-sweep.json'), 'utf8'))).toEqual([])
+})
+
+test('a home with no ax rig clears the error rows of an old failed pass', () => {
+  setup(false)
+  const f = join(home(), 'ax-sweep.json')
+  writeFileSync(f, JSON.stringify([{ id: 'ax-sweep', error: 'ax-sweep: old' }]))
+  pass()
+  expect(JSON.parse(readFileSync(f, 'utf8'))).toEqual([])
+})
+
+test('a halted home clears the old rows of the dispatch and label passes', () => {
+  setup()
+  const rows = JSON.stringify([{ id: 'rig:a', error: 'old' }])
+  writeFileSync(join(home(), 'dispatch.json'), rows)
+  writeFileSync(join(home(), 'labels.json'), rows)
+  writeFileSync(
+    join(home(), 'halt.json'),
+    JSON.stringify({ state: 'paused', at: Date.now(), told: {}, closed: {} }),
+  )
+  pass()
+  expect(JSON.parse(readFileSync(join(home(), 'dispatch.json'), 'utf8'))).toEqual([])
+  expect(JSON.parse(readFileSync(join(home(), 'labels.json'), 'utf8'))).toEqual([])
+})
+
+test('a home with no rigs clears the old rows of the dispatch pass', () => {
+  setup()
+  writeFileSync(join(home(), 'dispatch.json'), JSON.stringify([{ id: 'rig:a', error: 'old' }]))
+  writeFileSync(join(home(), 'dispatch.stamp'), '')
+  writeFileSync(join(home(), 'rigs.json'), '[]')
+  pass()
+  expect(JSON.parse(readFileSync(join(home(), 'dispatch.json'), 'utf8'))).toEqual([])
+})
+
 test('AC8: a failed list deletes nothing and shows an error row; a failed delete does not stop the others', () => {
   const { doneId } = setup()
   const a = taskName(doneId, 1)
@@ -222,4 +266,33 @@ test('AC8: a missing ax binary does not break the beads pass; the sweep deletes 
   expect(rows).toHaveLength(1)
   expect(rows[0].error).toStartWith('ax-sweep:')
   expect(readFileSync(state, 'utf8')).toBe(before)
+})
+
+const park = (liveId: string, value: object) => {
+  const f = join(home(), 'runs', liveId, 'state.json')
+  const s = JSON.parse(readFileSync(f, 'utf8'))
+  s.snapshot.value = value
+  s.snapshot.context.seq = 5
+  s.snapshot.context.pane = null
+  s.snapshot.context.wakeAt = Date.now() + 3_600_000
+  writeFileSync(f, JSON.stringify(s))
+  writeFileSync(join(dir, 'tasks.txt'), table('NAME ATESPACE PHASE', [taskName(liveId, 5)]))
+  writeFileSync(join(dir, 'ws.txt'), table('NAME ATESPACE GIT-REPOS', [taskName(liveId, 5)]))
+}
+
+test("AC3: a pass deletes a parked run's task at its own seq", () => {
+  const { liveId } = setup()
+  park(liveId, { work: 'waiting' })
+  pass()
+  expect(deletes().sort()).toEqual([
+    `-a factory delete task ${taskName(liveId, 5)}`,
+    `-a factory delete workspace ${taskName(liveId, 5)}`,
+  ])
+})
+
+test("AC3: a pass keeps a working run's task at its own seq with no pane", () => {
+  const { liveId } = setup()
+  park(liveId, { work: 'working' })
+  pass()
+  expect(deletes()).toEqual([])
 })

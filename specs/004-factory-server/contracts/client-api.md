@@ -7,6 +7,8 @@ The person's clients call this API: the console (the `mod` plugin), the factory 
 - HTTPS with mutual TLS on port 8444 of the `factory` Service. This port accepts only a client certificate from the person CA. A connection that completes the TLS handshake is the person (research R2).
 - `factory cert person` issues the certificate once. The person keeps it on the laptop in `~/.config/factory/`.
 - The server does not accept worker tokens on this port.
+- The dormant patrol API uses a separate identity and listener. See [the patrol ADR](../../../docs/architecture/adr-patrol-api-identity-lease.md).
+  Only tests construct that listener. It permits scoped metadata and remote leases. It denies worker mail and owner operations.
 - The laptop reaches the Service through the cluster gateway on the LAN. The client sets the server address in `FACTORY_SERVER`. When `FACTORY_SERVER` is not set, the CLI works on the local factory home as it does today. This is the way back (FR-016).
 
 ## Read endpoints
@@ -28,6 +30,7 @@ Each action endpoint takes `Idempotency-Key`, as in the worker API.
 
 | Method and path                                 | Body                                    | Replaces                            |
 | ----------------------------------------------- | --------------------------------------- | ----------------------------------- |
+| `POST /v1/gc` | `{worktrees?, dryRun?, days?, rig?}` | `factory gc` |
 | `POST /v1/runs/<id>/decide`                     | `{outcome, note}`                       | `factory decide`                    |
 | `POST /v1/runs/<id>/mail`                       | `{to, text}`                            | `factory mail` from the person      |
 | `POST /v1/runs/<id>/goto`, `/abort`             |                                         | `factory goto`, `factory rm`        |
@@ -35,6 +38,18 @@ Each action endpoint takes `Idempotency-Key`, as in the worker API.
 | `POST /v1/halt`                                 | `{mode: "stop" or "resume"}`            | `factory stop`, `factory resume`    |
 | `POST /v1/decisions/<key>/answer`               | `{text}`                                | `factory decisions answer`          |
 | `PUT /v1/rigs/<name>`, `DELETE /v1/rigs/<name>` | the rig fields                          | `factory rig add`, `factory rig rm` |
+
+## Gc results
+
+`POST /v1/gc` invokes `gc.run` without a CLI child.
+It uses the closed inputs in [the gc ADR](../../../docs/architecture/adr-gc-core-parity.md#closed-input-contract).
+Preview uses the same POST and caller checks.
+The HTTP transport writes audit and idempotency records for previews too.
+
+A successful reply is JSON: `{code: 0, out: string, err: string}`.
+The catalog's text output describes `out`. Clients must emit both fields to their own streams without extra newlines.
+Nonzero results retain status 422 and the existing `{refused}` body.
+The timeout stays 60 s. A timed-out pass can continue. The client does not retry the call.
 
 ## Rules kept from today
 
@@ -49,16 +64,19 @@ Set `FACTORY_SERVER` to an origin to send CLI forms to this API. Without it, the
 - For `https:`, the client reads `~/.config/factory/person.crt`, `person.key` and `ca.crt`. If one file is missing, the CLI exits 1 and names the path.
 - A worker ignores `FACTORY_SERVER`. A worker has `FACTORY_FROM` other than `manager`, or `FACTORY_RUN`, `FACTORY_DEF_NAME`, or `BEADS_ACTOR` that starts with `factory/`.
 - If `FACTORY_FROM` is `manager`, the client refuses all forms except `mail` and the reads. The reads are `show`, `status`, `prs`, `backlog`, `decisions [list]`, `plan` and `metrics`.
-- If `FACTORY_PATROL` is set, the client refuses `tick`, `stop`, `resume`, `decide`, `start` and `decisions answer`.
+- If `FACTORY_PATROL` is set, the client refuses `tick`, `stop`, `resume`, `decide`, `start`, `gc` and `decisions answer`.
 - A refusal sends no request.
 - `mail` sends the `cwd` of the client. If `cwd` is inside the run worktree, the server must answer with a 4xx. This is the `managerSender` check in `src/cli.ts`. It is a duty of claude-factory-akiq.7.
 - Each path segment (run, node, rig, bead) must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`.
 - Each POST has a new `Idempotency-Key` and `content-type: application/json`.
-- A 2xx body goes to stdout and the exit code is 0. Any other status writes `factory server: <status> <first 500 characters>` to stderr and the exit code is 1.
+- `gc` decodes the result above. Other 2xx bodies go to stdout with exit code 0.
+  Other statuses write `factory server: <status> <first 500 characters>` to stderr with exit code 1.
 - If the request fails, the CLI exits 1. It does not use the local home.
 
 | CLI form                                              | Request                                                       |
 | ----------------------------------------------------- | ------------------------------------------------------------- |
+| `gc [--days N] [--dry-run]` | `POST /v1/gc {days?, dryRun?}` |
+| `gc --worktrees [--rig ID] [--dry-run]` | `POST /v1/gc {worktrees: true, rig?, dryRun?}` |
 | `tick`                                                | `GET /v1/board`                                               |
 | `show <run>`                                          | `GET /v1/runs/<run>`                                          |
 | `status`, `status <run>`                              | `GET /v1/status`, `GET /v1/status?run=<run>`                  |
@@ -79,7 +97,8 @@ The server checks the client certificate before it reads a request. It does not 
 
 - Start the listener with `--client-port`, `--tls-cert`, `--tls-key` and `--person-ca`. Give all four or none.
 - A request with an `Authorization` header gets 403. This holds for any value and any route. A worker token never opens this port.
-- The server serves only the routes in the tables above. `PUT` and `DELETE` on `/v1/rigs/<name>` (claude-factory-tsam) give 404.
+- The operation catalog defines the routes. The tables show the common client forms.
+  `PUT` and `DELETE` on `/v1/rigs/<name>` (claude-factory-tsam) give 404.
 - `GET /v1/events` streams `text/event-stream`. Each board change is one event: `id: <n>` and `data: <board JSON>`. The query is empty or `?after=<digits>`; any other query gives 400. The server sends the retained events with an id above `after` (default 0), then the new ones. It keeps the last 256 events in memory. The ids restart with the server: after a restart, reconnect with `after=0`. The connection stays open until the client or the server closes it. The server closes a client that falls more than 256 events behind.
 - `GET /v1/board` gives the result of the last tick of the server. It gives 503 before the first tick. It runs no CLI command.
 - A decision answer goes to `POST /v1/decisions/<rig>/<bead>/answer`. A decision can only be made on this port. The health port (8080) gives 404 for `decide`.
@@ -94,5 +113,7 @@ The server checks the client certificate before it reads a request. It does not 
 - A body is at most 128 KiB. A free-text field has 1 to 65536 characters and no U+0000. A `start` goal must not hold the word `--owned`.
 - Each POST needs `content-type: application/json`. Each POST that changes state also needs `Idempotency-Key`. The server keeps each action answer for 24 h in `<home>/client-idempotency.json` (mode 0600). The same key and the same request give the stored answer, also after a restart. The same key with another request gives 409. If the file is corrupt, the server gives 503 and runs no action. The server runs one action at a time.
 - Each POST that changes state and passes the form check adds one line to `<home>/client-actions.jsonl`. The line has the time, client address, method, path, key and status. A `decide` line also has the outcome. The line holds no free text.
-- Each action runs `cli.ts` as a child process with the server home. The child env has no `FACTORY_SERVER`, `FACTORY_FROM`, `FACTORY_RUN`, `FACTORY_DEF_NAME`, `FACTORY_PATROL`, `FACTORY_OUTBOX` or `BEADS_ACTOR`. Mail text goes through a file in `<home>/text/`. The server removes the file after the call.
+- The server dispatches catalog operations. Core operations run in process. CLI bridges use a child process with the server home.
+  Each core call and CLI child gets an environment without `FACTORY_SERVER`, `FACTORY_FROM`, `FACTORY_RUN`, `FACTORY_DEF_NAME`, `FACTORY_PATROL`, `FACTORY_OUTBOX` or `BEADS_ACTOR`.
+  If a CLI bridge receives mail text, it uses a file in `<home>/text/`. The server removes that file after the call.
 - `factory cert person <dir> <server-name>` makes the person CA, the person certificate and the server certificate in a new folder.

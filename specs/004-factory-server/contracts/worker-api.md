@@ -33,3 +33,24 @@ Workers call this API. The caller is a worker CLI (`factory report|mail|memory|u
 ## Not allowed for a worker token
 
 `decide`, `goto`, `start`, `stop`, `resume`, `rig`, `decisions answer` and every client endpoint. A worker token cannot act for the person (FR-011). The client API is on another port, which needs a person certificate.
+
+## Implemented rules (report, mail and progress)
+
+`workerHandler` in `src/server-api.ts` serves these three routes. The memory, usage and prompt routes are not served yet.
+
+- Order of checks and status codes. The first check that fails answers.
+  1. 404: not `POST /v1/report`, `/v1/mail` or `/v1/progress`, or a query string.
+  2. 503: this server does not hold the lease.
+  3. 403: no Bearer token, a bad token, or claims that are not a run station (run or node `.` or `..`, node `manager`).
+  4. 400: the `Idempotency-Key` does not match `^[A-Za-z0-9-]{8,128}$`.
+  5. 503: the call store does not parse.
+  6. 409: the key was used for another token or body, or the first call with this key did not finish (`pending`).
+  7. 400: the content type is not JSON, the body exceeds 128 KiB, or JSON is not an object.
+  8. 403: the body names another `run`, `node` or `seq` than the token.
+  9. 400: the body breaks the endpoint grammar below.
+  10. 409: the run is not at the node and seq of the token, or the run is unknown.
+  11. 409: the CLI refused the call. 504: the CLI timed out and the call can have applied.
+- Rows. Only a call with a live token and a good key makes a row. The checks 1 to 6 write no row. A replay writes no row. A refusal from check 7 on writes a `refused` row.
+- Store. The rows are in `<home>/worker-calls.json` (mode 0600), kept 7 days, until the Dolt table of S6. The row key is the Idempotency-Key. The row holds the token id, never the token. Status `pending` marks a call that started and did not finish: the same key gets 409 and the CLI never runs two times.
+- Body keys. `run`, `node` and `seq` are optional in each body and must equal the token. Other keys are closed: report `outcome, summary`; mail `to, text`; progress `note`. There is no `wake` key.
+- A report and a mail run the CLI (`factory report`, `factory mail`) with `FACTORY_FROM` and `FACTORY_RUN` from the token, so the CLI applies the same rules as the outbox path.

@@ -45,7 +45,13 @@ test('`factory repos bd-env` lets a shell bd see the store, from a subdirectory;
   const run = (cwd: string) =>
     Bun.spawnSync(['bash', '-c', `eval "$(bun ${cli} repos bd-env 2>/dev/null)"; bd`], {
       cwd,
-      env: { ...process.env, ...env, PATH: `${bin}:${process.env.PATH}` },
+      env: {
+        ...process.env,
+        BEADS_DIR: undefined,
+        DOLT_REMOTE_USER: undefined,
+        ...env,
+        PATH: `${bin}:${process.env.PATH}`,
+      },
     })
       .stdout.toString()
       .trim()

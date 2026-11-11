@@ -1,7 +1,8 @@
-// The factory manager for the Herdr app (claude-factory-s01d.3), a second local UI beside the Claude mod.
-// The panel copy ticks and patrols, and holds the local manager lease.
+// The factory view and control panel for the Herdr app (claude-factory-s01d.3), a client of the core.
+// The mod never ticks, patrols or takes the manager lease (claude-factory-hpmc.10). It reads one
+// `factory snapshot` per beat and runs one factory command per button.
 // With "machine" in config.json (claude-factory-hpmc.14) the manager runs there, such as the AX task f-manager.
-// Then every exec and file read passes on: machine. The mod never ticks, patrols or takes the lease.
+// Then every exec and file read passes on: machine.
 //
 // Props { band: true } draw a status band of one line.
 // Props { dialog: "interview" } draw the Interview dialog.
@@ -33,12 +34,12 @@ import {
   line,
   newlyBlocked,
   parseConfig,
-  parseTick,
   shortId,
   statusText,
   actionWords,
-  beatJobs,
+  SNAPSHOT_WORDS,
   chatArgv,
+  chatLabel,
   directJob,
   onOf,
   FLOW_FACTORIES,
@@ -46,29 +47,22 @@ import {
   FLOW_WINDOWS,
   flowJobWords,
   flowLayout,
+  managerLimitText,
+  managerCodexAuthText,
   parseFlows,
   recentMovers,
 } from './view.js'
 
 const TICK_MS = 5_000
-/** a job with no answer for this long is free again */
-const JOB_LIMIT_MS = 20 * 60_000
-
-// One detached job: exec has a 30 s limit, and a tick or a patrol can run longer.
-// Arguments: $1 cli, $2 home, $3 holder, $4 job name, $5 seq, then the factory words.
-// The job writes <home>/herdr/<name>.out and .err, then "<seq> <exit code>" to .done.
-const JOB = `cli=$1 home=$2 holder=$3 name=$4 seq=$5; shift 5; dir="$home/herdr"; mkdir -p "$dir"
-( FACTORY_HOME="$home" FACTORY_LEASE_HOLDER="$holder" FACTORY_LEASE_KIND=herdr "$cli" "$@" >"$dir/$name.out.tmp" 2>"$dir/$name.err"
-  code=$?; mv "$dir/$name.out.tmp" "$dir/$name.out"; echo "$seq $code" >"$dir/$name.done" ) </dev/null >/dev/null 2>&1 &`
+/** a call with no answer for this long is free again */
+const JOB_LIMIT_MS = 5 * 60_000
 
 const configPath = () => `${appHome()}/mods/factory/config.json`
 
 export default class Factory extends View {
   init(_props, cx) {
     this.cfg = null
-    this.jobs = {} // name -> { seq, at }
-    this.ran = {} // name -> last start time
-    this.seq = Date.now()
+    this.jobs = {} // name -> { at, result? }
     this.selected = null
     this.screen = ''
     this.before = {}
@@ -79,16 +73,7 @@ export default class Factory extends View {
     this.flowFactory = 'lifecycle'
     this.flow = null // { graph } | { error }
     const p = props() ?? {}
-    if (p.band || p.dialog) return // only the panel copy ticks
-    try {
-      this.holder = localStorage.getItem('holder')
-      if (!this.holder) {
-        this.holder = `herdr:${Math.random().toString(36).slice(2, 10)}`
-        localStorage.setItem('holder', this.holder)
-      }
-    } catch {
-      this.holder = `herdr:${Math.random().toString(36).slice(2, 10)}`
-    }
+    if (p.band || p.dialog) return // only the panel copy polls
     cx.spawn(async cx => {
       const text = await readTextFile(configPath()) // the config is on this machine
       try {
@@ -114,81 +99,38 @@ export default class Factory extends View {
     openOverlay({ mod: 'factory', props: { dialog: 'interview' }, kind: 'dialog', width: 620, height: 480 })
   }
 
-  /** starts a detached factory command, unless one with that name runs */
+  /** starts a factory command, unless one with that name is in flight. It runs direct, in the foreground. */
   start(name, words) {
     const job = this.jobs[name]
     if (job && Date.now() - job.at < JOB_LIMIT_MS) return
-    const seq = String(++this.seq)
-    this.jobs[name] = { seq, at: Date.now() }
-    this.ran[name] = Date.now()
-    // hc exec kills every process the command leaves behind, so a remote job runs direct and keeps its output
-    if (this.cfg.machine) {
-      const [cmd, args] = directJob(this.cfg, words)
-      const mine = this.jobs[name]
-      exec(cmd, args, onOf(this.cfg))
-        .then(r => (mine.result = { code: r.code, out: r.stdout, err: r.stderr }))
-        .catch(e => (mine.result = { code: 1, out: '', err: String(e) }))
-      return
-    }
-    exec(
-      'sh',
-      ['-c', JOB, 'sh', this.cfg.cli, this.cfg.home, this.holder, name, seq, ...words],
-      onOf(this.cfg),
-    ).catch(() => {
-      delete this.jobs[name]
-    })
+    const mine = (this.jobs[name] = { at: Date.now() })
+    const [cmd, args] = directJob(this.cfg, words)
+    exec(cmd, args, onOf(this.cfg))
+      .then(r => (mine.result = { code: r.code, out: r.stdout, err: r.stderr }))
+      .catch(e => (mine.result = { code: 1, out: '', err: String(e) }))
   }
 
-  /** the result of a finished job, or null while it runs */
-  async finished(name) {
+  /** the result of a finished call, or null while it runs */
+  finished(name) {
     const job = this.jobs[name]
-    if (!job) return null
-    if (this.cfg.machine) {
-      if (!job.result) return null
-      delete this.jobs[name]
-      return job.result
-    }
-    const dir = `${this.cfg.home}/herdr`
-    const at = onOf(this.cfg)
-    const done = ((await readTextFile(`${dir}/${name}.done`, at)) ?? '').trim().split(' ')
-    if (done[0] !== job.seq) return null
+    if (!job?.result) return null
     delete this.jobs[name]
-    return {
-      code: Number(done[1]),
-      out: (await readTextFile(`${dir}/${name}.out`, at)) ?? '',
-      err: (await readTextFile(`${dir}/${name}.err`, at)) ?? '',
-    }
+    return job.result
   }
 
   beat(cx) {
     cx.spawn(async cx => {
-      const snap = this.cfg.machine ? await this.finished('snapshot') : null
-      if (snap) {
-        const s = parseSnapshot(snap.code, snap.out, snap.err)
+      const r = this.finished('snapshot')
+      if (r) {
+        const s = parseSnapshot(r.code, r.out, r.err)
         this.onTick(s.tick)
         if (s.decisions) setShared('factory.decisions', s.decisions)
       }
-      const tick = this.cfg.machine ? null : await this.finished('tick')
-      if (tick) this.onTick(parseTick(tick.code, tick.out, tick.err))
-      const fl = await this.finished('flows')
+      const fl = this.finished('flows')
       if (fl) this.flow = parseFlows(fl.code, fl.out, fl.err)
-      const dec = await this.finished('decisions')
-      if (dec && dec.code === 0) {
-        try {
-          setShared('factory.decisions', JSON.parse(dec.out))
-        } catch {}
-      }
-      for (const name of ['patrol', 'brief', 'review', 'pm']) {
-        const r = await this.finished(name)
-        if (r && r.code !== 0)
-          notify({ title: `factory ${name}`, body: line(r.err || r.out, 200), level: 'warning' })
-        else if (r && name === 'patrol' && r.out.trim() && r.out.trim() !== 'nothing due')
-          notify({ title: 'factory patrol', body: line(r.out.split('\n')[0], 200), level: 'info' })
-      }
       // the Flow tab asks for the graph while it is shown
       if (this.tab === 'flow') this.start('flows', flowJobWords(this.flowFactory, this.flowWindow))
-      for (const j of beatJobs(this.cfg, shared('factory') ?? {}, this.ran, Date.now()))
-        this.start(j.name, j.words)
+      this.start('snapshot', SNAPSHOT_WORDS)
       cx.notify()
     })
   }
@@ -213,6 +155,8 @@ export default class Factory extends View {
       runs: res.runs,
       halt: res.halt,
       readOnly: res.readOnly,
+      managerLimited: res.managerLimited ?? null,
+      managerCodexAuth: res.managerCodexAuth ?? null,
       at: Date.now(),
       mail: [...(prev.mail ?? []), ...res.manager].slice(-50),
     })
@@ -252,7 +196,13 @@ export default class Factory extends View {
       ? `read-only: ${state.readOnly}`
       : state.error
         ? `tick failed: ${state.error}`
-        : statusText(runs) || 'no live runs'
+        : [
+            statusText(runs) || 'no live runs',
+            managerLimitText(state.managerLimited),
+            managerCodexAuthText(state.managerCodexAuth),
+          ]
+            .filter(Boolean)
+            .join(' · ')
     if (p.band)
       return h_flex()
         .size_full()
@@ -347,7 +297,7 @@ export default class Factory extends View {
             .gap(6)
             .flex_wrap()
             .child(button('interview', `Interview (${items.length})`, () => this.openInterview()))
-            .children(this.cfg.machine ? this.controls(button) : []),
+            .children(this.controls(button)),
         )
         .child(this.tabs(t))
         .child(
@@ -530,7 +480,7 @@ export default class Factory extends View {
     return (shared('factory') ?? {}).runs ?? []
   }
 
-  /** runs one factory command on the machine of a remote config and toasts the result */
+  /** runs one factory command (on the machine of a remote config) and toasts the result */
   act(action, arg) {
     exec('env', [`FACTORY_HOME=${this.cfg.home}`, this.cfg.cli, ...actionWords(action, arg)], onOf(this.cfg))
       .then(r =>
@@ -543,10 +493,19 @@ export default class Factory extends View {
       .catch(e => notify({ title: `factory ${action}`, body: String(e), level: 'warning' }))
   }
 
-  /** the buttons of a remote config: chat, stop, resume, abort of the selected run, unhold of ax */
+  /** the buttons: chat, stop, resume, abort of the selected run, unhold of ax */
   controls(button) {
     return [
-      button('chat', 'Manager chat', () => run('terminal.open', { argv: chatArgv(this.cfg), place: 'tab' })),
+      ...(chatArgv(this.cfg)
+        ? [
+            button('chat', chatLabel(shared('factory')?.managerLimited), () =>
+              run('terminal.open', {
+                argv: chatArgv(this.cfg, shared('factory')?.managerLimited),
+                place: 'tab',
+              }),
+            ),
+          ]
+        : []),
       button('stop', 'Stop', () => this.act('stop')),
       button('resume', 'Resume', () => this.act('resume')),
       button('unhold', 'Unhold ax', () => this.act('unhold', 'ax')),

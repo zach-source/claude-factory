@@ -1,5 +1,14 @@
 import { afterEach, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -10,6 +19,8 @@ import {
   backupWanted,
   EXCLUDES,
   restore,
+  SCAN_MS,
+  SECRETS,
   secretFile,
   type BackupCfg,
 } from './homebackup'
@@ -71,6 +82,8 @@ test('d289.19: a staged file over 50 MB goes up as <path>.gz and comes back byte
   writeFileSync(session, big)
   const out = backup(cfg(a, r), true)
   expect(out.error).toBeUndefined()
+  expect(out.sha).toBeTypeOf('string')
+  expect(out.sha).not.toBe('')
   const tree = sh('--git-dir', r, 'ls-tree', '-r', '-l', 'manager-home')
   expect(tree).toContain('\thome/metrics.jsonl.gz')
   expect(tree).toContain(`\tclaude/projects/${SLUG}/s1.jsonl.gz`)
@@ -78,8 +91,16 @@ test('d289.19: a staged file over 50 MB goes up as <path>.gz and comes back byte
   expect(tree).toContain('\thome/rigs.json\n')
   // no blob in the pushed tree is over 50 MB
   for (const l of tree.split('\n')) expect(Number(l.split(/\s+/)[3]) || 0).toBeLessThan(50 * 1024 * 1024)
-  // a second backup with the same files makes no commit
-  expect(backup(cfg(a, r), true).changed).toBe(false)
+  // A second backup with the same files makes no commit.
+  const tip = sh('--git-dir', r, 'rev-parse', 'manager-home')
+  expect(tip).toBe(out.sha!)
+  const second = backup(cfg(a, r), true)
+  expect(second.error).toBeUndefined()
+  expect(second.sha).toBeTypeOf('string')
+  expect(second.sha).not.toBe('')
+  expect(second.sha).toBe(out.sha)
+  expect(sh('--git-dir', r, 'rev-parse', 'manager-home')).toBe(tip)
+  expect(second.changed).toBe(false)
   const b = empty()
   expect(restore(cfg(b, r)).error).toBeUndefined()
   expect(readFileSync(join(b, 'home', 'metrics.jsonl')).equals(big)).toBe(true)
@@ -104,7 +125,10 @@ test('d289.21: backup.want is fresh for 10 min; the backup removes it at the loc
   const seen: string[] = []
   const lock = () => {
     seen.push(`take want=${existsSync(backupWant(home))}`)
-    return () => seen.push(`free scanned=${existsSync(mark)}`)
+    return () => {
+      put(join(home, 'decisions.json'), '[3]')
+      seen.push(`free scanned=${existsSync(mark)}`)
+    }
   }
   const out = backup({ ...cfg(ws, r), gitleaks: bin }, true, lock)
   expect(out.error).toBeUndefined()
@@ -129,16 +153,29 @@ test('d289.20: after the remote rejects a commit, the next backup pushes a fixed
   )
   for (const first of [true, false]) {
     const rr = first ? r : remote()
-    if (!first) Bun.spawnSync(['cp', hook, join(rr, 'hooks', 'pre-receive')])
+    if (!first) expect(Bun.spawnSync(['cp', hook, join(rr, 'hooks', 'pre-receive')]).exitCode).toBe(0)
     const a = workspace()
     // the second pass starts with a good backup on the remote
-    const good = first ? null : backup(cfg(a, rr), true).sha!
+    const initial = first ? null : backup(cfg(a, rr), true)
+    if (initial) {
+      expect(initial.error).toBeUndefined()
+      expect(initial.skipped).toBeUndefined()
+      expect(initial.sha).toBeTruthy()
+    }
+    const good = initial?.sha ?? null
     put(join(a, 'home', 'huge.txt'), 'too big')
-    expect(backup(cfg(a, rr), true).error).toContain('git push')
+    const refused = backup(cfg(a, rr), true)
+    expect(refused.error).toContain('git push')
+    const failedRecord = JSON.parse(readFileSync(join(a, 'home/backup.json'), 'utf8'))
+    expect(failedRecord.sha).toBe(good ?? undefined)
+    expect(failedRecord.error).toBe(refused.error)
+    const rejected = sh('--git-dir', join(a, 'backup.git'), 'rev-parse', 'HEAD')
     rmSync(join(a, 'home', 'huge.txt'))
     put(join(a, 'home', 'decisions.json'), '[1]')
     const out = backup(cfg(a, rr), true)
     expect(out.error).toBeUndefined()
+    expect(out.skipped).toBeUndefined()
+    expect(out.sha).toBeTruthy()
     expect(out.sha).toBe(sh('--git-dir', rr, 'rev-parse', 'manager-home'))
     const parents = sh('--git-dir', rr, 'rev-list', '--parents', '-n', '1', 'manager-home')
       .split(' ')
@@ -148,9 +185,66 @@ test('d289.20: after the remote rejects a commit, the next backup pushes a fixed
     // a later backup goes on top as usual
     put(join(a, 'home', 'decisions.json'), '[2]')
     const next = backup(cfg(a, rr), true)
+    expect(next.error).toBeUndefined()
+    expect(next.skipped).toBeUndefined()
+    expect(next.sha).toBeTruthy()
     expect(sh('--git-dir', rr, 'rev-parse', 'manager-home^')).toBe(out.sha!)
     expect(next.changed).toBe(true)
+    expect(next.sha).toBe(sh('--git-dir', rr, 'rev-parse', 'manager-home'))
+    expect(pushedFile(rr, 'home/decisions.json')).toBe('[2]')
+    const ancestors = sh('--git-dir', join(a, 'backup.git'), 'rev-list', next.sha!).split('\n')
+    expect(ancestors).not.toContain(rejected)
+    if (good) expect(ancestors).toContain(good)
   }
+})
+
+test('ohn03: a memory index update must not hide a racy home edit', () => {
+  const r = remote()
+  const ws = workspace()
+  const file = join(ws, 'home/decisions.json')
+  const gd = join(ws, 'backup.git')
+  const time = new Date('2000-01-01T00:00:00Z')
+  put(file, '[1]')
+  utimesSync(file, time, time)
+  const first = backup(cfg(ws, r), true)
+  expect(first.error).toBeUndefined()
+  expect(first.skipped).toBeUndefined()
+  expect(first.sha).toBeTruthy()
+  // Model a coarse stat cache. The index time makes this entry racy, so Git must read its content.
+  sh('--git-dir', gd, 'config', 'core.checkStat', 'minimal')
+  sh('--git-dir', gd, 'config', 'core.trustctime', 'false')
+  utimesSync(join(gd, 'index'), time, time)
+  put(file, '[2]')
+  utimesSync(file, time, time)
+  const control = join(gd, 'control.index')
+  copyFileSync(join(gd, 'index'), control)
+  utimesSync(control, time, time)
+  const add = Bun.spawnSync(['git', '--git-dir', gd, '--work-tree', ws, 'add', '-A', '--', 'home'], {
+    env: { ...process.env, GIT_INDEX_FILE: control },
+  })
+  expect(add.exitCode).toBe(0)
+  const blob = sh('--git-dir', gd, 'hash-object', file)
+  expect(
+    Bun.spawnSync(['git', '--git-dir', gd, 'show', ':home/decisions.json'], {
+      env: { ...process.env, GIT_INDEX_FILE: control },
+    }).stdout.toString(),
+  ).toBe('[2]')
+  const next = backup(cfg(ws, r), true)
+  expect(next.error).toBeUndefined()
+  expect(next.skipped).toBeUndefined()
+  expect(next.changed).toBe(true)
+  expect(next.sha).toBe(sh('--git-dir', r, 'rev-parse', 'manager-home'))
+  expect(sh('--git-dir', r, 'rev-parse', 'manager-home^')).toBe(first.sha!)
+  expect(pushedFile(r, 'home/decisions.json')).toBe('[2]')
+  expect(sh('--git-dir', gd, 'rev-parse', 'HEAD:home/decisions.json')).toBe(blob)
+  const same = backup(cfg(ws, r), true)
+  expect(same.error).toBeUndefined()
+  expect(same.changed).toBe(false)
+  expect(same.sha).toBe(next.sha)
+  expect(JSON.parse(readFileSync(join(ws, 'home/backup.json'), 'utf8'))).toMatchObject({
+    sha: next.sha,
+    error: '',
+  })
 })
 
 test('AC1: a backup restores into an empty home with the same state', () => {
@@ -294,7 +388,15 @@ test('d289.19: with no gitleaks the backup refuses, and nothing stays staged', (
     'backup refused: gitleaks is missing',
   )
   expect(sh('--git-dir', join(ws, 'backup.git'), 'ls-files')).toBe('')
-  expect(backup(cfg(ws, r), true).error).toBeUndefined()
+  const good = backup(cfg(ws, r), true)
+  expect(good.error).toBeUndefined()
+  put(join(ws, 'home/decisions.json'), '[1]')
+  const refused = backup({ ...cfg(ws, r), gitleaks: '/no/gitleaks' }, true)
+  expect(refused.error).toBe('backup refused: gitleaks is missing')
+  expect(JSON.parse(readFileSync(join(ws, 'home/backup.json'), 'utf8'))).toMatchObject({
+    sha: good.sha,
+    error: refused.error,
+  })
 })
 
 test('secretFile finds the usual token shapes and no plain text', () => {
@@ -615,6 +717,106 @@ test('secretFile finds URL userinfo, JWT and the other vendor token shapes', () 
   expect(secretFile(Buffer.from('see https://example.com/a and user@host'))).toBe(false)
 })
 
+const wrap = (s: string) => Buffer.from('x ' + s + ' y')
+const timed = (b: Buffer) => {
+  const t = performance.now()
+  const got = secretFile(b)
+  return { got, ms: performance.now() - t }
+}
+
+test('JWT shape: 1 MiB of eyJ text returns in under 1 s', () => {
+  const r = timed(Buffer.from('eyJ'.repeat(349_526)))
+  expect(r.got).toBe(false)
+  expect(r.ms).toBeLessThan(1000)
+})
+
+test('JWT shape: 1 MiB of eyJa text returns in under 1 s', () => {
+  const r = timed(Buffer.from('eyJa'.repeat(262_144)))
+  expect(r.got).toBe(false)
+  expect(r.ms).toBeLessThan(1000)
+})
+
+const tok = 'zq' + 'a'.repeat(20)
+
+test('tlgw: secretFile finds a quoted Authorization header and an ASIA key id', () => {
+  const hit = [
+    `"Authorization": "Bearer ${tok}"`,
+    `"Authorization":"Bearer ${tok}"`,
+    `Authorization: "Bearer ${tok}"`,
+    `'Authorization': 'Basic ${tok}'`,
+    `"authorization": "bearer ${tok}"`,
+    `Authorization: Bearer ${tok}`,
+    'ASIA' + 'Z'.repeat(16),
+  ]
+  for (const s of hit) expect([s, secretFile(wrap(s))]).toEqual([s, true])
+})
+
+test('tlgw: secretFile leaves the near misses', () => {
+  const miss = [
+    '"Authorization": "Bearer short"',
+    `"Authorization": "Token ${tok}"`,
+    `Authorization = Bearer ${tok}`,
+    `"Authorization"" : "Bearer ${tok}"`,
+    'ASIA' + 'Z'.repeat(15),
+    'AGPA' + 'Z'.repeat(16),
+    'asia' + 'z'.repeat(16),
+  ]
+  for (const s of miss) expect([s, secretFile(wrap(s))]).toEqual([s, false])
+})
+
+test('tlgw: the Authorization and ASIA shapes return in under 1 s on 1 MiB', () => {
+  const inputs = [
+    '"Authorization": '.repeat(65_536),
+    "\"Authorization'  :  '".repeat(52_429),
+    ('ASIA' + 'Z'.repeat(15) + ' ').repeat(52_429),
+  ]
+  for (const s of inputs) {
+    const r = timed(Buffer.from(s))
+    expect(r.got).toBe(false)
+    expect(r.ms).toBeLessThan(1000)
+  }
+})
+
+test('JWT shape: real-shape JWTs match', () => {
+  const jwt = 'eyJ' + 'hbGciOiJIUzI1NiJ9' + '.' + 'eyJ' + 'zdWIiOiIxMjM0In0' + '.' + 'sig'
+  const long = 'eyJ' + 'a'.repeat(6000) + '.eyJ' + 'b'.repeat(6000) + '.sig'
+  for (const s of [jwt, 'tok' + jwt, 'a-b_' + jwt, long]) expect(secretFile(wrap(s))).toBe(true)
+})
+
+test('JWT shape: near misses do not match', () => {
+  const miss = [
+    'eyJ' + 'a'.repeat(9) + '.eyJ' + 'b'.repeat(12) + '.',
+    'eyJ' + 'a'.repeat(12) + '.eyJ' + 'b'.repeat(9) + '.',
+    'eyJ' + 'a'.repeat(12) + '.eyJ' + 'b'.repeat(12),
+    'eyJ' + 'a'.repeat(12) + '.xeyJ' + 'b'.repeat(12) + '.',
+  ]
+  for (const s of miss) expect(secretFile(wrap(s))).toBe(false)
+  const r = timed(Buffer.from('.eyJ'.repeat(262_144)))
+  expect(r.got).toBe(false)
+  expect(r.ms).toBeLessThan(1000)
+})
+
+test('JWT shape: the new pattern agrees with the old one', () => {
+  const old = /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\./
+  const cur = SECRETS.find(p => p.source.includes('eyJ'))!
+  const r = ((a: number) => () => {
+    a = (a + 0x6d2b79f5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  })(1)
+  const al = ['eyJ', 'eyJ', 'eyJ', 'aaaa', 'aaaaaaaaaa', 'aaaaaaaaaa', '.', '.', 'x', ' ', '-', 'J']
+  let hits = 0
+  for (let i = 0; i < 20_000; i++) {
+    const n = Math.floor(r() * 16)
+    let s = ''
+    for (let j = 0; j < n; j++) s += al[Math.floor(r() * al.length)]
+    expect(cur.test(s)).toBe(old.test(s))
+    if (old.test(s)) hits++
+  }
+  expect(hits).toBeGreaterThanOrEqual(20)
+})
+
 test('the scan reads the staged blob: a token in a binary memory file is redacted', () => {
   const r = remote()
   const ws = workspace()
@@ -687,4 +889,121 @@ test('a962: the backup auth header goes only to git calls under the backup remot
   } finally {
     srv.kill()
   }
+})
+
+/** a gitleaks stand-in that logs the size of each file it is given, then runs the real one */
+function countingGitleaks() {
+  const d = tmp()
+  const log = join(d, 'sizes.log')
+  const bin = join(d, 'gitleaks')
+  const real = Bun.which('gitleaks')!
+  writeFileSync(bin, `#!/bin/sh\nfind "$2" -type f -exec wc -c {} + >> '${log}'\nexec '${real}' "$@"\n`)
+  Bun.spawnSync(['chmod', '755', bin])
+  return {
+    bin,
+    scanned: () => (existsSync(log) ? readFileSync(log, 'utf8') : ''),
+    reset: () => rmSync(log, { force: true }),
+  }
+}
+const biggest = (s: string) =>
+  Math.max(
+    0,
+    ...s
+      .split('\n')
+      .flatMap(l =>
+        /^\s*(\d+)\s+\S+$/.exec(l) && !l.includes('total') ? [Number(l.trim().split(/\s+/)[0])] : [],
+      ),
+  )
+
+test('d289.27: an append-only file over 1 MB scans only the appended tail; a secret in it is redacted', () => {
+  const r = remote()
+  const ws = workspace()
+  const g = countingGitleaks()
+  const c = { ...cfg(ws, r), gitleaks: g.bin }
+  const filler =
+    Array.from({ length: 30_000 }, (_, i) => `{"n":${i},"text":"plain line ${i}"}`).join('\n') + '\n'
+  put(join(ws, 'home', 'metrics.jsonl'), filler)
+  expect(backup(c, true).error).toBeUndefined()
+  expect(biggest(g.scanned())).toBeGreaterThan(1_000_000) // the first backup scans the whole file
+  g.reset()
+  const tail = `{"t":"${TOKEN}"}\n{"n":"after"}\n`
+  put(join(ws, 'home', 'metrics.jsonl'), filler + tail)
+  const out = backup(c, true)
+  expect(out.error).toBeUndefined()
+  expect(biggest(g.scanned())).toBeLessThan(10_000)
+  const got = pushedFile(r, 'home/metrics.jsonl')
+  expect(got).not.toContain(TOKEN)
+  expect(got).toContain('{"t":"[REDACTED]"}\n{"n":"after"}')
+  expect(got.startsWith(filler.slice(0, 1000))).toBe(true)
+  expect(out.redacted).toContain('github-pat home/metrics.jsonl')
+  // a later append goes on from the redacted copy
+  g.reset()
+  put(join(ws, 'home', 'metrics.jsonl'), filler + tail + '{"n":"more"}\n')
+  expect(backup(c, true).error).toBeUndefined()
+  expect(biggest(g.scanned())).toBeLessThan(10_000)
+  expect(pushedFile(r, 'home/metrics.jsonl')).toContain('{"t":"[REDACTED]"}\n{"n":"after"}\n{"n":"more"}')
+})
+
+test('d289.27: a secret already in the scanned part stays redacted when the file grows', () => {
+  const r = remote()
+  const ws = workspace()
+  const g = countingGitleaks()
+  const c = { ...cfg(ws, r), gitleaks: g.bin }
+  const filler =
+    Array.from({ length: 30_000 }, (_, i) => `{"n":${i},"text":"plain line ${i}"}`).join('\n') + '\n'
+  put(join(ws, 'home', 'metrics.jsonl'), `{"t":"${TOKEN}"}\n${filler}`)
+  expect(backup(c, true).error).toBeUndefined()
+  g.reset()
+  put(join(ws, 'home', 'metrics.jsonl'), `{"t":"${TOKEN}"}\n${filler}{"n":"more"}\n`)
+  expect(backup(c, true).error).toBeUndefined()
+  expect(biggest(g.scanned())).toBeLessThan(10_000)
+  const got = pushedFile(r, 'home/metrics.jsonl')
+  expect(got).not.toContain(TOKEN)
+  expect(got.startsWith('{"t":"[REDACTED]"}\n{"n":0')).toBe(true)
+  expect(got.endsWith('{"n":"more"}')).toBe(true)
+})
+
+test('d289.27: a rewritten file (not an append) is scanned whole, and a secret in it is found', () => {
+  const r = remote()
+  const ws = workspace()
+  const g = countingGitleaks()
+  const c = { ...cfg(ws, r), gitleaks: g.bin }
+  const filler =
+    Array.from({ length: 30_000 }, (_, i) => `{"n":${i},"text":"plain line ${i}"}`).join('\n') + '\n'
+  put(join(ws, 'home', 'metrics.jsonl'), filler)
+  expect(backup(c, true).error).toBeUndefined()
+  g.reset()
+  put(join(ws, 'home', 'metrics.jsonl'), `{"t":"${TOKEN}"}\n${filler}{"n":"more"}\n`)
+  expect(backup(c, true).error).toBeUndefined()
+  expect(biggest(g.scanned())).toBeGreaterThan(1_000_000)
+  expect(pushedFile(r, 'home/metrics.jsonl')).not.toContain(TOKEN)
+})
+
+test('xpsys: the gitleaks limit is 1800 s by default and cfg.scanMs lowers it', () => {
+  expect(SCAN_MS).toBe(1_800_000)
+  const r = remote()
+  const ws = workspace()
+  const bin = join(tmp(), 'gitleaks')
+  writeFileSync(bin, `#!/bin/sh\nsleep 5\necho '[]'\n`, { mode: 0o755 })
+  const out = backup({ ...cfg(ws, r), gitleaks: bin, scanMs: 300 }, true)
+  expect(out.error).toBe('backup refused: gitleaks exit null')
+})
+
+test('xpsys: a second backup of one workspace skips while the first runs; a dead holder does not block', () => {
+  const r = remote()
+  const ws = workspace()
+  const bin = join(tmp(), 'gitleaks')
+  writeFileSync(bin, `#!/bin/sh\necho '[]'\n`, { mode: 0o755 })
+  const c = { ...cfg(ws, r), gitleaks: bin }
+  let inner: ReturnType<typeof backup> | undefined
+  // while the first backup holds its snapshot lock, a second one runs on the same workspace
+  backup(c, true, () => {
+    inner = backup(c, true)
+    return () => {}
+  })
+  expect(inner).toEqual({ skipped: 'lock' })
+  // a lock of a dead process is taken over
+  writeFileSync(join(ws, 'backup-run.lock'), '2147483646')
+  expect(backup(c, true).error).toBeUndefined()
+  expect(existsSync(join(ws, 'backup-run.lock'))).toBe(false)
 })
