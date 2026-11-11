@@ -184,6 +184,50 @@ test('AC7: a halted home and a home with no ax rig make no ax call', () => {
   expect(calls()).toEqual([])
 })
 
+test('a halted home clears the error rows of an old failed pass', () => {
+  setup()
+  // tasks.txt is missing: the pass fails and shows an error row
+  pass()
+  expect(JSON.parse(readFileSync(join(home(), 'ax-sweep.json'), 'utf8'))).toHaveLength(1)
+  writeFileSync(
+    join(home(), 'halt.json'),
+    JSON.stringify({ state: 'paused', at: Date.now(), told: {}, closed: {} }),
+  )
+  pass()
+  expect(JSON.parse(readFileSync(join(home(), 'ax-sweep.json'), 'utf8'))).toEqual([])
+})
+
+test('a home with no ax rig clears the error rows of an old failed pass', () => {
+  setup(false)
+  const f = join(home(), 'ax-sweep.json')
+  writeFileSync(f, JSON.stringify([{ id: 'ax-sweep', error: 'ax-sweep: old' }]))
+  pass()
+  expect(JSON.parse(readFileSync(f, 'utf8'))).toEqual([])
+})
+
+test('a halted home clears the old rows of the dispatch and label passes', () => {
+  setup()
+  const rows = JSON.stringify([{ id: 'rig:a', error: 'old' }])
+  writeFileSync(join(home(), 'dispatch.json'), rows)
+  writeFileSync(join(home(), 'labels.json'), rows)
+  writeFileSync(
+    join(home(), 'halt.json'),
+    JSON.stringify({ state: 'paused', at: Date.now(), told: {}, closed: {} }),
+  )
+  pass()
+  expect(JSON.parse(readFileSync(join(home(), 'dispatch.json'), 'utf8'))).toEqual([])
+  expect(JSON.parse(readFileSync(join(home(), 'labels.json'), 'utf8'))).toEqual([])
+})
+
+test('a home with no rigs clears the old rows of the dispatch pass', () => {
+  setup()
+  writeFileSync(join(home(), 'dispatch.json'), JSON.stringify([{ id: 'rig:a', error: 'old' }]))
+  writeFileSync(join(home(), 'dispatch.stamp'), '')
+  writeFileSync(join(home(), 'rigs.json'), '[]')
+  pass()
+  expect(JSON.parse(readFileSync(join(home(), 'dispatch.json'), 'utf8'))).toEqual([])
+})
+
 test('AC8: a failed list deletes nothing and shows an error row; a failed delete does not stop the others', () => {
   const { doneId } = setup()
   const a = taskName(doneId, 1)
