@@ -34,6 +34,6 @@ The page uses the same mTLS listener as the client API. A browser must present t
 4. Make the browser trust `ca.crt`. If you do not, the browser shows a certificate warning. The person CA also signs the server certificate.
 5. Open `https://<server>:8444/` and pick the person certificate.
 
-Do not share `person.p12`. Whoever holds it is the owner, because `op.rights` is not enforced yet.
+Do not share `person.p12`. Whoever holds it is the person role, which can call every operation. A certificate with CN=manager gets the manager role: it cannot halt the factory (`op.rights`).
 
 The server listens on all interfaces. The route to port 8444 must pass TLS through to the server. A proxy that ends TLS removes the person certificate, and the page then has no access.
