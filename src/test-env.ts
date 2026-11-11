@@ -15,6 +15,7 @@ for (const k of [
   'FACTORY_ALLOW',
   'FACTORY_OTLP_ENDPOINT',
   'FACTORY_AX_OTLP_ENDPOINT',
+  'FACTORY_AX_CONTEXT',
 ])
   delete process.env[k]
 // claude-factory-8v8z: no test reaches the host's real herdr. A path with no binary acts as CI does (herdr not installed).
