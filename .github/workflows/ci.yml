@@ -41,7 +41,10 @@ jobs:
           python-version: '3.12'
       - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
       - name: install zsh (src/cli.test.ts spawns it)
-        run: sudo apt-get update && sudo apt-get install -y zsh postgresql
+        # the runner's default mirror (apt-mirrors.txt) can fail to resolve; then the step uses archive.ubuntu.com
+        run: |
+          inst() { sudo apt-get update && sudo apt-get install -y zsh postgresql; }
+          inst || { echo http://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt; inst; }
       - name: put the postgres bin dir on PATH (src/pg-scratch.test.ts needs initdb, pg_ctl, psql)
         run: echo "$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)" >> "$GITHUB_PATH"
       - name: install gitleaks 8.30.1 (src/homebackup.ts scans the backup with it; the manager image has the same version)
