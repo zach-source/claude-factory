@@ -437,6 +437,14 @@ type Halt = {
 const haltFile = () => join(HOME, 'halt.json')
 const resumeFile_ = () => join(HOME, 'resume.json')
 const halted = (): Halt | null => (existsSync(haltFile()) ? readJson(haltFile()) : null)
+/**
+ * a tick writes its halt copy back only while halt.json is still the one it read: a `factory resume` that
+ * removed it, or a new stop that replaced it, must win over the stale copy (claude-factory-sg4s3).
+ * ponytail: a check and a write, not a lock; the gap is microseconds. Upgrade path: take the tick lock in stop and resume.
+ */
+export function writeHaltIfSame(halt: Halt, next: Halt = halt) {
+  if (halted()?.at === halt.at) writeJson(haltFile(), next)
+}
 
 /** what a stop does next to one working worker */
 export function haltStep(isAlive: boolean, isTold: boolean, isWorking: boolean, sinceToldMs: number) {
@@ -4953,7 +4961,7 @@ function haltRun(
     }
     halt.closed[run.id] = c.seq
   }
-  writeJson(haltFile(), halt)
+  writeHaltIfSame(halt)
   return step === 'wait' || step === 'tell' ? 'stopping' : 'paused'
 }
 
@@ -7101,9 +7109,9 @@ function managerWorkspace(): string | undefined {
  * Only changes are reported, refreshed before the TTL, so a stopped factory's lapse.
  * No-op with no herdr installed (an AX-only rig, or a CI box): nothing there can show a sidebar.
  */
-function showInSidebar(rows: Row[], now: number, isPatrol: boolean) {
+function showInSidebar(rows: Row[], now: number, isPatrol: boolean, haltState?: Halt['state']) {
   if (!herdrInstalled()) return
-  const { byWs, rollup } = tokens(rows)
+  const { byWs, rollup } = tokens(rows, haltState)
   const file = join(HOME, 'sidebar.json')
   const was = existsSync(file)
     ? readJson<{ at: number; ws: Record<string, string>; manager?: string }>(file)
@@ -8159,11 +8167,11 @@ async function tick(isPatrol = false) {
     out.runs.push(
       ...(existsSync(join(HOME, 'ax-sweep.json')) ? readJson<Row[]>(join(HOME, 'ax-sweep.json')) : []),
     )
-    showInSidebar(out.runs, now, isPatrol)
+    showInSidebar(out.runs, now, isPatrol, halted()?.state)
     reap(out.runs)
     // stopped once no worker is still being told to stop: everything that was working has closed
     if (halt?.state === 'stopping' && !out.runs.some(r => r.agent === 'stopping'))
-      writeJson(haltFile(), { ...halted()!, state: 'paused' })
+      writeHaltIfSame(halt, { ...halt, state: 'paused' })
     return { ...out, halt: halted()?.state }
   } finally {
     release()
