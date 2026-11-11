@@ -767,6 +767,44 @@ test('AC5 a page that a person deleted is not made again; other paths and edits 
   )
 })
 
+test('953a a person re-add lifts an older person delete; a factory re-add does not', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const p = 'solutions/2026-11/p.md'
+  const q = 'solutions/2026-11/q.md'
+  const dir = () => mkdirSync(join(wiki(), 'solutions', '2026-11'), { recursive: true })
+  const put = (...f: string[]) => f.forEach(x => writeFileSync(join(wiki(), x), page('topic', x)))
+  const by = (who: string[], msg: string, ...extra: string[]) =>
+    git('-c', `user.name=${who[0]}`, '-c', `user.email=${who[1]}`, 'commit', '-qm', msg, ...extra)
+  const person = ['p', 'person@acme.example']
+  const bot = ['factory', `factory@${hostname()}`]
+  dir()
+  put(p, q)
+  expect(commitPass('pages').exitCode).toBe(0)
+  git('rm', '-q', p, q)
+  by(person, 'del', '--date=2026-11-01T10:00:00+00:00')
+  dir()
+  put(p)
+  git('add', p)
+  by(person, 'back', '--date=2026-11-02T10:00:00+00:00')
+  put(q)
+  git('add', q)
+  by(bot, 'factory add')
+  git('rm', '-q', p, q)
+  by(bot, 'factory del')
+  dir()
+  put(p, q)
+  expect(commitPass('again').exitCode).toBe(0)
+  const files = git('ls-files').split('\n')
+  expect(files).toContain(p)
+  expect(files).not.toContain(q)
+  expect(wikiLog()).toContain(`wiki: tombstoned path ${q}, page not made again`)
+  expect(wikiLog()).not.toContain(`tombstoned path ${p}`)
+  const t = state().tombstones
+  expect(t.map((x: { path: string }) => x.path)).toEqual([q])
+  expect(Date.parse(t[0].at)).toBe(Date.parse('2026-11-01T10:00:00+00:00'))
+})
+
 test('5ezo a failed seed commit exits 1, sets no origin and calls no gh', () => {
   for (const args of [[], ['--remote', URL_]]) {
     setup()

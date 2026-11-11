@@ -5617,7 +5617,7 @@ function writeWikiState(state: Record<string, unknown>) {
   writeFileSync(join(HOME, 'wiki-state.json'), JSON.stringify(state))
 }
 
-/** Pages a person deleted and nobody added back, kept in wiki-state.json. A failed git log uses the stored list. */
+/** Pages a person deleted, with no newer person add, and not in HEAD, kept in wiki-state.json. A failed git log uses the stored list. */
 function wikiTombstones(dir: string) {
   const stored = readWikiState().tombstones
   const old = (Array.isArray(stored) ? stored : []).filter(
@@ -5627,9 +5627,9 @@ function wikiTombstones(dir: string) {
   if (wikiGit(dir, ['rev-parse', '--verify', '-q', 'HEAD']).code !== 0) return old
   const log = wikiGit(dir, [
     'log',
-    '--diff-filter=D',
+    '--diff-filter=AD',
     '--no-renames',
-    '--name-only',
+    '--name-status',
     '--format=%x01%ae%x01%aI',
     'HEAD',
   ])
