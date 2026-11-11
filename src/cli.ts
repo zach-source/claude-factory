@@ -9928,8 +9928,12 @@ async function precheckSkip(
 
 async function dispatch() {
   const stamp = join(HOME, 'dispatch.stamp')
-  if (halted() || !rigs().length || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < DISPATCH_MS))
+  if (halted() || !rigs().length) {
+    // a pass that is off must not leave the rows of an old failed pass on the board
+    if (existsSync(dispatchFile())) writeJson(dispatchFile(), [])
     return
+  }
+  if (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < DISPATCH_MS) return
   writeFileSync(stamp, '')
   const errors: Row[] = []
   const { busy, held } = await busyRigs()
@@ -11283,7 +11287,12 @@ async function digest() {
  */
 async function labelPass() {
   const stamp = join(HOME, 'labels.stamp')
-  if (halted() || (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < LABELS_MS)) return
+  if (halted()) {
+    // a pass that is off must not leave the rows of an old failed pass on the board
+    if (existsSync(join(HOME, 'labels.json'))) writeJson(join(HOME, 'labels.json'), [])
+    return
+  }
+  if (existsSync(stamp) && Date.now() - statSync(stamp).mtimeMs < LABELS_MS) return
   writeFileSync(stamp, '')
   const errors: Row[] = []
   const { busy, held } = await busyRigs()
@@ -11499,7 +11508,12 @@ async function labelPass() {
  */
 function axSweep() {
   const stamp = join(HOME, 'ax-sweep.stamp')
-  if (halted() || !rigs().some(r => r.runner === 'ax') || isFresh(stamp, AX_SWEEP_MS)) return
+  if (halted() || !rigs().some(r => r.runner === 'ax')) {
+    // a pass that is off must not leave the rows of an old failed pass on the board
+    if (existsSync(join(HOME, 'ax-sweep.json'))) writeJson(join(HOME, 'ax-sweep.json'), [])
+    return
+  }
+  if (isFresh(stamp, AX_SWEEP_MS)) return
   writeFileSync(stamp, '')
   const log = (line: string) => appendFileSync(join(HOME, 'ax.log'), `${new Date().toISOString()} ${line}\n`)
   const errors: Row[] = []
@@ -11596,7 +11610,12 @@ export function orphanRuns(ids: string[], read: typeof current = current) {
  */
 async function orphanPass() {
   const stamp = join(HOME, 'orphans.stamp')
-  if (halted() || isFresh(stamp, ORPHANS_MS)) return
+  if (halted()) {
+    // a pass that is off must not leave the rows of an old failed pass on the board
+    if (existsSync(join(HOME, 'orphans.json'))) writeJson(join(HOME, 'orphans.json'), [])
+    return
+  }
+  if (isFresh(stamp, ORPHANS_MS)) return
   writeFileSync(stamp, '')
   const errors: Row[] = []
   const file = join(HOME, 'orphan-forks.json')

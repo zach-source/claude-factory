@@ -19,6 +19,7 @@ import {
   backupWanted,
   EXCLUDES,
   restore,
+  SECRETS,
   secretFile,
   type BackupCfg,
 } from './homebackup'
@@ -713,6 +714,65 @@ test('secretFile finds URL userinfo, JWT and the other vendor token shapes', () 
   ]
   for (const s of hit) expect(secretFile(Buffer.from('x ' + s + ' y'))).toBe(true)
   expect(secretFile(Buffer.from('see https://example.com/a and user@host'))).toBe(false)
+})
+
+const wrap = (s: string) => Buffer.from('x ' + s + ' y')
+const timed = (b: Buffer) => {
+  const t = performance.now()
+  const got = secretFile(b)
+  return { got, ms: performance.now() - t }
+}
+
+test('JWT shape: 1 MiB of eyJ text returns in under 1 s', () => {
+  const r = timed(Buffer.from('eyJ'.repeat(349_526)))
+  expect(r.got).toBe(false)
+  expect(r.ms).toBeLessThan(1000)
+})
+
+test('JWT shape: 1 MiB of eyJa text returns in under 1 s', () => {
+  const r = timed(Buffer.from('eyJa'.repeat(262_144)))
+  expect(r.got).toBe(false)
+  expect(r.ms).toBeLessThan(1000)
+})
+
+test('JWT shape: real-shape JWTs match', () => {
+  const jwt = 'eyJ' + 'hbGciOiJIUzI1NiJ9' + '.' + 'eyJ' + 'zdWIiOiIxMjM0In0' + '.' + 'sig'
+  const long = 'eyJ' + 'a'.repeat(6000) + '.eyJ' + 'b'.repeat(6000) + '.sig'
+  for (const s of [jwt, 'tok' + jwt, 'a-b_' + jwt, long]) expect(secretFile(wrap(s))).toBe(true)
+})
+
+test('JWT shape: near misses do not match', () => {
+  const miss = [
+    'eyJ' + 'a'.repeat(9) + '.eyJ' + 'b'.repeat(12) + '.',
+    'eyJ' + 'a'.repeat(12) + '.eyJ' + 'b'.repeat(9) + '.',
+    'eyJ' + 'a'.repeat(12) + '.eyJ' + 'b'.repeat(12),
+    'eyJ' + 'a'.repeat(12) + '.xeyJ' + 'b'.repeat(12) + '.',
+  ]
+  for (const s of miss) expect(secretFile(wrap(s))).toBe(false)
+  const r = timed(Buffer.from('.eyJ'.repeat(262_144)))
+  expect(r.got).toBe(false)
+  expect(r.ms).toBeLessThan(1000)
+})
+
+test('JWT shape: the new pattern agrees with the old one', () => {
+  const old = /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\./
+  const cur = SECRETS.find(p => p.source.includes('eyJ'))!
+  const r = ((a: number) => () => {
+    a = (a + 0x6d2b79f5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  })(1)
+  const al = ['eyJ', 'eyJ', 'eyJ', 'aaaa', 'aaaaaaaaaa', 'aaaaaaaaaa', '.', '.', 'x', ' ', '-', 'J']
+  let hits = 0
+  for (let i = 0; i < 20_000; i++) {
+    const n = Math.floor(r() * 16)
+    let s = ''
+    for (let j = 0; j < n; j++) s += al[Math.floor(r() * al.length)]
+    expect(cur.test(s)).toBe(old.test(s))
+    if (old.test(s)) hits++
+  }
+  expect(hits).toBeGreaterThanOrEqual(20)
 })
 
 test('the scan reads the staged blob: a token in a binary memory file is redacted', () => {
