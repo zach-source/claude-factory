@@ -2409,3 +2409,97 @@ test('bareValueFlag names the first value flag with no value (claude-factory-sva
   expect(bareValueFlag([], f)).toBeUndefined()
   expect(bareValueFlag(['--other', '--rig', 'a'], f)).toBeUndefined()
 })
+
+// claude-factory-u509: a rig declaration must be unique and canonical, or the note fails closed
+const U509_VEC = [1, 0]
+const u509Ranked = (text: string, rig?: string) => {
+  const calls = { vec: 0, topic: 0, act: 0 }
+  const found = rank(
+    [parse('ci/case.md', text)],
+    () => (calls.vec++, U509_VEC),
+    () => (calls.topic++, U509_VEC),
+    U509_VEC,
+    rig,
+    () => (calls.act++, 0),
+  )
+  return { found, calls }
+}
+
+test('u509 parse scope matrix', () => {
+  const rows: Record<string, string> = {
+    crlf: '---\r\nsummary: s\r\nrig: other\r\n---\r\nbody\r\n',
+    bom: '﻿---\nsummary: s\nrig: other\n---\nbody\n',
+    bomCrlf: '﻿---\r\nsummary: s\r\nrig: other\r\n---\r\nbody',
+    mixed: '---\nsummary: s\r\nrig: other\n---\r\nbody',
+    eof: '---\nsummary: s\nrig: other\n---',
+  }
+  for (const [name, text] of Object.entries(rows)) {
+    expect(parse('ci/a.md', text).rig, name).toBe('other')
+    expect(u509Ranked(text, 'acme').found, name).toHaveLength(0)
+    expect(u509Ranked(text, 'other').found, name).toHaveLength(1)
+  }
+  const bad: Record<string, string> = {
+    indented: '---\nsummary: s\n rig: other\n---\nbody',
+    capital: '---\nsummary: s\nRig: other\n---\nbody',
+    noHeader: 'plain note\nrig: other\n',
+    duplicate: '---\nsummary: s\nrig: other\nrig: acme\n---\nbody',
+  }
+  for (const [name, text] of Object.entries(bad)) expect(u509Ranked(text, 'acme').found, name).toHaveLength(0)
+  expect(u509Ranked('---\nsummary: s\nrig: acme\n---\nbody', 'acme').found).toHaveLength(1)
+  expect(u509Ranked('---\nsummary: s\nrig: other\n---\nbody', 'acme').found).toHaveLength(0)
+  expect(u509Ranked('---\nsummary: s\n---\nbody', 'acme').found).toHaveLength(1)
+  expect(u509Ranked('legacy plain note', 'acme').found).toHaveLength(1)
+})
+
+test('u509 ambiguous scope is closed', () => {
+  const bad: Record<string, string> = {
+    tab: '---\nsummary: s\n\trig: other\n---\nbody',
+    mixedCase: '---\nsummary: s\nRIG: other\n---\nbody',
+    spaceBeforeColon: '---\nsummary: s\nrig : other\n---\nbody',
+    equalDuplicates: '---\nsummary: s\nrig: acme\nrig: acme\n---\nbody',
+    reverseDuplicates: '---\nsummary: s\nrig: acme\nrig: other\n---\nbody',
+    mixedDuplicates: '---\nsummary: s\nrig: acme\n Rig: acme\n---\nbody',
+    empty: '---\nsummary: s\nrig:\n---\nbody',
+    whitespace: '---\nsummary: s\nrig:   \n---\nbody',
+    noClose: '---\nsummary: s\nrig: acme\nbody',
+    deepNoHeader: `${'pad\n'.repeat(100)}rig: acme\n`,
+  }
+  for (const [name, text] of Object.entries(bad)) {
+    const sentinel = parse('ci/a.md', text).rig
+    expect(sentinel, name).toBeTruthy()
+    for (const rig of ['acme', 'other', undefined, sentinel]) {
+      const { found, calls } = u509Ranked(text, rig)
+      expect(found, `${name} ${rig}`).toHaveLength(0)
+      expect(calls, name).toEqual({ vec: 0, topic: 0, act: 0 })
+    }
+  }
+  expect(u509Ranked('---\nsummary: s\nrig: acme\n---\nrig: other\nRig: x', 'acme').found).toHaveLength(1)
+  expect(parse('a.md', '---\nsummary: s\nrig: acme\n---\nrig: other').rig).toBe('acme')
+})
+
+test('u509 writer compatibility', () => {
+  const n = {
+    summary: 'sum',
+    rig: 'acme',
+    from: 'a/x, b/y',
+    at: '2026-01-01',
+    kind: 'fact' as const,
+    until: 'acme-abc1',
+    superseded: 'ci/old.md',
+    body: 'text\n## heading\nrig: other\nmore',
+  }
+  const p = parse('ci/a.md', format(n))
+  expect({ ...p, path: undefined }).toEqual({ ...n, path: undefined })
+  const shared = { summary: 'sh', body: '## h\nbody' }
+  const s = parse('ci/b.md', format(shared))
+  expect(s.rig).toBeUndefined()
+  expect(s.body).toBe(shared.body)
+  const entries = [
+    { id: 'aaaaaaaa', summary: 'one', rig: 'acme', body: '## inner\nx' },
+    { id: 'bbbbbbbb', summary: 'two', rig: 'other', body: 'y' },
+  ]
+  expect(parseLong(formatLong(entries)).map(e => [e.rig, e.body])).toEqual([
+    ['acme', '## inner\nx'],
+    ['other', 'y'],
+  ])
+})
