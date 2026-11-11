@@ -417,3 +417,79 @@ test('u509 empty header exception snapshot', () => {
     }
   }
 })
+
+test('u509 populated header snapshot matrix', () => {
+  let flip = 0
+  const ends: Record<string, (s: string) => string> = {
+    lf: s => s,
+    crlf: s => s.replace(/\n/g, '\r\n'),
+    mixed: s => s.replace(/\n/g, () => (flip++ % 2 ? '\r\n' : '\n')),
+    bomLf: s => `\uFEFF${s}`,
+    bomCrlf: s => `\uFEFF${s.replace(/\n/g, '\r\n')}`,
+  }
+  const bodies: Record<string, string> = {
+    other: 'rig: other',
+    acme: 'rig: acme',
+    capital: 'Rig: other',
+    indented: ' rig: other',
+    blank: 'rig:',
+    dup: 'rig: other\nrig: acme',
+    delim: 'x\n---\nrig: other\n---\ny',
+    empty: '',
+  }
+  const headers: Record<string, string> = { scoped: 'summary: s\nrig: acme', shared: 'summary: s' }
+  const sentinel = parse('x.md', '---\n---\nrig: other\n---\nb').rig
+  for (const [en, conv] of Object.entries(ends)) {
+    for (const rig of ['acme', 'other', undefined, sentinel]) {
+      const dir = tmp('u509p')
+      mkdirSync(join(dir, 'ci'))
+      const rows: { id: string; path: string; mark?: string; scoped: boolean }[] = []
+      for (const [hk, hdr] of Object.entries(headers))
+        for (const [bk, body] of Object.entries(bodies)) {
+          const id = `${hk}_${bk}`
+          const mark = body === '' ? undefined : `MARK_${id}_${en}`
+          const text = conv(`---\n${hdr}\n---\n${body}${mark ? `\n${mark}` : ''}\n`)
+          mkdirSync(join(dir, `t_${id}`))
+          writeFileSync(join(dir, 'ci', `${id}.md`), text)
+          writeFileSync(join(dir, `t_${id}`, 'README.md'), text)
+          rows.push({ id, path: `ci/${id}.md`, mark, scoped: hk === 'scoped' })
+          rows.push({ id, path: `t_${id}/README.md`, mark, scoped: hk === 'scoped' })
+        }
+      writeFileSync(
+        join(dir, '.index.json'),
+        JSON.stringify({ model: 'm', vecs: Object.fromEntries(rows.map(r => [r.path, [1, 0]])) }),
+      )
+      writeFileSync(
+        join(dir, '.usage.jsonl'),
+        rows.map(r => JSON.stringify({ path: r.path, at: 1, shown: 1 })).join('\n') + '\n',
+      )
+      const out = join(tmp('out'), 'm.tgz')
+      expect(snapshot(dir, rig, out)).not.toBeNull()
+      const x = tmp('x')
+      tar('-xzf', out, '-C', x)
+      const keep = rows.filter(r => !r.scoped || rig === 'acme')
+      const drop = rows.filter(r => !keep.includes(r))
+      const label = `${en} ${rig}`
+      const files = [
+        ...readdirSync(join(x, 'ci')).map(f => `ci/${f}`),
+        ...readdirSync(x)
+          .filter(n => n.startsWith('t_'))
+          .map(n => `${n}/README.md`),
+      ]
+      expect(files.sort(), label).toEqual(keep.map(r => r.path).sort())
+      for (const r of keep)
+        expect(readFileSync(join(x, r.path)), label).toEqual(readFileSync(join(dir, r.path)))
+      const payload = files.map(f => readFileSync(join(x, f), 'utf8')).join('\n')
+      for (const r of rows)
+        if (r.mark) {
+          if (keep.includes(r)) expect(payload, label).toContain(r.mark)
+          else expect(payload, label).not.toContain(r.mark)
+        }
+      for (const f of ['.index.json', '.usage.jsonl']) {
+        const t = readFileSync(join(x, f), 'utf8')
+        for (const r of keep) expect(t, label).toContain(r.path)
+        for (const r of drop) expect(t, label).not.toContain(r.path)
+      }
+    }
+  }
+})

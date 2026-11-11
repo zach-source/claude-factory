@@ -2595,22 +2595,24 @@ test('u509 empty header exception matrix', () => {
     // populated header: body declarations never change scope; same result as a bare populated header
     const bodies = [
       'rig: other',
+      'rig: acme',
       'Rig: other',
       ' rig: other',
+      'rig:',
       'rig: other\nrig: acme',
       'x\n---\nrig: other\n---\ny',
       '',
     ]
     for (const hdr of ['summary: s\nrig: acme', 'summary: s']) {
+      const scoped = hdr.includes('rig:')
       for (const body of bodies) {
         const t = conv(`---\n${hdr}\n---\n${body}`)
-        const base = conv(`---\n${hdr}\n---\n`)
-        expect(parse('ci/a.md', t).rig, `${en} ${hdr} ${body}`).toBe(parse('ci/a.md', base).rig)
+        expect(parse('ci/a.md', t).rig, `${en} ${hdr} ${body}`).toBe(scoped ? 'acme' : undefined)
         for (const rig of ['acme', 'other', undefined, sentinel])
-          for (const path of ['ci/case.md', 'ci/README.md'])
-            expect(u509Ranked(t, rig, path).found, `${en} ${hdr} ${body} ${rig} ${path}`).toHaveLength(
-              u509Ranked(base, rig, path).found.length,
-            )
+          for (const path of ['ci/case.md', 'ci/README.md']) {
+            const want = !scoped || rig === 'acme' || rig === undefined ? 1 : 0
+            expect(u509Ranked(t, rig, path).found, `${en} ${hdr} ${body} ${rig} ${path}`).toHaveLength(want)
+          }
       }
     }
   }
