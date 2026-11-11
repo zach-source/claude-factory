@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -9,6 +9,7 @@ import {
   lastSession,
   managerLine,
   restoreStep,
+  warmMemory,
   withResume,
 } from './managerhost'
 
@@ -132,4 +133,27 @@ test('a failed restore keeps the host waiting even when the home is ready (FACTO
 
 test('the pane line quotes what the shell would split', () => {
   expect(managerLine(['--model', 'a b'], 's')).toBe("factory manager --model 'a b' --resume s")
+})
+
+test('f4bwc: warmMemory builds the vector cache once when it is missing and logs the time', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'warm-'))
+  const lines: string[] = []
+  const log = (m: string) => lines.push(m)
+  let runs = 0
+  const run = () => {
+    runs++
+    return 0
+  }
+  warmMemory(dir, log, run) // no memory dir: nothing to embed
+  expect(runs).toBe(0)
+  mkdirSync(join(dir, 'memory'))
+  warmMemory(dir, log, run)
+  expect(runs).toBe(1)
+  expect(lines.at(-1)).toMatch(/^memory cache warm: \d+ ms$/)
+  writeFileSync(join(dir, 'memory', '.index.json'), '{}')
+  warmMemory(dir, log, run) // cache present: skip
+  expect(runs).toBe(1)
+  rmSync(join(dir, 'memory', '.index.json'))
+  warmMemory(dir, log, () => 1)
+  expect(lines.at(-1)).toContain('failed')
 })

@@ -94,6 +94,30 @@ export function restoreStep(
 }
 
 /**
+ * Build the memory vector cache (memory/.index.json) with one search and no time limit. The home backup does
+ * not hold the cache, so after a restore the first search embeds every note and takes minutes. The launch
+ * search stops at 60 s and would never finish it. Logs the time; never throws.
+ */
+export function warmMemory(
+  home: string,
+  log: (m: string) => void,
+  run: () => number | null = () =>
+    Bun.spawnSync(['factory', 'memory', 'search', '--no-core', 'warm'], {
+      env: { ...process.env, FACTORY_HOME: home, FACTORY_OUTBOX: '' },
+    }).exitCode,
+) {
+  const dir = join(home, 'memory')
+  if (!existsSync(dir) || existsSync(join(dir, '.index.json'))) return
+  const t = Date.now()
+  try {
+    const code = run()
+    log(code === 0 ? `memory cache warm: ${Date.now() - t} ms` : `memory cache warm failed: exit ${code}`)
+  } catch (e) {
+    log(`memory cache warm failed: ${(e as Error).message}`)
+  }
+}
+
+/**
  * Wait until the home is ready and no restore is pending. Try a failed restore again each cycle, also with
  * FACTORY_AX_FRESH=1. A manager that starts empty over a good backup would push the deletes on top of it.
  */
@@ -360,6 +384,7 @@ export async function host(
     () => restoreStep(bcfg, log),
     () => Bun.sleep(everyMs),
   )
+  warmMemory(home, log)
   // the rig repos and their beads stores, before the manager reads them; a failure is logged, and the manager still starts
   for (const problem of prepare?.() ?? []) log(`repos sync: ${problem}`)
   if (process.env.FACTORY_AX_MANAGER_DRY === '1') {
