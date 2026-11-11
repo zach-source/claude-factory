@@ -276,7 +276,7 @@ export function bootstrapBeads(
   mkdirSync(dir, { recursive: true })
   // bd bootstraps an empty store, and exits 0, from an origin with no refs/dolt/data: refuse that
   if (!remote) {
-    const ls = Bun.spawnSync(['git', 'ls-remote', origin, 'refs/dolt/data'], { env, stderr: 'pipe' })
+    const ls = Bun.spawnSync(['git', 'ls-remote', '--', origin, 'refs/dolt/data'], { env, stderr: 'pipe' })
     if (ls.exitCode !== 0)
       throw new Error(`beads in the VM: git ls-remote refs/dolt/data: ${lastError(ls.stderr.toString())}`)
     if (!ls.stdout.toString().trim())
@@ -287,7 +287,7 @@ export function bootstrapBeads(
   writeFileSync(join(dir, '.beads', 'config.yaml'), `sync.remote: ${JSON.stringify(syncRemote)}\n`)
   for (const cmd of [
     ['git', 'init', '-q', '.'],
-    ...(remote ? [] : [['git', 'remote', 'add', 'origin', origin]]),
+    ...(remote ? [] : [['git', 'remote', 'add', '--', 'origin', origin]]),
     [process.env.FACTORY_BD ?? 'bd', 'bootstrap', '-y'],
   ]) {
     const p = Bun.spawnSync(cmd, {
@@ -1313,7 +1313,7 @@ export async function setup(o: { tries?: number; waitMs?: number } = {}) {
 }
 
 /** clone the run branch once; a note for the brief when origin has lost it */
-async function clone({ tries = 60, waitMs = 5000 } = {}) {
+export async function clone({ tries = 60, waitMs = 5000 } = {}) {
   const remote = process.env.FACTORY_REPO
   const noteFile = join(own(), 'missing-branch-note')
   if (!remote) return ''
@@ -1327,7 +1327,7 @@ async function clone({ tries = 60, waitMs = 5000 } = {}) {
     const tmp = repo() + '.tmp'
     rmSafe(repo(), { recursive: true, force: true })
     rmSafe(tmp, { recursive: true, force: true })
-    const r = sh(['git', 'clone', '--branch', branch, remote, tmp])
+    const r = sh(['git', 'clone', '--branch', branch, '--', remote, tmp])
     if (r.ok) {
       excludeScratch(tmp)
       writePrivatePatterns(tmp)
@@ -1338,7 +1338,7 @@ async function clone({ tries = 60, waitMs = 5000 } = {}) {
     // not transient: the laptop pushed the branch before the launch, so it is gone (a merge deleted it)
     if (err.includes(`Remote branch ${branch} not found in upstream origin`)) {
       rmSafe(tmp, { recursive: true, force: true })
-      const c = sh(['git', 'clone', remote, tmp])
+      const c = sh(['git', 'clone', '--', remote, tmp])
       const b = c.ok ? sh(['git', '-C', tmp, 'checkout', '-q', '-b', branch]) : c
       if (!b.ok) throw new Error(`git clone ${remote}: ${b.err}`)
       excludeScratch(tmp)

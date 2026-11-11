@@ -348,25 +348,31 @@ test('a worker or a patrol cannot run rig set, but can run rig show', () => {
     )
 })
 
-test('rig show prints every stored key as JSON and hides secrets', () => {
+test('3wjn AC4 rig show prints every stored key as JSON and hides secrets', () => {
   const { x, rx } = seed({
     goal: `deploy with ${TOK}`,
-    env: { MY_TOKEN: 'plain', A: 'b', NOTE: TOK },
+    env: { MY_TOKEN: 'plain', A: 'b', NOTE: TOK, GITLAB_PAT: 'pat-plain-zq' },
+    egress: [{ hosts: ['example.com'], key: 'VAULT_KEY' }],
     params: { base_branch: 'main', API_KEY: 'plain2', note: TOK },
     beadsRemote: { name: 'o', user: 'u', url: 'https://u:pw@example.com/x' },
   })
+  const before = text()
+  const h = histCount()
   for (const arg of ['x', rx]) {
     const r = factory(['rig', 'show', arg])
     expect(r.code).toBe(0)
+    expect(r.err).toBe('')
+    expect(text()).toBe(before)
+    expect(histCount()).toBe(h)
     const out = JSON.parse(r.out)
     expect(Object.keys(out)).toEqual(Object.keys(x))
     expect(out.goal).toBe('<hidden>')
-    expect(out.env).toEqual({ MY_TOKEN: '<hidden>', A: 'b', NOTE: '<hidden>' })
+    expect(out.env).toEqual({ MY_TOKEN: '<hidden>', A: 'b', NOTE: '<hidden>', GITLAB_PAT: '<hidden>' })
     expect(out.params).toEqual({ base_branch: 'main', API_KEY: '<hidden>', note: '<hidden>' })
     expect(out.beadsRemote.url).toBe('<hidden>')
     expect(out.egress).toEqual((x as { egress: unknown }).egress)
     expect(r.out).toBe(JSON.stringify(out, null, 2) + '\n')
-    for (const s of [TOK, 'plain', 'plain2', ':pw@']) expect(r.out + r.err).not.toContain(s)
+    for (const s of [TOK, 'plain', 'plain2', ':pw@', 'pat-plain-zq']) expect(r.out + r.err).not.toContain(s)
   }
   expect(factory(['rig', 'show', 'nope']).code).toBe(1)
 })
