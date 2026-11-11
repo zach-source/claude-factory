@@ -356,9 +356,14 @@ test('3wjn AC4 rig show prints every stored key as JSON and hides secrets', () =
     params: { base_branch: 'main', API_KEY: 'plain2', note: TOK },
     beadsRemote: { name: 'o', user: 'u', url: 'https://u:pw@example.com/x' },
   })
+  const before = text()
+  const h = histCount()
   for (const arg of ['x', rx]) {
     const r = factory(['rig', 'show', arg])
     expect(r.code).toBe(0)
+    expect(r.err).toBe('')
+    expect(text()).toBe(before)
+    expect(histCount()).toBe(h)
     const out = JSON.parse(r.out)
     expect(Object.keys(out)).toEqual(Object.keys(x))
     expect(out.goal).toBe('<hidden>')
