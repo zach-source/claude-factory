@@ -5,6 +5,8 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { argsInput as gcInput } from './core/ops/gc'
+import { refuseWorker } from './core/caller'
 
 type Env = Record<string, string | undefined>
 export type Req = { method: 'GET' | 'POST'; path: string; body?: Record<string, unknown> }
@@ -51,7 +53,11 @@ export function serverUrl(env: Env): { url: URL } | { error: string } | null {
 }
 
 /** the request for one CLI form, `{local: true}` for a command that stays local, or the refusal text */
-export function route(cmd: string | undefined, args: string[]): Req | { local: true } | string {
+export function route(
+  cmd: string | undefined,
+  args: string[],
+  resolveMail?: (args: string[]) => string[],
+): Req | { local: true } | string {
   if (!cmd || LOCAL.has(cmd)) return { local: true }
   const no = `factory ${cmd} has no server mode: unset FACTORY_SERVER to run it on the local home`
   const bad = `usage: factory ${cmd} ...: the server mode form is not valid (see specs/004-factory-server/contracts/client-api.md)`
@@ -59,6 +65,12 @@ export function route(cmd: string | undefined, args: string[]): Req | { local: t
   const [a, b, c] = args
   const n = args.length
   switch (cmd) {
+    case 'gc':
+      try {
+        return { method: 'POST', path: '/v1/gc', body: gcInput(args) }
+      } catch (e) {
+        return (e as Error).message
+      }
     case 'tick':
       if (n === 2 && a === '--board' && b === '--slim') return { method: 'GET', path: '/v1/board?slim=1' }
       return n === 0 ? { method: 'GET', path: '/v1/board' } : bad
@@ -105,9 +117,13 @@ export function route(cmd: string | undefined, args: string[]): Req | { local: t
           }
         : bad
     case 'mail': {
-      // cli.ts expands --text-file before this call
       const wake = args[2] === '--wake'
-      const text = args.slice(wake ? 3 : 2).join(' ')
+      const at = wake ? 3 : 2
+      if (args.slice(at).includes('--text-file')) {
+        if (!seg(a, b) || args[at] !== '--text-file' || n !== at + 2 || !resolveMail) return bad
+        args = resolveMail(args)
+      }
+      const text = args.slice(at).join(' ')
       return n >= 3 && seg(a, b) && text
         ? {
             method: 'POST',
@@ -167,10 +183,18 @@ export async function main(
   env: Env,
   fetchFn: typeof fetch = fetch,
   io: Io = stdio,
+  resolveMail?: (args: string[]) => string[],
 ): Promise<number | null> {
   if (!env.FACTORY_SERVER) return null
   const refuse = (s: string) => (io.err(s), 1)
-  const req = route(cmd, args)
+  if (cmd === 'gc') {
+    try {
+      refuseWorker(env, 'gc', true)
+    } catch (e) {
+      return refuse((e as Error).message)
+    }
+  }
+  const req = route(cmd, args, resolveMail)
   if (typeof req !== 'string' && 'local' in req) return null
   const found = serverUrl(env)
   if (!found) return null
@@ -207,6 +231,19 @@ export async function main(
     )
   }
   if (!res.ok) return refuse(`factory server: ${res.status} ${text.slice(0, 500)}`)
+  if (cmd === 'gc') {
+    let result: { code?: unknown; out?: unknown; err?: unknown } | null
+    try {
+      result = JSON.parse(text)
+    } catch {
+      return refuse('factory server: invalid gc result')
+    }
+    if (!result || result.code !== 0 || typeof result.out !== 'string' || typeof result.err !== 'string')
+      return refuse('factory server: invalid gc result')
+    io.out(result.out)
+    if (result.err) io.err(result.err.replace(/\n$/, ''))
+    return 0
+  }
   io.out(text.endsWith('\n') ? text : `${text}\n`)
   return 0
 }

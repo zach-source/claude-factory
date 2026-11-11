@@ -147,10 +147,28 @@ describe('readQuery and readBody', () => {
 })
 
 describe('CATALOG', () => {
-  test('has 29 operations: 20 GET and 9 POST', () => {
-    expect(CATALOG.length).toBe(29)
+  test('n69b2 AC1 gc has one owner POST operation and four optional inputs', () => {
+    const gc = CATALOG.find(o => o.name === 'gc.run')
+    expect(gc).toMatchObject({
+      route: { method: 'POST', path: '/v1/gc' },
+      output: 'text',
+      rights: 'owner',
+      mutates: true,
+      long: false,
+      since: 1,
+    })
+    expect(gc!.inputs.map(({ name, kind, required }) => [name, kind, required])).toEqual([
+      ['worktrees', 'flag', false],
+      ['dryRun', 'flag', false],
+      ['days', 'text', false],
+      ['rig', 'id', false],
+    ])
+    expect(CATALOG.filter(o => o.route.path === '/v1/gc')).toHaveLength(1)
+  })
+  test('has 30 operations: 20 GET and 10 POST', () => {
+    expect(CATALOG.length).toBe(30)
     expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(20)
-    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(9)
+    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(10)
     expect(CATALOG.filter(o => o.route.method === 'POST' && !o.mutates).map(o => o.name)).toEqual([
       'guard.check',
     ])
@@ -219,6 +237,7 @@ describe('CATALOG', () => {
       'flows.show GET /v1/flows',
       'gates.brief GET /v1/runs/:id/brief',
       'gates.decide POST /v1/runs/:id/decide',
+      'gc.run POST /v1/gc',
       'guard.check POST /v1/guard/check',
       'lease.show GET /v1/lease',
       'mail.list GET /v1/mail',

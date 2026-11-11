@@ -545,13 +545,16 @@ describe('startServices', () => {
   let dir: string
 
   afterEach(() => {
-    Bun.spawnSync(['pkill', '-f', TAG])
-    for (const v of ENV_VARS) {
-      if (saved[v] === undefined) delete process.env[v]
-      else process.env[v] = saved[v]
-      delete saved[v]
+    try {
+      Bun.spawnSync(['pkill', '-f', TAG])
+    } finally {
+      for (const v of ENV_VARS) {
+        if (saved[v] === undefined) delete process.env[v]
+        else process.env[v] = saved[v]
+        delete saved[v]
+      }
+      rmSync(dir, { recursive: true, force: true })
     }
-    rmSync(dir, { recursive: true, force: true })
   })
 
   function set(vars: Partial<Record<(typeof ENV_VARS)[number], string>> = {}) {
@@ -794,6 +797,36 @@ describe('startServices', () => {
     for (let i = 0; i < 100 && lines().length < 2; i++) await new Promise(r => setTimeout(r, 50))
     expect(lines()).toEqual(['web', 'after-web'])
   })
+})
+
+test('startServices fixtures restore the environment after a cleanup error', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'services-cleanup-'))
+  const result = join(dir, 'task')
+  const file = join(dir, 'cleanup.test.ts')
+  writeFileSync(
+    file,
+    `import { afterAll } from 'bun:test'
+import { writeFileSync } from 'node:fs'
+import ${JSON.stringify(import.meta.filename)}
+const spawnSync = Bun.spawnSync
+Bun.spawnSync = (...args) => {
+  if (args[0][0] === 'pkill') throw new Error('fixture cleanup error')
+  return spawnSync(...args)
+}
+afterAll(() => writeFileSync(${JSON.stringify(result)}, process.env.DEVENV_TASK_FILE ?? 'unset'))
+`,
+  )
+  try {
+    const p = Bun.spawnSync([process.execPath, 'test', file, '-t', 'no DEVENV_TASK_FILE spawns nothing'], {
+      env: { ...process.env, DEVENV_TASK_FILE: 'parent-tasks' },
+      timeout: 20_000,
+    })
+    expect(p.exitCode, p.stderr.toString()).toBe(1)
+    expect(p.stderr.toString()).toContain('fixture cleanup error')
+    expect(readFileSync(result, 'utf8')).toBe('parent-tasks')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 describe('servicesNote', () => {

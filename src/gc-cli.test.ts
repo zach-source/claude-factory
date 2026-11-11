@@ -33,7 +33,16 @@ let home = join(dir, 'home')
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 const factory = (args: string[], env: Record<string, string> = {}) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, ...laptop } = process.env
+  const {
+    FACTORY_OUTBOX,
+    FACTORY_FROM,
+    FACTORY_RUN,
+    FACTORY_DEF_NAME,
+    FACTORY_PATROL,
+    BEADS_ACTOR,
+    FACTORY_SERVER,
+    ...laptop
+  } = process.env
   const p = Bun.spawnSync([CLI, ...args], {
     env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0', FACTORY_NO_KICK: '1', ...env },
   })
@@ -131,6 +140,24 @@ const reset = () => {
 }
 
 const DAY = 24 * 3_600_000
+
+test('n69b2 AC3 AC4 positive decimal forms and flag order retain the preview stamp policy', () => {
+  for (const days of ['7', '+7', '.5', '1.', '1e2']) {
+    for (const args of [
+      ['--days', days, '--dry-run'],
+      ['--dry-run', '--days', days],
+    ]) {
+      reset()
+      const result = factory(['gc', ...args])
+      expect(result.code).toBe(0)
+      expect(result.err).toBe('')
+      expect(result.out).toContain('total: 0 files, 0 B across 0 run(s)')
+      expect(existsSync(join(home, 'gc.stamp'))).toBe(true)
+      expect(existsSync(join(home, 'metrics.jsonl'))).toBe(false)
+      expect(existsSync(join(home, 'gc.log'))).toBe(false)
+    }
+  }
+})
 
 test('--dry-run prints bytes per kind and the run count, and deletes nothing (AC1)', () => {
   reset()

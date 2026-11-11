@@ -84,6 +84,7 @@ function fakeBd(prefix: string) {
     '      store-missing) echo \'Error: failed to open database: database "zzz" not found on Dolt server at 127.0.0.1:3308\' >&2; exit 1;;',
     '    esac;;',
     '  create) echo new-bead-1;;',
+    `  defer) [ -e ${join(dir, 'defer-fail')} ] && { echo "defer failed" >&2; exit 1; }; exit 0;;`,
     '  update)',
     `    case "$*" in`,
     `      *--claim*) [ -e ${claimFail} ] && { echo "already claimed" >&2; exit 1; };;`,
@@ -290,6 +291,21 @@ test("a goal shaped like a bead id but not found under this rig's own prefix sti
   const log = readFileSync(calls, 'utf8')
   expect(log).toContain('create --title fix-login')
   expect(readdirSync(join(home, 'runs')).length).toBe(1)
+})
+
+test('a failed defer preserves the factory start error', () => {
+  reset()
+  const r = repo()
+  fakeBd('acme')
+  fakeHerdr()
+  writeFileSync(join(dir, 'defer-fail'), '')
+  mkdirSync(join(r, '.factory'), { recursive: true })
+  writeFileSync(join(r, '.factory', 'tiny.json'), readFileSync(factoryFixture()))
+  const out = run(['start', 'tiny', r, 'acme-1'])
+  expect(out.code).not.toBe(0)
+  expect(out.err).toContain('is not a valid factory')
+  expect(out.err).toContain('defer failed')
+  expect(readFileSync(calls, 'utf8')).toContain('defer acme-1')
 })
 
 test('a goal naming a bead bd finds still starts a run on it, as before', () => {
@@ -585,6 +601,24 @@ test('fork of an ended ship run is refused while another ship run is live on the
   const childRun = JSON.parse(readFileSync(join(home, 'runs', child, 'run.json'), 'utf8'))
   expect(childRun.forkedFrom).toBe(a)
   expect(childRun.ship).toBe(true)
+})
+
+test.each(['fork', 'goto'])('%s refuses a second ship run before a queued GOTO takes effect', verb => {
+  const { a, b } = setupForkRig(true, true)
+  endRun(b)
+  expect(run(['goto', b, 'work']).code).toBe(0)
+  const refused = run([verb, a, 'work'])
+  expect(refused.code).not.toBe(0)
+  expect(refused.err).toContain(`${b} is a live ship run`)
+  expect(readdirSync(join(home, 'runs'))).toHaveLength(2)
+})
+
+test.each(['done', 'consumed'])('fork ignores a %s GOTO on an ended ship run', target => {
+  const { a, b } = setupForkRig(true, true)
+  endRun(b)
+  expect(run(['goto', b, target === 'done' ? 'done' : 'work']).code).toBe(0)
+  if (target === 'consumed') endRun(b)
+  expect(run(['fork', a, 'work']).code).toBe(0)
 })
 
 test('fork of an ended non-ship run is allowed beside a live ship run (claude-factory-9wch)', () => {

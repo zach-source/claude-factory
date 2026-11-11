@@ -111,7 +111,7 @@ A file named for the runner stops one more run for the same limit. Codex has its
 
 Pulling means nothing on the cluster ever needs a route back to the laptop.
 
-The launch puts `memory.tgz`: the rig's notes with a cut `.index.json` and `.usage.jsonl`. If it is over `MEMORY_SNAPSHOT_MAX` (8 MiB), the launch does not put it. The side file then has `memorySkipped` with the reason. The first `memory search` in the VM unpacks it into `FACTORY_HOME/memory`. A search before the last part lands finds nothing. In addition, the launch runs `memory search --from <run>/<station>` once on the laptop. The query is the station and the goal. The brief carries the top 5 notes with their laptop paths, and the `shown` events carry the run and station. If the search fails, times out or finds nothing, the brief has no notes and the launch goes on. A resumed session runs no search. `CORE.md` and the topic list also reach the worker in its brief. When a note helps, the worker runs `factory memory helped --from <run>/<station> <note path>`, and the outbox carries it to the laptop.
+The launch puts `memory.tgz`: the rig's notes with a cut `.index.json` and `.usage.jsonl`. If it is over `MEMORY_SNAPSHOT_MAX` (8 MiB), the launch does not put it. The side file then has `memorySkipped` with the reason. The launch also writes `memory snapshot skipped: <reason>` to `launches.log`. The put writes `memory snapshot sent: <bytes> bytes in <parts> parts` there when the last part lands. The first `memory search` in the VM unpacks it into `FACTORY_HOME/memory`. A VM search before the last part lands prints `the memory snapshot has not arrived yet: search again in a few minutes`. If the unpack fails, it prints `the memory snapshot did not unpack (<reason>): search again in a few minutes`. In addition, the launch runs `memory search --from <run>/<station>` once on the laptop. The query is the station and the goal. The brief carries the top 5 notes with their laptop paths, and the `shown` events carry the run and station. If the search fails, times out or finds nothing, the brief has no notes and the launch goes on. A resumed session runs no search. `CORE.md` and the topic list also reach the worker in its brief. When a note helps, the worker runs `factory memory helped --from <run>/<station> <note path>`, and the outbox carries it to the laptop.
 
 ### Beads in the VM
 
@@ -437,7 +437,7 @@ The pass lists `ax get tasks` and `ax get workspaces`. If one list fails, it del
 - The name is not the manager task (`f-manager`).
 - The name is `f-<run>-<seq>` for exactly one run of this home. A name that this home does not own stays.
 - `<seq>` is not above the run's `seq` in `state.json`. A higher number is a launch that the state does not show yet.
-- The run is done or aborted, or `<seq>` is below the run's `seq` and the run's worker is not `ax://<name>`.
+- The run is done or aborted. Or the run's worker is not `ax://<name>`, and `<seq>` is below the run's `seq` or the run has no worker (sub-state `waiting`, `backoff` or `stuck`).
 
 One pass deletes 10 names at most. `ax.log` in the factory home gets one `ax-sweep:` summary line for each pass, a `swept` line for each name, and a `remove ... failed` line for each failed delete. The close path writes the same failed line. `factory stop` halts the pass.
 
@@ -604,6 +604,7 @@ Limits:
 - The broker answers 400 and runs no command for a worker policy in these cases:
   - It names the vault key `AX_AUTH` or `GITHUB_BASIC_MANAGER`.
   - A `credentialUri` is not `ate-secret://agent-vault/<vault>/<KEY>`.
+  - Its vault differs from `FACTORY_AX_VAULT` in the broker environment. This check also applies to both reviewer rules.
   - A rule has `pathPrefixes` or `paths` on a hostname pattern that can match a `github.com` host. Examples: `github.com`, `*.github.com`, `*.com`, `*`. The broker accepts one such rule: the reviewer rule. Its keys are exactly these:
     - `hostnames`: only `api.github.com` and `uploads.github.com`.
     - `pathPrefixes`: one `/repos/<owner>/<repo>/`.
@@ -633,6 +634,16 @@ Limits:
 - `workerPolicyRefusal` in `src/broker.ts` makes this check. `createPolicy` uses the same function. The owner must apply `deploy/broker.yaml` with a new broker image to start the check in the cluster.
 - The broker logs one line for each call, and one line `policy refused for <atespace>/<actor>: <reason>` for each refusal.
 
+Set `FACTORY_AX_VAULT` in the trusted broker Deployment to the same worker vault that the manager uses.
+The broker compares the complete vault segment as exact text. It does not decode, normalize, or trim that segment.
+An unset or empty value keeps the alphabet-only check: the vault must contain only `a-z`, `0-9`, and `-`.
+
+A nonempty config value with any other character stops the broker before startup. The value `-` remains valid.
+The manager request cannot choose the broker pin. Local `createPolicy` calls omit this optional constraint.
+
+This setting does not change `CLAUDE_TOKEN_VAULT`, which selects the vault for the token swap.
+The owner must deploy a broker image with this check and the vault config. Existing policies change only after a new PUT.
+
 Any caller that reaches the broker can set the egress of any worker in the served atespaces. Give the broker address only to the manager task and the factory server pod. Two callers can reach the broker. The manager task calls it through the egress gateway in namespace `ate-system`. Any pod in namespace `ate-system` can call the broker too, not only the gateway. The factory server pod calls it from namespace `factory` with the label `app: factory-server`. Any pod in namespace `factory` with that label can call the broker. Only the owner may create pods in that namespace. The broker has no caller authentication.
 
 Use in the manager task:
@@ -641,7 +652,7 @@ Use in the manager task:
 2. The manager policy gets one `http` rule for the router and one for the broker. An `https` rule does not work for plain HTTP (h2c) to a service. When ax-server caller authentication is on, use an `https` AX server URL, for example `https://ax-server.ax-system.svc:8443`. The gateway then adds `Authorization: Bearer <AX_AUTH>`. On the laptop, export `AX_AUTH_TOKEN` in the shell that runs `factory`. The `ax` CLI sends it over the loopback tunnel.
 3. In the manager VM and in the server pod, `FACTORY_POLICY_BROKER` makes `unavailable`, `createPolicy` and `egressCA` call the broker with `curl`, not `kubectl`. Unset, they run `kubectl` as before. `deploy/server.yaml` sets `FACTORY_POLICY_BROKER` to `http://factory-policy-broker.factory-broker.svc:8080`.
 
-Deploy: set `BROKER_IMAGE` to the image by digest. Run `envsubst '$BROKER_IMAGE $FACTORY_BROKER_KEY_HOSTS' < deploy/broker.yaml | kubectl apply -f -`. The ServiceAccount needs `get` on `clustertrustbundles`. The broker reaches ate-api at `api.ate-system.svc:443`. The cluster must let the namespace pull the image. For the token swap, also set the `CLAUDE_TOKEN_*` variables (see the header of `deploy/broker.yaml`) in the `envsubst` list.
+Deploy: set `BROKER_IMAGE` to the image by digest. Set `FACTORY_AX_VAULT` to the worker vault. The owner runs `envsubst '$BROKER_IMAGE $FACTORY_AX_VAULT $FACTORY_BROKER_KEY_HOSTS' < deploy/broker.yaml | kubectl apply -f -`. The ServiceAccount needs `get` on `clustertrustbundles`. The broker reaches ate-api at `api.ate-system.svc:443`. The cluster must let the namespace pull the image. For the token swap, also set the `CLAUDE_TOKEN_*` variables (see the header of `deploy/broker.yaml`) in the `envsubst` list.
 
 Two more calls serve the manager's secrets (see Manager secrets):
 
@@ -664,11 +675,14 @@ The manager VM holds placeholders only. The egress gateway puts the real value i
 | Dolt (`bd dolt pull`)     | `DOLT_REMOTE_PASSWORD=placeholder`                     | The rig's own egress entry for that host and port gives the vault key, header and prefix. Else the key is `DOLT_BASIC`. `managerEgress` adds one rule for each `https` `beadsRemote` host and port. A rig with none, or with an `http` remote, adds none.            |
 | Linear (`--linear` rigs)  | Key `placeholder` when `FACTORY_IN_AX=1`               | Vault key `LINEAR`, header `Authorization`, no prefix. `managerEgress` adds the `api.linear.app` rule only for a `--linear` rig.   |
 | AX server                 | `AX_AUTH_TOKEN=placeholder` for an `https` URL         | Vault key `AX_AUTH`, header `Authorization`, prefix `Bearer `. `managerEgress` gives an `https` `FACTORY_AX_MANAGER_AX_SERVER` an `https` rule (port from the URL, else 443). An `http` URL keeps a plain rule and no token. `createPolicy` refuses `AX_AUTH` in the policy of any task but the manager. |
+| Codex fallback            | none; the Codex login holds placeholders                | Vault key `OPENAI`, rule for `api.openai.com`. Vault keys `CODEX_CHATGPT` and `CODEX_CHATGPT_ACCOUNT`, rule for `chatgpt.com` (path prefix `/backend-api/codex/` only). `managerEgress` adds both rules always. The manager uses Codex when every Claude slot is at its limit (claude-factory-y3f8w). |
 | Router, broker            | none                                                   | Plain `http` (h2c) rules, no credential.                                                                                           |
 | Kube API                  | none                                                   | The VM has none. `unavailable()` asks the broker `GET /controller`.                                                                |
 | Token swap                | `FACTORY_AX_TOKEN_SWAP` is a `curl` POST to the broker | The broker pod runs `claude-token best`. The op writer token is the Secret `claude-token-op` there, never in the VM.                |
 
-Workers only (not the manager): `BUILDBUDDY`, `ATTIC`, `OPENAI`, `CODEX_CHATGPT`, `CODEX_CHATGPT_ACCOUNT`, `GITLAB`.
+The patrol also runs on Codex while the manager is limited (`factory patrol --once --fallback`). Codex has no Bash hook. So the core refuses the patrol's gated verbs when `FACTORY_PATROL` is set (`patrolRefusal`), and a `bd` shim on `PATH` refuses a bd write (`factory patrol-bd`). The Claude hook stays as a second layer. A call to bd by its absolute path is not seen by the shim. The patrol runs in the `workspace-write` sandbox; if the VM kernel does not allow that sandbox, the patrol fails and the log shows it (claude-factory-y3f8w.5).
+
+Workers only (not the manager): `BUILDBUDDY`, `ATTIC`, `GITLAB`.
 
 Check it in the VM: `AX_CHECK_SWAP=1 RIG_REPO=<clone> BEADS_RIG_REPO=<clone> AX_PROBE_FILE=<task manifest with __NAME__> hack/ax-manager-check.sh`. `AX_CHECK_SWAP=1` is needed for the token swap check. It swaps the live Claude token for all AX workers. Without it, the check prints SKIP. The script prints PASS or FAIL for the `gh`, `git push`, `bd dolt pull`, token swap, AX apply and no-secret-on-disk checks.
 
@@ -680,6 +694,7 @@ Owner steps (a worker never runs these):
 4. Run `CLAUDE_TOKEN_ITEM=.. CLAUDE_TOKEN_VAULT=.. CLAUDE_TOKEN_LIVE_FIELD=.. CLAUDE_TOKEN_SLOT_FIELD=.. CLAUDE_TOKEN_ACTIVE_FIELD=.. BROKER_IMAGE=<digest> envsubst '<the variables>' < deploy/broker.yaml | kubectl apply -f -`.
 5. Launch the manager again with `FACTORY_AX_MANAGER_BROKER`, `FACTORY_AX_MANAGER_AX_SERVER` and `FACTORY_AX_MANAGER_ROUTER` set.
 6. For a `--linear` rig, add `LINEAR` to the agent-vault vault.
+7. Roll out the new manager egress only as an owner step. It is a credential change: the manager VM can then reach `api.openai.com` and `chatgpt.com`.
 
 AX server caller authentication (owner steps, in order):
 

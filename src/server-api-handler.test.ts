@@ -1,6 +1,16 @@
 import { describe, expect, test } from 'bun:test'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Port } from './core/catalog'
@@ -21,6 +31,11 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
   // each port function logs into the same array as the runner, so a "zero calls" check counts both
   const log = (port: string, args: unknown[]) => calls.push({ port, args })
   const port: Port = {
+    gcPass: () => {},
+    gcWorktreesPass: () => {},
+    gcRigs: () => [],
+    gcHold: () => () => {},
+    gcStamp: () => {},
     show: async id => (log('show', [id]), { ok: 1 }),
     status: async (id, print) => (log('status', [id]), print('{"ok":1}')),
     backlog: async () => (log('backlog', []), { ok: 1 }),
@@ -71,6 +86,87 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
   return { home, calls, logs, h: make(), make, env: () => lastEnv, boards: () => boardCalls }
 }
 type H = ReturnType<typeof setup>['h']
+
+test('teyn1 AC3 real CLI preserves file text at the mail port', async () => {
+  const t = setup()
+  mkdirSync(join(t.home, 'text'))
+  writeFileSync(join(t.home, 'rigs.json'), '[]')
+  const file = join(t.home, 'text', 'literal.txt')
+  writeFileSync(file, '--wake')
+  const server = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: req => t.h(req, '127.0.0.1') })
+  const env = { ...process.env }
+  for (const key of [
+    'FACTORY_OUTBOX',
+    'FACTORY_FROM',
+    'FACTORY_RUN',
+    'FACTORY_DEF_NAME',
+    'BEADS_ACTOR',
+    'FACTORY_PATROL',
+    'FACTORY_SERVER',
+    'FACTORY_MAIN_CHAT',
+  ])
+    delete env[key]
+  try {
+    for (const [wake, worker] of [
+      [false, false],
+      [true, false],
+      [false, true],
+    ]) {
+      if (worker) {
+        mkdirSync(join(t.home, 'runs', 'r1'), { recursive: true })
+        writeFileSync(
+          join(t.home, 'runs', 'r1', 'run.json'),
+          JSON.stringify({ worktree: process.cwd(), repo: '/other' }),
+        )
+      }
+      t.calls.length = 0
+      const p = Bun.spawn(
+        [
+          'bun',
+          join(import.meta.dir, 'cli.ts'),
+          'mail',
+          'r1',
+          'manager',
+          ...(wake ? ['--wake'] : []),
+          '--text-file',
+          file,
+        ],
+        {
+          env: {
+            ...env,
+            FACTORY_HOME: t.home,
+            HOME: t.home,
+            FACTORY_SELF_UPDATE: '0',
+            FACTORY_SERVER: `http://127.0.0.1:${server.port}`,
+          },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        },
+      )
+      const timer = setTimeout(() => p.kill(), 15000)
+      try {
+        const [, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()])
+        expect(await p.exited).toBe(worker ? 1 : 0)
+        if (worker) {
+          expect(err).toContain('403')
+          expect(t.calls).toEqual([])
+        } else
+          expect(t.calls).toEqual([
+            {
+              port: 'mail',
+              args: [{ id: 'r1', to: 'manager', text: '--wake', wake }, { cwd: process.cwd() }],
+            },
+          ])
+      } finally {
+        clearTimeout(timer)
+        p.kill()
+        await p.exited
+      }
+    }
+  } finally {
+    await server.stop(true)
+  }
+})
 const get = (h: H, path: string, headers: Record<string, string> = {}) =>
   h(new Request(`http://x${path}`, { headers }), '1.2.3.4')
 const post = (
@@ -910,5 +1006,30 @@ describe('serveSocket event transport', () => {
     sock.destroy()
     await tick()
     expect(h.subscribers()).toBe(0)
+  })
+})
+
+describe('e0qu temp file', () => {
+  const store = (t: ReturnType<typeof setup>) => join(t.home, 'client-idempotency.json')
+  test('e0qu AC14 stale temp mode: the store ends with mode 0600', async () => {
+    const t = setup()
+    const tmp = `${store(t)}.tmp`
+    writeFileSync(tmp, 'stale')
+    chmodSync(tmp, 0o644)
+    expect((await post(t.h, '/v1/halt', { mode: 'stop' }, {}, 'key-e0qu-0001')).status).toBe(200)
+    expect(statSync(store(t)).mode & 0o777).toBe(0o600)
+    expect(existsSync(tmp)).toBe(false)
+    expect(Object.keys(JSON.parse(readFileSync(store(t), 'utf8')))).toContain('key-e0qu-0001')
+  })
+  test('e0qu AC15 symlink at the temp name: the victim keeps its text', async () => {
+    const t = setup()
+    const victim = join(t.home, 'victim.txt')
+    writeFileSync(victim, 'keep')
+    symlinkSync(victim, `${store(t)}.tmp`)
+    expect((await post(t.h, '/v1/halt', { mode: 'stop' }, {}, 'key-e0qu-0002')).status).toBe(200)
+    expect(lstatSync(store(t)).isFile()).toBe(true)
+    expect(readFileSync(victim, 'utf8')).toBe('keep')
+    expect(existsSync(`${store(t)}.tmp`)).toBe(false)
+    expect(Object.keys(JSON.parse(readFileSync(store(t), 'utf8')))).toContain('key-e0qu-0002')
   })
 })

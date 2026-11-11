@@ -1,3 +1,4 @@
+import { stripLiveRunVars } from './worker-hook-test-env'
 import { expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -10,6 +11,8 @@ import {
   shellSnapshotFunctions,
   type HookGate,
 } from './worker-hook'
+
+stripLiveRunVars()
 
 // claude-factory-usqc: the shell expands an alias only in command position. A word after an external
 // command word is not alias-scanned, unless some segment of the call is not a flat external command.

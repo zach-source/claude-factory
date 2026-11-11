@@ -334,6 +334,25 @@ describe('parseFlags', () => {
     expect(() => parseFlags(['--port', '8444', ...all])).toThrow(/usage/)
     expect(() => parseFlags(['--client-port', '70000', ...all.slice(2)])).toThrow(/usage/)
   })
+  const wk = ['--worker-port', '8443', '--worker-key', '/wk']
+  test('the worker flags give the worker port and key, and the client has no key path', () => {
+    const f = parseFlags([...all, ...wk])
+    expect(f.worker).toEqual({ port: 8443, key: '/wk' })
+    expect(f.client).toEqual({ port: 8444, cert: '/c', key: '/k', ca: '/ca' })
+    expect(parseFlags(all).worker).toBeUndefined()
+  })
+  for (const [name, args] of [
+    ['--worker-port alone', [...all, '--worker-port', '8443']],
+    ['--worker-key alone', [...all, '--worker-key', '/wk']],
+    ['the worker flags without the client flags', wk],
+    ['the worker port equals --port', [...all, '--worker-port', '8080', '--worker-key', '/wk']],
+    ['the worker port equals the client port', [...all, '--worker-port', '8444', '--worker-key', '/wk']],
+    ['the worker port is 70000', [...all, '--worker-port', '70000', '--worker-key', '/wk']],
+    ['--worker-key takes a flag as its value', [...all, '--worker-port', '8443', '--worker-key', '--x']],
+  ] as const)
+    test(`usage error: ${name}`, () => {
+      expect(() => parseFlags([...args])).toThrow(/usage/)
+    })
 })
 
 describe('events over mTLS: replay then live', () => {

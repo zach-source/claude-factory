@@ -29,7 +29,7 @@ test('a goto reaches each node, and its one outcome reaches done', () => {
 
 test('sweeps carries the same house rules and params as lifecycle', () => {
   expect(sweeps.rules).toBe(lifecycle.rules)
-  // the codex and cursor params belong to lifecycle's split stations, base_branch to its git stations, fast_check to its worker stations: sweeps has none
+  // the codex and cursor params belong to lifecycle's split stations, base_branch to its git stations, fast_check to its worker stations, plan_model to its plan station: sweeps has none
   const claudeOnly = Object.fromEntries(
     Object.entries(lifecycle.params as Record<string, string>).filter(
       ([k]) =>
@@ -37,7 +37,8 @@ test('sweeps carries the same house rules and params as lifecycle', () => {
         !k.startsWith('cursor') &&
         !k.startsWith('grok') &&
         k !== 'base_branch' &&
-        k !== 'fast_check',
+        k !== 'fast_check' &&
+        k !== 'plan_model',
     ),
   )
   expect(sweeps.params as object).toEqual(claudeOnly)

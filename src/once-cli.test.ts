@@ -14,7 +14,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { parseStream, patrolOnce, runModel, runModelAsync } from './once'
+import { parseStream, patrolOnce, runModel, runModelAsync, type ModelCall } from './once'
 import { STEP_SPECS } from './steps'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
@@ -34,7 +34,7 @@ beforeEach(() => {
 })
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
-const factory = (args: string[], stdin = '') => {
+const factory = (args: string[], stdin = '', extra: Record<string, string> = {}) => {
   const {
     FACTORY_OUTBOX,
     FACTORY_FROM,
@@ -51,6 +51,7 @@ const factory = (args: string[], stdin = '') => {
       FACTORY_CLAUDE: join(dir, 'stub.sh'),
       FACTORY_SELF_UPDATE: '0',
       FACTORY_NO_KICK: '1',
+      ...extra,
     },
     stdin: Buffer.from(stdin),
     timeout: 60_000,
@@ -223,15 +224,50 @@ test('tick --keep-mail saves the tick output', () => {
   expect(read('patrol-state.json').unsent).toEqual([])
 })
 
-test('patrol --once refuses codex', () => {
-  const r = factory(['patrol', '--once', '--codex', 'gpt-5'])
-  expect(r.code).toBe(1)
-  expect(r.err).toContain('codex has no PreToolUse hook')
+test('patrol --once --fallback runs the patrol on codex with FACTORY_PATROL and a bd shim', () => {
+  write('manager-tick.json', { runs: [], manager: [], rigs: [] })
+  write('patrol-state.json', { unsent: [MAIL], seen: [], patrolAt: 0 })
+  const codex = join(dir, 'codex.sh')
+  writeFileSync(
+    codex,
+    `#!/bin/sh\ncat > '${dir}/stdin.txt'\nprintf '%s\\n' "$@" > '${dir}/args.txt'\nenv > '${dir}/env.txt'\necho answered r1\n`,
+  )
+  chmodSync(codex, 0o755)
+  const r = factory(['patrol', '--once', '--fallback'], '', {
+    FACTORY_CODEX: codex,
+    OPENAI_API_KEY: 'sk-live-x',
+  })
+  expect(r.err).toBe('')
+  expect(r.out).toContain('answered r1')
+  const args = readFileSync(join(dir, 'args.txt'), 'utf8')
+  expect(args).toContain('workspace-write')
+  expect(args).not.toContain('patrol-guard')
+  const env = readFileSync(join(dir, 'env.txt'), 'utf8')
+  expect(env).toContain('FACTORY_PATROL=1')
+  expect(env).toContain(`PATH=${join(home, 'patrol-bin')}:`)
+  expect(env).not.toContain('sk-live-x')
+  expect(readFileSync(join(home, 'patrol-bin', 'bd'), 'utf8')).toContain('patrol-bd')
+  expect(read('patrol-state.json').unsent).toEqual([])
+})
+
+test('patrol-bd refuses a write and the shim runs a read', () => {
+  const bad = factory(['patrol-bd', 'update', 'x-1', '--set-metadata', 'a=b'])
+  expect(bad.code).toBe(1)
+  expect(bad.err).toContain('subagent')
+  const fake = join(dir, 'fakebd.sh')
+  writeFileSync(fake, `#!/bin/sh\necho real-bd "$@"\n`)
+  chmodSync(fake, 0o755)
+  const ok = factory(['patrol-bd', 'show', 'x-1'], '', { FACTORY_REAL_BD: fake })
+  expect(ok.out).toContain('real-bd show x-1')
 })
 
 test('patrol-guard denies the subagent verbs and allows reads', () => {
   const guard = (command: string) => factory(['patrol-guard'], JSON.stringify({ tool_input: { command } }))
   for (const [bad, reason] of [
+    [
+      'bd ready --claim --label factory',
+      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author. Write a bd command in literal words with bd as its first word: no $, backtick, glob, brace, # or <. Put other comment text in a file: bd comments add <id> -f <file>',
+    ],
     [
       'bd label add x y',
       'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author. Write a bd command in literal words with bd as its first word: no $, backtick, glob, brace, # or <. Put other comment text in a file: bd comments add <id> -f <file>',
@@ -297,6 +333,60 @@ test('brief --once and review --once report nothing due on an empty board', () =
 })
 
 const stream = (lines: unknown[]) => lines.map(l => JSON.stringify(l)).join('\n')
+
+test('wua3v model argv preserves source restriction', async () => {
+  reply('ok')
+  const old = { claude: process.env.FACTORY_CLAUDE, codex: process.env.FACTORY_CODEX }
+  process.env.FACTORY_CLAUDE = join(dir, 'stub.sh')
+  process.env.FACTORY_CODEX = join(dir, 'stub.sh')
+  const settings = {
+    hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'guard' }] }] },
+  }
+  const base = {
+    system: 's',
+    input: 'i',
+    model: 'm',
+    tools: 'Bash',
+    maxTurns: 3,
+    timeoutMs: 20_000,
+    settings,
+  }
+  const restricted: ModelCall = { ...base, settingSources: 'user' }
+  const args = () => readFileSync(join(dir, 'args.txt'), 'utf8').trimEnd().split('\n')
+  try {
+    for (const run of [runModel, runModelAsync]) {
+      for (const mode of [{}, { persist: true }, { persist: true, resume: 's-1' }]) {
+        expect((await run({ ...restricted, ...mode })).isOk).toBe(true)
+        const a = args()
+        expect(a.filter(v => v === '--setting-sources')).toHaveLength(1)
+        expect(a[a.indexOf('--setting-sources') + 1]).toBe('user')
+        expect(JSON.parse(a[a.indexOf('--settings') + 1]!)).toEqual(settings)
+      }
+      await run(base)
+      expect(args()).not.toContain('--setting-sources')
+      await run({ ...restricted, codex: 'gpt-5' })
+      expect(args()).not.toContain('--setting-sources')
+    }
+    const reject = join(dir, 'reject.sh')
+    writeFileSync(
+      reject,
+      `#!/bin/sh\nprintf 'spawn\\n' >> '${dir}/spawns.txt'\nprintf 'unknown option: --setting-sources' >&2\nexit 1\n`,
+    )
+    chmodSync(reject, 0o755)
+    process.env.FACTORY_CLAUDE = reject
+    for (const run of [runModel, runModelAsync]) {
+      const r = await run(restricted)
+      expect(r.isOk).toBe(false)
+      expect(r.error).toContain('unknown option: --setting-sources')
+    }
+    expect(readFileSync(join(dir, 'spawns.txt'), 'utf8')).toBe('spawn\nspawn\n')
+  } finally {
+    if (old.claude === undefined) delete process.env.FACTORY_CLAUDE
+    else process.env.FACTORY_CLAUDE = old.claude
+    if (old.codex === undefined) delete process.env.FACTORY_CODEX
+    else process.env.FACTORY_CODEX = old.codex
+  }
+})
 
 test('parseStream keeps tool ids and the session', () => {
   const bash = (id: unknown, command: string) => ({ type: 'tool_use', name: 'Bash', id, input: { command } })

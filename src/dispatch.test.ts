@@ -743,11 +743,72 @@ test('a factory bead with a hold label: dispatch starts no run and records the s
 })
 
 test('a label that only resembles a hold still starts (claude-factory-9kou)', () => {
-  for (const label of ['humane', 'held', 'rejected-by', 'xheld:y', 'Human']) {
+  for (const label of ['ownerish', 'Owner', 'humane', 'held', 'rejected-by', 'xheld:y', 'Human']) {
     precheckReset({ labels: ['factory', label] })
     pfactory(['beads'], { GH_JSON: '[]' })
     expect(runDirs()).toHaveLength(1)
   }
+})
+
+for (const precheck of ['0', '1']) {
+  test(`jmvx AC3 dispatch refuses children of held parents with precheck ${precheck}`, () => {
+    precheckReset()
+    const parents: Record<string, unknown>[] = []
+    const children: { id: string; title: string; parent: string; labels: string[] }[] = []
+    for (const hold of [
+      'owner',
+      'human',
+      'rejected',
+      'held:',
+      'held:station',
+      'held:cluster:acme',
+      'decisions',
+    ]) {
+      for (const [childFactory, parentFactory] of [
+        [true, false],
+        [false, true],
+        [true, true],
+      ]) {
+        const id = `acme-${parents.length + 1}`
+        parents.push({
+          id,
+          title: 'parent',
+          labels: [...(parentFactory ? ['factory'] : []), ...(hold === 'decisions' ? [] : [hold])],
+          ...(hold === 'decisions' && { metadata: { owner_decisions: ['wait'] } }),
+        })
+        children.push({ id: `${id}.1`, title: 'child', parent: id, labels: childFactory ? ['factory'] : [] })
+      }
+    }
+    writeFileSync(
+      join(pbin, 'bd'),
+      [
+        '#!/bin/sh',
+        `echo "bd $*" >> '${bdCallsLog}'`,
+        'case "$1" in',
+        `ready) printf '%s' '${JSON.stringify(children)}';;`,
+        `list) printf '%s' '${JSON.stringify([...parents, ...children])}';;`,
+        "children) printf '%s' '[]';;",
+        'esac',
+      ].join('\n'),
+    )
+    expect(pfactory(['beads'], { FACTORY_PRECHECK: precheck, GH_JSON: '[]' }).code).toBe(0)
+    expect(runDirs()).toEqual([])
+    const calls = readFileSync(bdCallsLog, 'utf8')
+    expect(calls).not.toMatch(/^bd (claim|update|comment)\b/m)
+    const skips = JSON.parse(readFileSync(join(phome, 'dispatch.json'), 'utf8')) as {
+      id: string
+      skip?: string
+    }[]
+    for (const child of children)
+      expect(skips.some(row => row.id === child.id && row.skip?.includes(child.parent))).toBe(true)
+  })
+}
+
+test('jmvx AC2 dispatch preserves owner decisions after a person queue', () => {
+  precheckReset({ metadata: { owner_decisions: ['wait'] } })
+  expect(pfactory(['beads'], { GH_JSON: '[]' }).code).toBe(0)
+  expect(runDirs()).toEqual([])
+  expect(readFileSync(bdCallsLog, 'utf8')).not.toMatch(/^bd claim\b/m)
 })
 
 test('FACTORY_PRECHECK=0 turns the whole check off: 0 gh calls, the run starts as before', () => {

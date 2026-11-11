@@ -51,6 +51,7 @@ const NAMES = [
   'flows.show',
   'gates.brief',
   'gates.decide',
+  'gc.run',
   'guard.check',
   'lease.show',
   'mail.list',
@@ -70,8 +71,111 @@ const NAMES = [
   'steps.reports',
 ]
 
+test('n69b2 AC1 gc route has no GET mutation or CLI bridge', async () => {
+  const calls: string[] = []
+  const gcPort = new Proxy({} as Port, {
+    get:
+      (_t, key) =>
+      (...args: any[]) => {
+        calls.push(String(key))
+        if (key === 'gcHold') return () => calls.push('release')
+        if (key === 'gcRigs') return ['acme']
+        if (key === 'gcPass') {
+          args[2]('plain')
+          args[3]('skip diagnostic')
+          if (args[0] === 1) throw new Error('gc failed')
+        }
+        if (key === 'gcWorktreesPass') args[2]('worktrees')
+      },
+  })
+  const home = mkdtempSync(join(tmpdir(), 'gc-handler-'))
+  let cliCalls = 0
+  const h = clientHandler({
+    home,
+    port: gcPort,
+    board: () => null,
+    run: async () => {
+      cliCalls++
+      throw new Error('no CLI bridge')
+    },
+  })
+  expect((await get(h, '/v1/gc')).status).toBe(404)
+  expect(calls).toEqual([])
+  for (const [body, out] of [
+    [{}, 'plain\n'],
+    [{ worktrees: true, dryRun: true, rig: 'acme' }, 'worktrees\n'],
+  ] as const) {
+    const r = await post(h, '/v1/gc', body)
+    expect(r.status).toBe(200)
+    expect(r.headers.get('content-type')).toBe('application/json')
+    expect(await r.json()).toEqual({ code: 0, out, err: body.worktrees ? '' : 'skip diagnostic\n' })
+  }
+  const repeat = () =>
+    h(
+      new Request('http://x/v1/gc', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': 'aaaaaaaaaaaa' },
+        body: '{"dryRun":true}',
+      }),
+      'ip',
+    )
+  const first = await repeat()
+  const second = await repeat()
+  expect(await second.text()).toBe(await first.text())
+  expect(calls.filter(c => c === 'gcPass')).toHaveLength(2)
+  expect(calls.filter(c => c === 'gcWorktreesPass')).toHaveLength(1)
+  const failed = await post(h, '/v1/gc', { days: '1' })
+  expect(failed.status).toBe(422)
+  expect(await failed.json()).toEqual({ refused: 'skip diagnostic\nfactory: gc failed\n' })
+  expect(calls.filter(c => c === 'gcPass')).toHaveLength(3)
+  expect(cliCalls).toBe(0)
+})
+
+test('n69b2 AC2 gc transport and invalid input refuse before every port effect', async () => {
+  const calls: string[] = []
+  const h = clientHandler({
+    home: mkdtempSync(join(tmpdir(), 'gc-denial-')),
+    board: () => null,
+    run: async () => {
+      calls.push('cli')
+      throw new Error('unexpected CLI call')
+    },
+    port: new Proxy({} as Port, {
+      get: (_target, key) => () => {
+        calls.push(`port.${String(key)}`)
+        throw new Error('unexpected port effect')
+      },
+    }),
+  })
+  for (const body of [
+    null,
+    [],
+    { path: '/x' },
+    { dryRun: false },
+    { days: 7 },
+    { days: 'Infinity' },
+    { days: '0x7' },
+    { rig: 'acme' },
+    { worktrees: true, days: '7' },
+  ]) {
+    expect((await post(h, '/v1/gc', body)).status).toBeGreaterThanOrEqual(400)
+  }
+  expect((await post(h, '/v1/gc?dryRun=1', {})).status).toBe(400)
+  for (const [headers, status] of [
+    [{ authorization: 'Bearer v1.a.b' }, 403],
+    [{ 'content-type': 'text/plain', 'idempotency-key': 'gc-key-123' }, 400],
+    [{ 'content-type': 'application/json' }, 400],
+  ] as const) {
+    expect(
+      (await h(new Request('http://x/v1/gc', { method: 'POST', headers, body: '{"dryRun":true}' }), 'ip'))
+        .status,
+    ).toBe(status)
+  }
+  expect(calls).toEqual([])
+})
+
 describe('GET /v1/catalog', () => {
-  test('serves the envelope with the 29 operations', async () => {
+  test('serves the envelope with the 30 operations', async () => {
     const { h, calls } = setup()
     const r = await get(h, '/v1/catalog')
     expect(r.status).toBe(200)

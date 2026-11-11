@@ -194,10 +194,11 @@ export function send(
             command === undefined
               ? a.text
               : `${a.text}\n\nThe core ran the approved command:\n${command}\nexit ${ran!.code}\n${ran!.out}`,
-          model: 'claude-opus-5-5',
+          model: 'claude-fable-5-2',
           tools: 'Bash,Read,Grep,Glob,Write',
           maxTurns: 40,
           settings: { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [guard] }] } },
+          settingSources: 'user',
           baseEnv: ctx.env,
           env: { FACTORY_HOME: ctx.home, FACTORY_MAIN_CHAT: '1' },
           cwd: ctx.home,

@@ -1,5 +1,6 @@
-import { closeSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { SECRETS } from './secrets'
+import { writeFresh } from './write-fresh'
 
 /** One factory setting. `env` is the variable that overrides it. `check` is the shape a stored value must have. */
 export type SettingKey = { key: string; env?: string; default?: string; check?: RegExp }
@@ -118,20 +119,7 @@ const known = (key: string) => {
 }
 
 // ponytail: no lock, so two writers at the same time can lose one update. Upgrade path: the lock of src/rigs-edit.ts.
-const atomic = (file: string, text: string) => {
-  const tmp = `${file}.${process.pid}.tmp`
-  const fd = openSync(tmp, 'w', 0o600)
-  try {
-    writeSync(fd, text)
-    fsyncSync(fd)
-  } catch (e) {
-    closeSync(fd)
-    rmSync(tmp, { force: true })
-    throw e
-  }
-  closeSync(fd)
-  renameSync(tmp, file)
-}
+const atomic = (file: string, text: string) => writeFresh(file, text, `${file}.${process.pid}.tmp`)
 
 const write = (file: string, o: Record<string, string>) => {
   const sorted: Record<string, string> = {}

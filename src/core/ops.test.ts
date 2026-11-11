@@ -9,6 +9,11 @@ const fake = () => {
   const calls: Call[] = []
   const cli: string[][] = []
   const port: Port = {
+    gcPass: () => {},
+    gcWorktreesPass: () => {},
+    gcRigs: () => [],
+    gcHold: () => () => {},
+    gcStamp: () => {},
     show: async id => (calls.push(['show', id]), { ok: 1 }),
     status: async (id, print) => (calls.push(['status', id]), print('line')),
     backlog: async () => (calls.push(['backlog']), []),
@@ -54,6 +59,138 @@ const fake = () => {
   return { calls, cli, ctx }
 }
 const run = (name: string, ctx: Ctx, input: Input) => CATALOG.find(o => o.name === name)!.run(ctx, input)
+
+describe('n69b2 core gc', () => {
+  const setup = (env: Record<string, string | undefined> = {}, held = false, broken = false) => {
+    const t = fake()
+    const effects: unknown[][] = []
+    const ctx = t.ctx(env)
+    ctx.port = new Proxy(t.ctx().port, {
+      get: (target, key) => {
+        if (!String(key).startsWith('gc')) return Reflect.get(target, key)
+        return (...args: any[]) => {
+          effects.push([key, ...args.filter(a => typeof a !== 'function')])
+          if (key === 'gcHold') return held ? undefined : () => effects.push(['release'])
+          if (key === 'gcRigs') return ['acme']
+          if (key === 'gcPass' || key === 'gcWorktreesPass') {
+            args[2](String(key))
+            args[3]('diagnostic')
+            if (broken) throw new Error('pass failed')
+          }
+        }
+      },
+    })
+    return { ...t, ctx, effects }
+  }
+  const gc = (t: ReturnType<typeof setup>, i: unknown = {}) => run('gc.run', t.ctx, i as Input)
+
+  test('n69b2 AC1 AC2 defaults, modes, output isolation, and no CLI bridge', async () => {
+    const rows: [Input, Record<string, string>, unknown[][]][] = [
+      [{}, {}, [['gcHold', 'gc.lock'], ['gcStamp', 'gc.stamp'], ['gcPass', 7, false], ['release']]],
+      [
+        { dryRun: true },
+        { FACTORY_GC_DAYS: '.5' },
+        [['gcHold', 'gc.lock'], ['gcStamp', 'gc.stamp'], ['gcPass', 0.5, true], ['release']],
+      ],
+      [
+        { days: '+1e2' },
+        { FACTORY_GC_DAYS: 'invalid' },
+        [['gcHold', 'gc.lock'], ['gcStamp', 'gc.stamp'], ['gcPass', 100, false], ['release']],
+      ],
+      [
+        { worktrees: true },
+        { FACTORY_GC_DAYS: 'invalid' },
+        [
+          ['gcHold', 'gc-worktrees.lock'],
+          ['gcStamp', 'gc-worktrees.stamp'],
+          ['gcWorktreesPass', false, undefined],
+          ['release'],
+        ],
+      ],
+      [
+        { worktrees: true, rig: 'acme', dryRun: true },
+        {},
+        [['gcRigs'], ['gcHold', 'gc-worktrees.lock'], ['gcWorktreesPass', true, 'acme'], ['release']],
+      ],
+    ]
+    for (const [input, env, effects] of rows) {
+      const t = setup(env)
+      const mode = input.worktrees ? 'gcWorktreesPass' : 'gcPass'
+      for (let n = 0; n < 2; n++) {
+        expect(await gc(t, input)).toEqual({ code: 0, out: `${mode}\n`, err: 'diagnostic\n' })
+      }
+      expect(t.effects).toEqual([...effects, ...effects])
+      expect(t.cli).toEqual([])
+    }
+  })
+
+  test('n69b2 AC2 rejects malformed input before any protected effect', async () => {
+    const bad: unknown[] = [
+      null,
+      [],
+      'gc',
+      { home: '/x' },
+      { dryRun: false },
+      { worktrees: false },
+      { dryRun: 'true' },
+      { worktrees: 1 },
+      { days: 7 },
+      { rig: 'acme' },
+      { worktrees: true, days: '7' },
+      { worktrees: true, rig: '../acme' },
+      { worktrees: true, rig: '' },
+      { worktrees: true, rig: 1 },
+      ...['0', '-1', 'NaN', 'Infinity', '1e999', ' 7', '7 ', '0x7', '7days', ''].map(days => ({ days })),
+    ]
+    for (const input of bad) {
+      const t = setup()
+      expect((await gc(t, input)).code).toBe(1)
+      expect(t.effects).toEqual([])
+    }
+    for (const days of ['0', 'Infinity', ' 7', '0x7']) {
+      const t = setup({ FACTORY_GC_DAYS: days })
+      expect((await gc(t)).code).toBe(1)
+      expect(t.effects).toEqual([])
+    }
+  })
+
+  test('n69b2 AC2 each caller marker refuses both modes, including preview', async () => {
+    for (const env of [
+      { FACTORY_FROM: 'implement' },
+      { FACTORY_RUN: 'r1' },
+      { FACTORY_DEF_NAME: 'lifecycle' },
+      { BEADS_ACTOR: 'factory/r1/implement' },
+      { FACTORY_PATROL: '1' },
+    ]) {
+      for (const input of [{}, { dryRun: true }, { worktrees: true }, { worktrees: true, dryRun: true }]) {
+        const t = setup(env)
+        expect((await gc(t, input)).code).toBe(1)
+        expect(t.effects).toEqual([])
+      }
+    }
+  })
+
+  test('n69b2 AC4 held locks skip effects, errors release locks, and unknown rigs fail before locks', async () => {
+    for (const worktrees of [false, true]) {
+      const input = worktrees ? { worktrees: true } : {}
+      const held = setup({}, true)
+      const result = await gc(held, input)
+      expect(result.code).toBe(0)
+      expect(result.out).toContain('skipped this one')
+      expect(held.effects).toEqual([['gcHold', worktrees ? 'gc-worktrees.lock' : 'gc.lock']])
+      const broken = setup({}, false, true)
+      expect(await gc(broken, input)).toEqual({
+        code: 1,
+        out: `${worktrees ? 'gcWorktreesPass' : 'gcPass'}\n`,
+        err: 'diagnostic\nfactory: pass failed\n',
+      })
+      expect(broken.effects.at(-1)).toEqual(['release'])
+    }
+    const t = setup()
+    expect((await gc(t, { worktrees: true, rig: 'unknown' })).code).toBe(1)
+    expect(t.effects).toEqual([['gcRigs']])
+  })
+})
 
 describe('moved reads run in process (AC1)', () => {
   const rows: [string, Input, Call[]][] = [

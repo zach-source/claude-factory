@@ -20,37 +20,37 @@
   {
     "op": "backlog.show",
     "frontEnd": "herdr-mod",
-    "bead": "claude-factory-hpmc.15",
+    "bead": "claude-factory-hpmc.10",
     "reason": "the Herdr app mod has no Backlog tab"
   },
   {
     "op": "mail.list",
     "frontEnd": "herdr-mod",
-    "bead": "claude-factory-hpmc.16",
+    "bead": "claude-factory-hpmc.10",
     "reason": "the Herdr app mod has no Mail tab"
   },
   {
     "op": "rigs.list",
     "frontEnd": "herdr-mod",
-    "bead": "claude-factory-hpmc.17",
+    "bead": "claude-factory-hpmc.10",
     "reason": "the Herdr app mod has no Rigs tab"
   },
   {
     "op": "prs.show",
     "frontEnd": "herdr-mod",
-    "bead": "claude-factory-hpmc.18",
+    "bead": "claude-factory-hpmc.10",
     "reason": "the Herdr app mod has no PRs tab"
   },
   {
     "op": "runners.show",
     "frontEnd": "herdr-mod",
-    "bead": "claude-factory-hpmc.19",
+    "bead": "claude-factory-hpmc.10",
     "reason": "the Herdr app mod has no Runners tab"
   },
   {
     "op": "runs.screen",
     "frontEnd": "herdr-mod",
-    "bead": "claude-factory-hpmc.20",
+    "bead": "claude-factory-hpmc.10",
     "reason": "the Herdr app mod has no AX worker screens tab"
   },
   {
@@ -152,25 +152,43 @@
   {
     "op": "snapshot.show",
     "frontEnd": "claude-mod",
-    "bead": "claude-factory-hpmc.30",
+    "bead": "claude-factory-hpmc.9",
     "reason": "the Claude mod polls the board and the decisions in separate calls"
   },
   {
     "op": "snapshot.show",
     "frontEnd": "web",
-    "bead": "claude-factory-hpmc.30",
+    "bead": "claude-factory-hpmc.11",
     "reason": "the web UI polls the board and the decisions in separate calls; /v1/snapshot serves it"
   },
   {
     "op": "flows.show",
     "frontEnd": "web",
-    "bead": "claude-factory-hpmc.28",
+    "bead": "claude-factory-hpmc.11",
     "reason": "the web UI has no Flow view"
   },
   {
     "op": "flows.show",
     "frontEnd": "claude-mod",
-    "bead": "claude-factory-hpmc.29",
+    "bead": "claude-factory-hpmc.9",
     "reason": "the Claude mod has no Flow view"
+  },
+  {
+    "op": "gc.run",
+    "frontEnd": "web",
+    "bead": "claude-factory-5aweq",
+    "reason": "the web UI has no gc control; use the core operation after its generic client exists"
+  },
+  {
+    "op": "gc.run",
+    "frontEnd": "claude-mod",
+    "bead": "claude-factory-j3zj6",
+    "reason": "the Claude mod has no gc control; use the core operation after its generic client exists"
+  },
+  {
+    "op": "gc.run",
+    "frontEnd": "herdr-mod",
+    "bead": "claude-factory-zsuj2",
+    "reason": "the Herdr app has no gc control; use the core operation after its generic client exists"
   }
 ]
