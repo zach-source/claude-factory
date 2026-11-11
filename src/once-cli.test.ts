@@ -265,6 +265,10 @@ test('patrol-guard denies the subagent verbs and allows reads', () => {
   const guard = (command: string) => factory(['patrol-guard'], JSON.stringify({ tool_input: { command } }))
   for (const [bad, reason] of [
     [
+      'bd ready --claim --label factory',
+      'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author. Write a bd command in literal words with bd as its first word: no $, backtick, glob, brace, # or <. Put other comment text in a file: bd comments add <id> -f <file>',
+    ],
+    [
       'bd label add x y',
       'a subagent runs bd only as bd show|view|list|ready|search|children|comments|comment|undefer, with the verb first. Never pass --actor, --author or -a, and never set BEADS_ACTOR: they set the comment author. Write a bd command in literal words with bd as its first word: no $, backtick, glob, brace, # or <. Put other comment text in a file: bd comments add <id> -f <file>',
     ],

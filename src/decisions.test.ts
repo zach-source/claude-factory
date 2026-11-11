@@ -20,7 +20,12 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
     // `home` on a later tick and inflating manager-mail assertions (claude-factory-5h9.8)
     env: { ...laptop, FACTORY_HOME: home, PATH: `${bin}:${laptop.PATH}`, FACTORY_SELF_UPDATE: '0', ...env },
   })
-  return { code: p.exitCode, out: p.stdout.toString().trim(), err: p.stderr.toString().trim() }
+  return {
+    code: p.exitCode,
+    out: p.stdout.toString().trim(),
+    err: p.stderr.toString().trim(),
+    raw: p.stdout.toString() + p.stderr.toString(),
+  }
 }
 
 /** a fake bd: answers human list / ready --json from env JSON (bd prints null, not [], for an empty human list),
@@ -602,4 +607,102 @@ test('decisions propose refuses a control character in the question, the context
   )
   // an own: key ignores its options, so they are not checked
   expect(factory(['decisions', 'propose', 'own:api-2', 'q', 'a\x1b | b']).code).toBe(0)
+})
+
+test.each([0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x2028, 0x2029])(
+  'k173 AC2: decisions refuse U+%s before any bd call or proposal write',
+  point => {
+    rmSync(dir, { recursive: true, force: true })
+    rig('api')
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(join(bin, 'bd'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\nprintf '%s' '[]'\n`)
+    chmodSync(join(bin, 'bd'), 0o755)
+    const txt = (name: string, body: string) => {
+      const path = join(home, 'text', name)
+      mkdirSync(join(home, 'text'), { recursive: true })
+      writeFileSync(path, body)
+      return path
+    }
+    const char = String.fromCodePoint(point)
+    const code = `U+${point.toString(16).toUpperCase()}`
+    const store = join(home, 'decisions.json')
+    const refuse = (args: string[]) => {
+      const before = existsSync(store) ? readFileSync(store) : undefined
+      const r = factory(['decisions', 'propose', ...args])
+      expect([code, r.code]).toEqual([code, 1])
+      expect(r.err).toContain(code)
+      expect(/[\u202a-\u202e\u2066-\u2069\u2028\u2029]/u.test(r.raw)).toBe(false)
+      expect(existsSync(calls)).toBe(false)
+      if (before) expect(readFileSync(store).equals(before)).toBe(true)
+      else expect(existsSync(store)).toBe(false)
+    }
+    refuse(['bd:api:api-1', `a${char}b`, 'a | b'])
+    expect(factory(['decisions', 'propose', 'bd:api:api-0', 'safe', 'a | b']).code).toBe(0)
+    for (const key of ['bd:api:api-1', 'iv:api-1', 'own:api-1']) {
+      for (const value of [`a${char}b`, `${char}safe`, `safe${char}`]) {
+        refuse([key, value, 'a | b'])
+        refuse([key, 'q', 'a | b', '--context', value])
+        refuse([key, '--question-file', txt('q', value), '--options-file', txt('o', 'a | b')])
+        refuse([
+          key,
+          '--question-file',
+          txt('q', 'q'),
+          '--options-file',
+          txt('o', 'a | b'),
+          '--context-file',
+          txt('c', value),
+        ])
+      }
+    }
+    for (const key of ['bd:api:api-1', 'iv:api-1']) {
+      for (const options of [
+        `a${char}b: x | b: y`,
+        `a: x${char}y | b: z`,
+        `${char} | a | b`,
+        `a | b | ${char}`,
+        `a${char}: x | b`,
+        `a: x |${char}b`,
+      ]) {
+        refuse([key, 'q', options])
+        refuse([key, '--question-file', txt('q', 'q'), '--options-file', txt('o', options)])
+      }
+    }
+  },
+  30000,
+)
+
+test('k173 AC3: decisions preserve safe Unicode and ignore caller options for own keys', () => {
+  rmSync(dir, { recursive: true, force: true })
+  rig('api')
+  fakeBd('[]', '[]')
+  const safe = 'Café שלום 👩‍💻'
+  const txt = (name: string, body: string) => {
+    const path = join(home, 'text', name)
+    mkdirSync(join(home, 'text'), { recursive: true })
+    writeFileSync(path, `${body}\n`)
+    return path
+  }
+  for (const key of ['bd:api:api-1', 'iv:api-1', 'own:api-1']) {
+    for (const file of [false, true]) {
+      const options = key.startsWith('own:') ? 'unsafe\u202e | b' : `${safe}: ${safe} | wait`
+      const args = file
+        ? [
+            key,
+            '--question-file',
+            txt('q', safe),
+            '--options-file',
+            key.startsWith('own:') ? '/nonexistent' : txt('o', options),
+            '--context-file',
+            txt('c', safe),
+          ]
+        : [key, safe, options, '--context', safe]
+      expect(factory(['decisions', 'propose', ...args]).code).toBe(0)
+      const proposal = JSON.parse(readFileSync(join(home, 'decisions.json'), 'utf8'))[key]
+      expect(proposal).toMatchObject({
+        question: safe,
+        context: safe,
+        options: key.startsWith('own:') ? ['start now', 'not now'] : [`${safe}: ${safe}`, 'wait'],
+      })
+    }
+  }
 })

@@ -375,6 +375,59 @@ function resetForFacts() {
 const candidateIdsOf = () =>
   (JSON.parse(readFileSync(factsFile(), 'utf8')).a.candidates as { id: string }[]).map(c => c.id)
 
+test('jmvx AC4 plan facts omit target and parent holds before the cap without extra calls', () => {
+  resetForFacts()
+  const holds = ['owner', 'human', 'rejected', 'held:', 'held:station', 'held:cluster:acme']
+  const held = Array.from({ length: 40 }, (_, i) => ({
+    id: `h-${i}`,
+    title: 'held',
+    labels: ['factory', holds[i % holds.length]!],
+  }))
+  const parents = [...holds, 'decisions'].flatMap((hold, i) =>
+    [false, true].map(queued => ({
+      id: `p-${i}-${queued}`,
+      title: 'parent',
+      labels: [...(queued ? ['factory'] : []), ...(hold === 'decisions' ? [] : [hold])],
+      ...(hold === 'decisions' && { metadata: { owner_decisions: ['wait'] } }),
+    })),
+  )
+  const children = parents.flatMap(parent =>
+    [false, true].map(queued => ({
+      id: `${parent.id}.${queued ? 1 : 2}`,
+      title: 'child',
+      parent: parent.id,
+      labels: queued ? ['factory'] : [],
+    })),
+  )
+  const allowed = ['', 'ownerish', 'Owner', 'humane', 'held', 'rejected-by'].flatMap((label, i) => [
+    { id: `c-${i}`, title: 'eligible', labels: ['factory', label] },
+    { id: `u-${i}.1`, parent: `u-${i}`, title: 'eligible child', labels: ['factory'] },
+  ])
+  const unheldParents = ['', 'ownerish', 'Owner', 'humane', 'held', 'rejected-by'].map((label, i) => ({
+    id: `u-${i}`,
+    title: 'unheld parent',
+    labels: [label],
+  }))
+  const ready = [...held, ...children, ...allowed]
+  writeFileSync(
+    join(bin, 'bd'),
+    [
+      '#!/bin/sh',
+      `echo "$*" >> '${join(bin, 'calls.log')}'`,
+      'case "$1" in',
+      `ready) printf '%s' '${JSON.stringify(ready)}';;`,
+      `list) printf '%s' '${JSON.stringify([...ready, ...parents, ...unheldParents])}';;`,
+      'esac',
+    ].join('\n'),
+  )
+  const out = factory(['plan', 'facts'])
+  expect(out.code).toBe(0)
+  const ids = allowed.map(x => x.id)
+  expect(candidateIdsOf()).toEqual(ids)
+  expect(JSON.parse(out.out).a.candidates.map((x: { id: string }) => x.id)).toEqual(ids)
+  expect(callsLog()).not.toMatch(/^(children|show|update|create|claim|comment)\b/m)
+})
+
 /** fake bd for `plan facts` with an untrusted (Linear-synced) title: ESC plus a newline, far past
  * `sanitize`'s own clip length (claude-factory-dun.23). */
 function fakeBdForDirtyTitle() {

@@ -2,8 +2,9 @@
 // The payload is {id, task, run, node, seq, exp}. check() takes no request data: run, node and seq come only
 // from the signed payload, and the token must also match its worker_tokens row (specs/004-factory-server).
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
-import { closeSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { writeFresh } from './write-fresh'
 
 export type Claims = { task: string; run: string; node: string; seq: number; exp: number }
 export type CheckResult =
@@ -54,15 +55,7 @@ function readStore(home: string): Record<string, Row> {
   return v
 }
 function writeStore(home: string, rows: Record<string, Row>) {
-  const tmp = `${storePath(home)}.tmp`
-  const fd = openSync(tmp, 'w', 0o600)
-  try {
-    writeSync(fd, JSON.stringify(rows))
-    fsyncSync(fd)
-  } finally {
-    closeSync(fd)
-  }
-  renameSync(tmp, storePath(home)) // atomic: a reader never sees half a store
+  writeFresh(storePath(home), JSON.stringify(rows)) // atomic: a reader never sees half a store
 }
 
 /** issue a token and store its row; rows that expired before `now` are dropped */

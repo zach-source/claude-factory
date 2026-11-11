@@ -265,7 +265,8 @@ test.each(rows)(
         : 0
     const before = lines()
     const summary = row.summary ?? 'summary text'
-    const sf = join(dir, 'summary.txt')
+    const sf = join(home, 'text', 'summary.txt')
+    mkdirSync(join(home, 'text'), { recursive: true })
     if (row.file) writeFileSync(sf, summary)
     const tail = row.file ? ['--summary-file', sf] : [summary]
     const p = Bun.spawnSync([CLI, 'report', 'r1', String(seq), row.outcome, ...tail], { env: env() })

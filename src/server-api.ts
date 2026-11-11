@@ -3,17 +3,12 @@ import { createHash, randomUUID } from 'node:crypto'
 import {
   appendFileSync,
   chmodSync,
-  closeSync,
   existsSync,
-  fsyncSync,
   mkdirSync,
-  openSync,
   readFileSync,
   realpathSync,
-  renameSync,
   rmSync,
   writeFileSync,
-  writeSync,
 } from 'node:fs'
 import { STATUS_CODES } from 'node:http'
 import type { Socket } from 'node:net'
@@ -34,6 +29,7 @@ import {
 } from './core/catalog'
 import { where } from './machine'
 import { check } from './tokens'
+import { writeFresh } from './write-fresh'
 export type { RunResult, Runner } from './core/catalog'
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/
@@ -252,15 +248,7 @@ function readStore(file: string): Record<string, Row> | 'bad' {
 
 function writeStore(file: string, rows: Record<string, Row>, now: number) {
   const keep = Object.fromEntries(Object.entries(rows).filter(([, r]) => now - r.at < DAY))
-  const tmp = `${file}.tmp`
-  const fd = openSync(tmp, 'w', 0o600)
-  try {
-    writeSync(fd, JSON.stringify(keep))
-    fsyncSync(fd)
-  } finally {
-    closeSync(fd)
-  }
-  renameSync(tmp, file) // atomic: a reader never sees half a store
+  writeFresh(file, JSON.stringify(keep)) // atomic: a reader never sees half a store
 }
 
 /**
@@ -506,15 +494,7 @@ function readCalls(file: string): Record<string, CallRow> | 'bad' {
 /** write the rows that are under 7 days old; atomic, mode 0600 */
 function writeCalls(file: string, rows: Record<string, CallRow>, now: number) {
   const keep = Object.fromEntries(Object.entries(rows).filter(([, r]) => now - r.at < WEEK))
-  const tmp = `${file}.tmp`
-  const fd = openSync(tmp, 'w', 0o600)
-  try {
-    writeSync(fd, JSON.stringify(keep))
-    fsyncSync(fd)
-  } finally {
-    closeSync(fd)
-  }
-  renameSync(tmp, file)
+  writeFresh(file, JSON.stringify(keep))
 }
 
 const nonBlank = (v: unknown, max: number, units: 'bytes' | 'chars'): v is string =>
