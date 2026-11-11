@@ -484,6 +484,23 @@ test('an unreadable dir never stops a scan (claude-factory-fkw4 R4)', () => {
   }
 })
 
+test('one unreadable note hides no other note in walk or snapshot (claude-factory-fkw4 review)', () => {
+  if (process.getuid?.() === 0) return
+  const { root, dir } = linkStore()
+  for (const n of ['a', 'b', 'c', 'd', 'e'])
+    writeFileSync(join(dir, 'topic', `${n}.md`), `---\nsummary: note ${n}\n---\nbody\n`)
+  chmodSync(join(dir, 'topic', 'c.md'), 0)
+  try {
+    const paths = walk(dir).notes.map(n => n.path)
+    for (const n of ['a', 'b', 'd', 'e']) expect(paths).toContain(`topic/${n}.md`)
+    expect(paths).not.toContain('topic/c.md')
+    expect(() => snapshot(dir, undefined, join(root, 'snap.tgz'))).not.toThrow()
+  } finally {
+    chmodSync(join(dir, 'topic', 'c.md'), 0o644)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('snapshot and walk skip a unix socket named like a note', async () => {
   const { root, dir } = linkStore()
   writeFileSync(join(dir, 'topic', 'ok.md'), '---\nsummary: plain note\n---\nbody\n')

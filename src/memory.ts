@@ -504,6 +504,26 @@ export function dropLinks(dir: string): { path: string; target: string; skipped?
 const unreadable = (e: unknown) =>
   ['EACCES', 'ENOENT', 'ENOTDIR', 'ELOOP'].includes((e as NodeJS.ErrnoException).code ?? '')
 
+/** a topic dir's entries, or none when a live process made the dir unreadable */
+function listDir(d: string) {
+  try {
+    return readdirSync(d, { withFileTypes: true })
+  } catch (e) {
+    if (!unreadable(e)) throw e
+    return []
+  }
+}
+
+/** tryRead that skips only this file when it is unreadable: one note at mode 0 must not hide the notes after it */
+function tryReadSkip(store: string, f: string) {
+  try {
+    return tryRead(store, f)
+  } catch (e) {
+    if (!unreadable(e)) throw e
+    return null
+  }
+}
+
 /** every note, with its topic's README beside it: the dot folders (.git, the index, .archive) are not memory */
 export function walk(dir: string) {
   const notes: Note[] = []
@@ -511,11 +531,11 @@ export function walk(dir: string) {
   if (!existsSync(dir)) return { notes, topics }
   for (const topic of readdirSync(dir, { withFileTypes: true })) {
     if (!topic.isDirectory() || topic.name.startsWith('.')) continue
-    try {
-      for (const e of readdirSync(join(dir, topic.name), { withFileTypes: true })) {
+    {
+      for (const e of listDir(join(dir, topic.name))) {
         const f = e.name
         if (!e.isFile() || !f.endsWith('.md')) continue
-        const text = tryRead(dir, join(dir, topic.name, f))
+        const text = tryReadSkip(dir, join(dir, topic.name, f))
         if (text === null) continue
         if (f === 'LONG.md') {
           for (const e of parseLong(text))
@@ -535,8 +555,6 @@ export function walk(dir: string) {
         if (f === 'README.md') topics.set(topic.name, n)
         else notes.push({ ...n, tier: 'short' })
       }
-    } catch (e) {
-      if (!unreadable(e)) throw e
     }
   }
   return { notes, topics }
@@ -644,12 +662,12 @@ export function snapshot(dir: string, rig: string | undefined, out: string): { b
     }
     for (const topic of readdirSync(dir, { withFileTypes: true })) {
       if (!topic.isDirectory() || topic.name.startsWith('.')) continue
-      try {
-        for (const e of readdirSync(join(dir, topic.name), { withFileTypes: true })) {
+      {
+        for (const e of listDir(join(dir, topic.name))) {
           const f = e.name
           const src = join(dir, topic.name, f)
           if (!e.isFile() || !f.endsWith('.md')) continue
-          const text = tryRead(dir, src)
+          const text = tryReadSkip(dir, src)
           if (text === null) continue
           let body: string | null = keep(parse(f, text).rig) ? text : null
           if (f === 'LONG.md') {
@@ -661,8 +679,6 @@ export function snapshot(dir: string, rig: string | undefined, out: string): { b
           mkdirSync(join(stage, topic.name), { recursive: true })
           writeFileSync(join(stage, topic.name, f), body)
         }
-      } catch (e) {
-        if (!unreadable(e)) throw e
       }
     }
     const { notes, topics } = walk(stage)
