@@ -652,8 +652,8 @@ Reconstruct missing `written` entries from committed pages after a crash.
 Pass existing page associations, glossary terms and tombstones to the prompt.
 
 Capture `wikiBlame()` before the agent. Refuse the pass when it returns undefined.
-Run Claude in `wiki/` with `-p --permission-mode acceptEdits` and `--settings JSON.stringify(passSettings())`.
-Allow only Read, Write, Edit, Glob, Grep, `Bash(git mv:*)` and `Bash(git rm:*)`.
+Run Claude in `wiki/` with `-p --strict-mcp-config --setting-sources user --permission-mode acceptEdits --tools Read,Write,Edit,Glob,Grep,Bash` and `--settings JSON.stringify(passSettings())`.
+Allow only Read, Glob and Grep inside `./**`, Write, Edit, `Bash(git mv:*)` and `Bash(git rm:*)`.
 Do not grant tools that create git objects, commits or refs. Source text stays inline; no repo access is necessary.
 Use a 45-minute timeout. Log the exit and masked output to `wiki.log`.
 With `FACTORY_DREAM_CODEX`, use the dream's model check, private home, environment allowlist and workspace-write sandbox.

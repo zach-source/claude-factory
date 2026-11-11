@@ -13575,10 +13575,21 @@ function wikiAgent(prompt: string, dir: string): { code: number | null; said: st
     : Bun.spawnSync(
         [
           ...claudeCommand().split(/\s+/),
-          ...['-p', '--permission-mode', 'acceptEdits'],
+          ...['-p', '--strict-mcp-config', '--setting-sources', 'user'],
+          ...['--permission-mode', 'acceptEdits', '--tools', 'Read,Write,Edit,Glob,Grep,Bash'],
           ...['--settings', JSON.stringify(passSettings())],
-          ...['--allowedTools', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash(git mv:*)', 'Bash(git rm:*)'],
+          ...[
+            '--allowedTools',
+            'Read(./**)',
+            'Write',
+            'Edit',
+            'Glob(./**)',
+            'Grep(./**)',
+            'Bash(git mv:*)',
+            'Bash(git rm:*)',
+          ],
         ],
+        // ponytail: the full environment stays because the Claude login may come from it; upgrade: an allowlist as the Codex branch has
         { cwd: dir, stdin: Buffer.from(prompt), timeout: WIKI_AGENT_MS },
       )
   const said = p.stdout.toString().trim() || p.stderr.toString().trim()
