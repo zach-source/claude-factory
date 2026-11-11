@@ -11,7 +11,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { format, formatLong, search, snapshot, walk, coreNotes } from './memory'
+import { format, formatLong, parse, search, snapshot, walk, coreNotes } from './memory'
 
 const tmp = (p: string) => mkdtempSync(join(tmpdir(), `memsnap-${p}-`))
 const note = (summary: string, rig?: string) =>
@@ -240,3 +240,279 @@ test('a broken memory.tgz leaves no dir', () => {
   // no memory.tgz: today's output
   expect(vmSearch(tmp('worker'), tmp('home'), 'database').out).toContain('nothing in')
 }, 60_000)
+
+test('u509 snapshot scope matrix', () => {
+  const bom = '﻿'
+  const bad: Record<string, string> = {
+    indented: '---\nsummary: s\n rig: acme\n---\nbody MARK',
+    capital: '---\nsummary: s\nRig: acme\n---\nbody MARK',
+    noHeader: 'plain\nrig: acme\nMARK\n',
+    duplicate: '---\nsummary: s\nrig: acme\nrig: acme\n---\nbody MARK',
+    reverse: '---\nsummary: s\nrig: acme\nrig: other\n---\nbody MARK',
+    empty: '---\nsummary: s\nrig:\n---\nbody MARK',
+    noClose: '---\nsummary: s\nrig: acme\nbody MARK',
+    other: '---\r\nsummary: s\r\nrig: other\r\n---\r\nbody MARK',
+    otherBom: `${bom}---\nsummary: s\nrig: other\n---\nbody MARK`,
+    tab: '---\nsummary: s\n\trig: acme\n---\nbody MARK',
+    allCaps: '---\nsummary: s\nRIG: acme\n---\nbody MARK',
+    spaceColon: '---\nsummary: s\nrig : acme\n---\nbody MARK',
+    mixedDup: '---\nsummary: s\nrig: acme\nRig: acme\n---\nbody MARK',
+    blankValue: '---\nsummary: s\nrig:   \n---\nbody MARK',
+    prefix100: `${'x\n'.repeat(100)}rig: acme\nMARK\n`,
+    otherAcme: '---\nsummary: s\nrig: other\nrig: acme\n---\nbody MARK',
+    bareCr: '---\nsummary: s\nrig: other\rrig: acme\n---\nbody MARK',
+    lineSep: '---\nsummary: s\nrig: other\u2028rig: acme\n---\nbody MARK',
+    bomCrlfOther: `${bom}---\r\nsummary: s\r\nrig: other\r\n---\r\nbody MARK`,
+    mixedOther: '---\nsummary: s\r\nrig: other\n---\r\nbody MARK',
+    eofOther: '---\nsummary: s\nrig: other\n---',
+    emptyThenBlock: '---\n---\nrig: other\n---\nbody MARK',
+  }
+  const good: Record<string, string> = {
+    'crlf.md': '---\r\nsummary: s\r\nrig: acme\r\n---\r\nbody\r\n',
+    'bom.md': `${bom}---\nsummary: s\nrig: acme\n---\nbody\n`,
+    'shared.md': '---\nsummary: s\n---\nshared\n',
+    'legacy.md': 'legacy shared note\n',
+    'emptyHeader.md': '---\n---\nrig: other\n',
+    'emptyCapital.md': '---\n---\nRig: other\n',
+    'emptyIndented.md': '---\r\n---\r\n rig: other\r\n',
+    'emptyDup.md': `${bom}---\n---\nrig: other\nrig: acme\n`,
+    'bodyRig.md': '---\nsummary: s\nrig: acme\n---\nrig: other\nRig: x\n',
+  }
+  const sentinel = parse('x.md', bad.indented ?? '').rig
+  for (const rig of ['acme', undefined, sentinel]) {
+    const dir = tmp('u509')
+    mkdirSync(join(dir, 'ci'))
+    writeFileSync(join(dir, 'README.md'), 'top\n')
+    mkdirSync(join(dir, 'ops'))
+    const all = { ...Object.fromEntries(Object.entries(bad).map(([k, v]) => [`${k}.md`, v])), ...good }
+    for (const [f, t] of Object.entries(all))
+      writeFileSync(join(dir, 'ci', f), t.replace('MARK', `MARK_${f.replace(/\.md$/, '')}_ci`))
+    for (const [k, t] of Object.entries(bad))
+      writeFileSync(
+        join(dir, 'ops', k === 'indented' ? 'README.md' : `${k}.md`),
+        t.replace('MARK', `MARK_${k}_ops`),
+      )
+    const paths = [
+      ...Object.keys(all).map(f => `ci/${f}`),
+      ...Object.keys(bad).map(k => `ops/${k === 'indented' ? 'README' : k}.md`),
+    ]
+    writeFileSync(
+      join(dir, '.index.json'),
+      JSON.stringify({ model: 'm', vecs: Object.fromEntries(paths.map(p => [p, [1, 0]])) }),
+    )
+    writeFileSync(
+      join(dir, '.usage.jsonl'),
+      paths.map(path => JSON.stringify({ path, at: 1, shown: 1 })).join('\n') + '\n',
+    )
+    const out = join(tmp('out'), 'm.tgz')
+    expect(snapshot(dir, rig, out)).not.toBeNull()
+    const x = tmp('x')
+    tar('-xzf', out, '-C', x)
+    const names = listing(out).map(n => n.replace(/^\.\//, ''))
+    const kept = (rig === 'acme' ? ['ci/crlf.md', 'ci/bom.md', 'ci/bodyRig.md'] : []).concat([
+      'ci/shared.md',
+      'ci/legacy.md',
+      'ci/emptyHeader.md',
+      'ci/emptyCapital.md',
+      'ci/emptyIndented.md',
+      'ci/emptyDup.md',
+    ])
+    for (const f of readdirSync(join(x, 'ci')).map(f => `ci/${f}`)) expect(kept, `${rig} ${f}`).toContain(f)
+    for (const f of kept) expect(readFileSync(join(x, f))).toEqual(readFileSync(join(dir, f)))
+    expect(names.some(n => n.startsWith('ops/') && n !== 'ops/')).toBe(false)
+    const payload = readdirSync(join(x, 'ci'))
+      .map(f => readFileSync(join(x, 'ci', f), 'utf8'))
+      .join('\n')
+    expect(payload).not.toContain('MARK')
+    for (const k of Object.keys(bad))
+      for (const w of ['ci', 'ops']) expect(payload).not.toContain(`MARK_${k}_${w}`)
+    for (const f of ['.index.json', '.usage.jsonl']) {
+      const t = readFileSync(join(x, f), 'utf8')
+      for (const k of Object.keys(bad)) expect(t).not.toContain(`${k}.md`)
+      expect(t).not.toContain('ops/')
+      for (const f2 of kept) expect(t).toContain(f2)
+    }
+  }
+})
+
+test('u509 empty header exception snapshot', () => {
+  let flip = 0
+  const ends: Record<string, (s: string) => string> = {
+    lf: s => s,
+    crlf: s => s.replace(/\n/g, '\r\n'),
+    mixed: s => s.replace(/\n/g, () => (flip++ % 2 ? '\r\n' : '\n')),
+    bomLf: s => `﻿${s}`,
+    bomCrlf: s => `﻿${s.replace(/\n/g, '\r\n')}`,
+  }
+  const denied: Record<string, string> = {
+    canonicalOther: '---\n---\nrig: other\n---\nbody MARK',
+    canonicalAcme: '---\n---\nrig: acme\n---\nbody MARK',
+    capital: '---\n---\nRig: other\n---\nbody MARK',
+    indented: '---\n---\n rig: other\n---\nbody MARK',
+    blank: '---\n---\nrig:\n---\nbody MARK',
+    dup: '---\n---\nrig: other\nrig: acme\n---\nbody MARK',
+    eof: '---\n---\nrig: other\n---',
+    newline: '---\n---\nrig: other\n---\n',
+    spaceAfter: '---\n---\nrig: other\n--- \nbody MARK',
+    dashX: '---\n---\nrig: other\n---x\nbody MARK',
+    fourDashes: '---\n---\nrig: other\n----\nbody MARK',
+    earlycrPlain: '---\n---\nx\r---\nrig: other\n---\nbody MARK',
+    earlycrSpace: '---\n---\nx\r--- \nrig: other\n---\nbody MARK',
+    earlycrX: '---\n---\nx\r---x\nrig: other\n---\nbody MARK',
+    earlycrFour: '---\n---\nx\r----\nrig: other\n---\nbody MARK',
+    earlylsPlain: '---\n---\nx\u2028---\nrig: other\n---\nbody MARK',
+    earlylsSpace: '---\n---\nx\u2028--- \nrig: other\n---\nbody MARK',
+    earlylsX: '---\n---\nx\u2028---x\nrig: other\n---\nbody MARK',
+    earlylsFour: '---\n---\nx\u2028----\nrig: other\n---\nbody MARK',
+    earlypsPlain: '---\n---\nx\u2029---\nrig: other\n---\nbody MARK',
+    earlypsSpace: '---\n---\nx\u2029--- \nrig: other\n---\nbody MARK',
+    earlypsX: '---\n---\nx\u2029---x\nrig: other\n---\nbody MARK',
+    earlypsFour: '---\n---\nx\u2029----\nrig: other\n---\nbody MARK',
+  }
+  const kept: Record<string, string> = {
+    eofEmpty: '---\n---',
+    noDelim: '---\n---\nrig: other\n',
+    noDelimDup: '---\n---\nrig: other\nrig: acme\n',
+    after: '---\n---\nbody\n---\nrig: other\n---\n',
+    spaceBefore: '---\n---\nrig: other\n ---\nbody\n',
+    popBodyCapital: '---\nsummary: s\n---\nRig: other\nbody\n',
+    popBodyIndented: '---\nsummary: s\n---\n rig: other\n',
+    popBodyDup: '---\nsummary: s\n---\nrig: other\nrig: acme\n',
+    popBodyDelim: '---\nsummary: s\n---\nx\n---\nrig: other\n---\ny\n',
+  }
+  const sentinel = parse('x.md', denied.canonicalOther ?? '').rig
+  for (const [en, conv] of Object.entries(ends)) {
+    for (const rig of ['acme', 'other', undefined, sentinel]) {
+      const dir = tmp('u509e')
+      mkdirSync(join(dir, 'ci'))
+      const keptFiles = Object.keys(kept).map(k => `${k}.md`)
+      const deniedFiles = Object.keys(denied).map(k => `${k}.md`)
+      for (const [k, t] of Object.entries({ ...denied, ...kept }))
+        writeFileSync(join(dir, 'ci', `${k}.md`), conv(t))
+      // topic README.md rows: one topic dir per row
+      const topics: string[] = []
+      for (const [k, t] of Object.entries({ ...denied, ...kept })) {
+        mkdirSync(join(dir, `t_${k}`))
+        writeFileSync(join(dir, `t_${k}`, 'README.md'), conv(t))
+        topics.push(`t_${k}/README.md`)
+      }
+      const paths = [...keptFiles.concat(deniedFiles).map(f => `ci/${f}`), ...topics]
+      writeFileSync(
+        join(dir, '.index.json'),
+        JSON.stringify({ model: 'm', vecs: Object.fromEntries(paths.map(p => [p, [1, 0]])) }),
+      )
+      writeFileSync(
+        join(dir, '.usage.jsonl'),
+        paths.map(path => JSON.stringify({ path, at: 1, shown: 1 })).join('\n') + '\n',
+      )
+      const out = join(tmp('out'), 'm.tgz')
+      expect(snapshot(dir, rig, out)).not.toBeNull()
+      const x = tmp('x')
+      tar('-xzf', out, '-C', x)
+      const label = `${en} ${rig}`
+      expect(readdirSync(join(x, 'ci')).sort(), label).toEqual([...keptFiles].sort())
+      const keptTopics = Object.keys(kept).map(k => `t_${k}`)
+      const gotTopics = readdirSync(x).filter(n => n.startsWith('t_'))
+      expect(gotTopics.sort(), label).toEqual(keptTopics.sort())
+      for (const f of keptFiles)
+        expect(readFileSync(join(x, 'ci', f)), label).toEqual(readFileSync(join(dir, 'ci', f)))
+      for (const k of keptTopics)
+        expect(readFileSync(join(x, k, 'README.md')), label).toEqual(readFileSync(join(dir, k, 'README.md')))
+      const payload = [
+        ...readdirSync(join(x, 'ci')).map(f => join(x, 'ci', f)),
+        ...gotTopics.map(k => join(x, k, 'README.md')),
+      ]
+        .map(f => readFileSync(f, 'utf8'))
+        .join('\n')
+      expect(payload, label).not.toContain('MARK')
+      for (const f of ['.index.json', '.usage.jsonl']) {
+        const t = readFileSync(join(x, f), 'utf8')
+        for (const k of Object.keys(denied)) {
+          expect(t, label).not.toContain(`ci/${k}.md`)
+          expect(t, label).not.toContain(`t_${k}/`)
+        }
+        for (const k of Object.keys(kept)) {
+          expect(t, label).toContain(`ci/${k}.md`)
+          expect(t, label).toContain(`t_${k}/README.md`)
+        }
+      }
+    }
+  }
+})
+
+test('u509 populated header snapshot matrix', () => {
+  let flip = 0
+  const ends: Record<string, (s: string) => string> = {
+    lf: s => s,
+    crlf: s => s.replace(/\n/g, '\r\n'),
+    mixed: s => s.replace(/\n/g, () => (flip++ % 2 ? '\r\n' : '\n')),
+    bomLf: s => `\uFEFF${s}`,
+    bomCrlf: s => `\uFEFF${s.replace(/\n/g, '\r\n')}`,
+  }
+  const bodies: Record<string, string> = {
+    other: 'rig: other',
+    acme: 'rig: acme',
+    capital: 'Rig: other',
+    indented: ' rig: other',
+    blank: 'rig:',
+    dup: 'rig: other\nrig: acme',
+    delim: 'x\n---\nrig: other\n---\ny',
+    empty: '',
+  }
+  const headers: Record<string, string> = { scoped: 'summary: s\nrig: acme', shared: 'summary: s' }
+  const sentinel = parse('x.md', '---\n---\nrig: other\n---\nb').rig
+  for (const [en, conv] of Object.entries(ends)) {
+    for (const rig of ['acme', 'other', undefined, sentinel]) {
+      const dir = tmp('u509p')
+      mkdirSync(join(dir, 'ci'))
+      const rows: { path: string; mark?: string; scoped: boolean }[] = []
+      for (const [hk, hdr] of Object.entries(headers))
+        for (const [bk, body] of Object.entries(bodies)) {
+          const id = `${hk}_${bk}`
+          const build = (mark?: string) => conv(`---\n${hdr}\n---\n${body}${mark ? `\n${mark}` : ''}\n`)
+          const noteMark = body === '' ? undefined : `MARK_${id}_${en}_note`
+          const readmeMark = body === '' ? undefined : `MARK_${id}_${en}_readme`
+          mkdirSync(join(dir, `t_${id}`))
+          writeFileSync(join(dir, 'ci', `${id}.md`), build(noteMark))
+          writeFileSync(join(dir, `t_${id}`, 'README.md'), build(readmeMark))
+          rows.push({ path: `ci/${id}.md`, mark: noteMark, scoped: hk === 'scoped' })
+          rows.push({ path: `t_${id}/README.md`, mark: readmeMark, scoped: hk === 'scoped' })
+        }
+      writeFileSync(
+        join(dir, '.index.json'),
+        JSON.stringify({ model: 'm', vecs: Object.fromEntries(rows.map(r => [r.path, [1, 0]])) }),
+      )
+      writeFileSync(
+        join(dir, '.usage.jsonl'),
+        rows.map(r => JSON.stringify({ path: r.path, at: 1, shown: 1 })).join('\n') + '\n',
+      )
+      const out = join(tmp('out'), 'm.tgz')
+      expect(snapshot(dir, rig, out)).not.toBeNull()
+      const x = tmp('x')
+      tar('-xzf', out, '-C', x)
+      const keep = rows.filter(r => !r.scoped || rig === 'acme')
+      const drop = rows.filter(r => !keep.includes(r))
+      const label = `${en} ${rig}`
+      const files = [
+        ...readdirSync(join(x, 'ci')).map(f => `ci/${f}`),
+        ...readdirSync(x)
+          .filter(n => n.startsWith('t_'))
+          .map(n => `${n}/README.md`),
+      ]
+      expect(files.sort(), label).toEqual(keep.map(r => r.path).sort())
+      for (const r of keep)
+        expect(readFileSync(join(x, r.path)), label).toEqual(readFileSync(join(dir, r.path)))
+      const payload = files.map(f => readFileSync(join(x, f), 'utf8')).join('\n')
+      for (const r of rows)
+        if (r.mark) {
+          if (keep.includes(r)) expect(payload, label).toContain(r.mark)
+          else expect(payload, label).not.toContain(r.mark)
+        }
+      for (const f of ['.index.json', '.usage.jsonl']) {
+        const t = readFileSync(join(x, f), 'utf8')
+        for (const r of keep) expect(t, label).toContain(r.path)
+        for (const r of drop) expect(t, label).not.toContain(r.path)
+      }
+    }
+  }
+})

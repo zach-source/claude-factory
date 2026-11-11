@@ -6197,7 +6197,7 @@ function anyGhReason(
 export const FACTORY_CONTROL_REASON =
   'The factory denies this command: only the person or the manager runs factory say, stop, resume, ' +
   'start, fork, goto, retry, abort, rm, tick, loop, self-update, gc, sweep, beads, watch, sync, dream, devenv, linear, queue, poke, attach, manager, migrate-to-ax, ' +
-  'rig with a sub other than list, and memory with a sub other than search, add, helped, eval or compact --dry-run. ' +
+  'rig with a sub other than list or show <one plain rig name>, and memory with a sub other than search, add, helped, eval or compact --dry-run. ' +
   'Mail the manager instead. Do not retry this command.'
 
 // claude-factory-5y7b, claude-factory-3c4w: the verbs only the person or the manager runs.
@@ -6264,6 +6264,13 @@ function factoryVerbReason(rest: string[]): string | undefined {
   if (next.toLowerCase() === 'rig' && rest.length > 1) {
     const sub = rest[1]!
     if (dynamicWord(sub)) return DYNAMIC_VERB_REASON
+    // claude-factory-fib6: the CLI lets a worker read one rig (workerVerbRefusal). Allow show <one plain name>.
+    if (sub === 'show') {
+      const tail = dropRedirectWords(rest.slice(2))
+      return tail.length === 1 && !dynamicWord(tail[0]!) && !tail[0]!.startsWith('-')
+        ? undefined
+        : FACTORY_CONTROL_REASON
+    }
     if (sub !== 'list') return FACTORY_CONTROL_REASON
   }
   // claude-factory-6rmg: the CLI takes a literal first non-flag word as the sub, so read it first and fail closed.

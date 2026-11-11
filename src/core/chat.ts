@@ -1,10 +1,11 @@
 // The manager chat of the core: one conversation file for each id, one model turn at a time.
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { line } from '../../mod/hooks/view'
 import { appendUsage, type ModelResult } from '../once'
 import { stepPrompt } from '../steps'
-import { inProc, type Ctx, type RunResult } from './catalog'
+import { inProc, type Ctx, type RunResult, type Port } from './catalog'
 import { refuseWorker } from './caller'
 import { check } from './guards'
 
@@ -21,6 +22,9 @@ export type Turn = {
   commands?: { id: string; command: string }[]
   /** the commands of `commands` that need the person's approval */
   asks?: { id: string; question: string }[]
+  /** the tool_use id of the ask that the person approved for this turn */
+  approve?: string
+  ran?: { id: string; command: string; code: number; out: string }
   session?: string
   error?: string
   reason?: string
@@ -29,6 +33,39 @@ export type Turn = {
 /** the session goes into argv after --resume: the first character cannot be '-' */
 const SESSION = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/
 const CONVERSATION = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+
+/** Run the approved command before the model turn. Keep the last 4000 characters of output. */
+export function runApproved(c: Parameters<Port['chatRun']>[0]): Promise<{ code: number; out: string }> {
+  return new Promise((resolve, reject) => {
+    let out = ''
+    let timedOut = false
+    const child = spawn('bash', ['-c', c.command], {
+      cwd: c.cwd,
+      env: c.env,
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    const collect = (text: string) => {
+      out = (out + text).slice(-4000)
+    }
+    child.stdout.setEncoding('utf8').on('data', collect)
+    child.stderr.setEncoding('utf8').on('data', collect)
+    const timer = setTimeout(() => {
+      timedOut = true
+      try {
+        if (child.pid) process.kill(-child.pid, 'SIGKILL')
+      } catch {}
+    }, c.timeoutMs)
+    child.once('error', error => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    child.once('close', code => {
+      clearTimeout(timer)
+      resolve({ code: timedOut ? 124 : (code ?? 128), out })
+    })
+  })
+}
 
 export function conversationFile(home: string, id: string): string {
   if (!CONVERSATION.test(id)) throw new Error(`bad conversation id: ${line(id, 40)}`)
@@ -66,22 +103,98 @@ export function show(home: string, id: string): { id: string; session: string | 
 /** the tail of each conversation's queue; an entry leaves the map when its turn is the last one */
 export const queue = new Map<string, Promise<void>>()
 
-const append = (path: string, t: Turn) => appendFileSync(path, JSON.stringify(t) + '\n')
+/** a model can leave a half line: write a newline first, so the next turn stays readable */
+const append = (path: string, t: Turn) => {
+  let pre = ''
+  if (existsSync(path) && statSync(path).size > 0) {
+    const b = readFileSync(path)
+    if (b[b.length - 1] !== 10) pre = '\n'
+  }
+  appendFileSync(path, pre + JSON.stringify(t) + '\n')
+}
 
-export function send(ctx: Ctx, a: { id: string; text: string; front: Front }): Promise<RunResult> {
+const isObj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object'
+
+/** the command that the person approves: the ask `id` of the last manager turn, only if it equals the `shown` text that the person saw; throws a refusal */
+function approved(turns: Turn[], id: string, shown: string | undefined): string {
+  if (!CONVERSATION.test(id)) throw new Error('the approval is refused: bad id')
+  const last = turns.filter(t => t.who === 'manager').at(-1)
+  if (!last) throw new Error('the approval is refused: the conversation has no manager turn')
+  const list = (x: unknown) => (Array.isArray(x) ? x.filter(isObj) : [])
+  const ask = list(last.asks).find(e => e.id === id && typeof e.question === 'string')
+  if (!ask) throw new Error(`the approval is refused: the last manager turn has no ask ${id}`)
+  const cmd = list(last.commands).find(e => e.id === id && typeof e.command === 'string')
+  if (!cmd) throw new Error(`the approval is refused: the last manager turn has no command ${id}`)
+  const command = cmd.command as string
+  if (shown !== command) throw new Error('the approval is refused: the command differs from the one shown')
+  const v = check(command, 'manager')
+  if (v.decision === 'deny') throw new Error('the approval is refused: the command is denied')
+  if (v.decision === 'allow') throw new Error('the approval is refused: the command needs no approval')
+  if (v.question !== ask.question)
+    throw new Error('the approval is refused: the question does not match the command')
+  return command
+}
+
+export function send(
+  ctx: Ctx,
+  a: { id: string; text: string; front: Front; approve?: string; command?: string },
+): Promise<RunResult> {
   return inProc(async print => {
     refuseWorker(ctx.env, 'chat', true)
     const path = conversationFile(ctx.home, a.id)
     const turn = async (): Promise<Turn> => {
-      const session = sessionOf(readTurns(path))
+      const turns = readTurns(path)
+      const session = sessionOf(turns)
+      const command = a.approve === undefined ? undefined : approved(turns, a.approve, a.command)
       mkdirSync(join(ctx.home, 'conversations'), { recursive: true })
-      append(path, { who: 'person', text: a.text, front: a.front, at: Date.now() })
+      // ponytail: model code with the person certificate can approve through the client port.
+      // Upgrade: sandbox or client-port rights (claude-factory-xrbpw, aya5.6).
+      if (command !== undefined) {
+        const dir = join(ctx.home, 'conversations', a.id + '.approved')
+        const failed = (e: unknown) =>
+          new Error('the approval is refused: cannot record the use: ' + (e as NodeJS.ErrnoException).code)
+        try {
+          mkdirSync(dir, { recursive: true })
+        } catch (e) {
+          throw failed(e)
+        }
+        try {
+          writeFileSync(join(dir, a.approve!), '', { flag: 'wx' })
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code === 'EEXIST')
+            throw new Error(`the approval is refused: ask ${a.approve} already ran`)
+          throw failed(e)
+        }
+      }
+      append(path, {
+        who: 'person',
+        text: a.text,
+        front: a.front,
+        at: Date.now(),
+        ...(a.approve === undefined ? {} : { approve: a.approve }),
+      })
+      let ran: Turn['ran']
+      if (command !== undefined) {
+        const env: Ctx['env'] = { ...ctx.env, FACTORY_HOME: ctx.home }
+        delete env.FACTORY_MAIN_CHAT
+        delete env.FACTORY_ALLOW
+        let result: { code: number; out: string }
+        try {
+          result = await ctx.port.chatRun({ command, cwd: ctx.home, env, timeoutMs: 300000 })
+        } catch (e) {
+          result = { code: 127, out: line(String(e), 4000) }
+        }
+        ran = { id: a.approve!, command, ...result }
+      }
       const guard = { type: 'command', command: `'${CLI}' chat-guard` }
       let res: ModelResult
       try {
         res = await ctx.port.chatModel({
           system: stepPrompt('chat', { cli: CLI }),
-          input: a.text,
+          input:
+            command === undefined
+              ? a.text
+              : `${a.text}\n\nThe core ran the approved command:\n${command}\nexit ${ran!.code}\n${ran!.out}`,
           model: 'claude-fable-5-2',
           tools: 'Bash,Read,Grep,Glob,Write',
           maxTurns: 40,
@@ -115,6 +228,7 @@ export function send(ctx: Ctx, a: { id: string; text: string; front: Front }): P
         front: a.front,
         at: Date.now(),
         commands: res.calls,
+        ...(ran ? { ran } : {}),
         asks,
         ...(res.session && SESSION.test(res.session) ? { session: res.session } : {}),
         ...(res.isOk ? {} : { error: res.error ?? 'the model failed', reason: res.reason }),
@@ -139,7 +253,7 @@ export function send(ctx: Ctx, a: { id: string; text: string; front: Front }): P
   })
 }
 
-/** the body of `factory chat-guard`, the PreToolUse Bash hook of a chat turn: every result but allow gives code 2 */
+/** Refuse each hook command that needs approval. */
 export function guardHook(stdin: string): { code: number; err: string } {
   let command: unknown
   try {

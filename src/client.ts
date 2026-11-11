@@ -119,7 +119,7 @@ export function route(
     case 'mail': {
       const wake = args[2] === '--wake'
       const at = wake ? 3 : 2
-      if (args.slice(at).includes('--text-file')) {
+      if (args.slice(at).some(w => w === '--text-file' || w.startsWith('--text-file='))) {
         if (!seg(a, b) || args[at] !== '--text-file' || n !== at + 2 || !resolveMail) return bad
         args = resolveMail(args)
       }
