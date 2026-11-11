@@ -2503,3 +2503,20 @@ test('u509 writer compatibility', () => {
     ['other', 'y'],
   ])
 })
+
+test('u509 empty header keeps shared scope and body isolation', () => {
+  const bom = '\uFEFF'
+  const shared: Record<string, string> = {
+    lf: '---\n---\nrig: other\n',
+    crlf: '---\r\n---\r\nrig: other\r\n',
+    bom: `${bom}---\n---\nrig: other\n`,
+    mixed: '---\r\n---\nrig: other\n',
+    eof: '---\n---',
+    laterDelimiter: '---\n---\nbody\n---\nrig: other\n---\n',
+  }
+  for (const [name, text] of Object.entries(shared)) {
+    expect(parse('ci/a.md', text).rig, name).toBeUndefined()
+    expect(u509Ranked(text, 'acme').found, name).toHaveLength(1)
+  }
+  expect(parse('ci/a.md', shared.lf ?? '').body).toBe('rig: other')
+})

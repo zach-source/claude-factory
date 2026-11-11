@@ -85,7 +85,7 @@ const RIG_LIKE = /^[ \t]*rig[ \t]*:/i
  */
 export const parse = (path: string, text: string): Note => {
   const src = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
-  const m = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(src)
+  const m = /^---\n(?:---(?:\n|$)|([\s\S]*?)\n---(?:\n|$))/.exec(src)
   const meta: Record<string, string> = Object.fromEntries(
     [...(m?.[1] ?? '').matchAll(/^(\w+):[ \t]*(.*)$/gm)].map(([, k, v]) => [k, v]),
   )

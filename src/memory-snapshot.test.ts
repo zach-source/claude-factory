@@ -253,11 +253,24 @@ test('u509 snapshot scope matrix', () => {
     noClose: '---\nsummary: s\nrig: acme\nbody MARK',
     other: '---\r\nsummary: s\r\nrig: other\r\n---\r\nbody MARK',
     otherBom: `${bom}---\nsummary: s\nrig: other\n---\nbody MARK`,
+    tab: '---\nsummary: s\n\trig: acme\n---\nbody MARK',
+    allCaps: '---\nsummary: s\nRIG: acme\n---\nbody MARK',
+    spaceColon: '---\nsummary: s\nrig : acme\n---\nbody MARK',
+    mixedDup: '---\nsummary: s\nrig: acme\nRig: acme\n---\nbody MARK',
+    blankValue: '---\nsummary: s\nrig:   \n---\nbody MARK',
+    prefix100: `${'x\n'.repeat(100)}rig: acme\nMARK\n`,
+    otherAcme: '---\nsummary: s\nrig: other\nrig: acme\n---\nbody MARK',
+    bomCrlfOther: `${bom}---\r\nsummary: s\r\nrig: other\r\n---\r\nbody MARK`,
+    mixedOther: '---\nsummary: s\r\nrig: other\n---\r\nbody MARK',
+    eofOther: '---\nsummary: s\nrig: other\n---',
   }
   const good: Record<string, string> = {
     'crlf.md': '---\r\nsummary: s\r\nrig: acme\r\n---\r\nbody\r\n',
     'bom.md': `${bom}---\nsummary: s\nrig: acme\n---\nbody\n`,
     'shared.md': '---\nsummary: s\n---\nshared\n',
+    'legacy.md': 'legacy shared note\n',
+    'emptyHeader.md': '---\n---\nrig: other\n',
+    'bodyRig.md': '---\nsummary: s\nrig: acme\n---\nrig: other\nRig: x\n',
   }
   const sentinel = parse('x.md', bad.indented ?? '').rig
   for (const rig of ['acme', undefined, sentinel]) {
@@ -286,10 +299,18 @@ test('u509 snapshot scope matrix', () => {
     const x = tmp('x')
     tar('-xzf', out, '-C', x)
     const names = listing(out).map(n => n.replace(/^\.\//, ''))
-    const kept = (rig === 'acme' ? ['ci/crlf.md', 'ci/bom.md'] : []).concat(['ci/shared.md'])
+    const kept = (rig === 'acme' ? ['ci/crlf.md', 'ci/bom.md', 'ci/bodyRig.md'] : []).concat([
+      'ci/shared.md',
+      'ci/legacy.md',
+      'ci/emptyHeader.md',
+    ])
     for (const f of readdirSync(join(x, 'ci')).map(f => `ci/${f}`)) expect(kept, `${rig} ${f}`).toContain(f)
     for (const f of kept) expect(readFileSync(join(x, f))).toEqual(readFileSync(join(dir, f)))
     expect(names.some(n => n.startsWith('ops/') && n !== 'ops/')).toBe(false)
+    const payload = readdirSync(join(x, 'ci'))
+      .map(f => readFileSync(join(x, 'ci', f), 'utf8'))
+      .join('\n')
+    expect(payload).not.toContain('MARK')
     for (const f of ['.index.json', '.usage.jsonl']) {
       const t = readFileSync(join(x, f), 'utf8')
       for (const k of Object.keys(bad)) expect(t).not.toContain(`${k}.md`)
