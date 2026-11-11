@@ -564,7 +564,11 @@ test('rig add and set --param name=- read the value from stdin', () => {
 
 test('rig --param name=- refuses a second dash, a bad pair, empty stdin; no stdin value in a message', () => {
   seed()
-  const two = factory(['rig', 'set', 'x', '--param', 'fast_check=-', '--param', 'base_branch=-'], {}, 'zqsecret')
+  const two = factory(
+    ['rig', 'set', 'x', '--param', 'fast_check=-', '--param', 'base_branch=-'],
+    {},
+    'zqsecret',
+  )
   expect(two.code).toBe(1)
   expect(two.err).toContain('only one value can come from stdin')
   expect(two.err).not.toContain('read no value from stdin')
