@@ -1061,3 +1061,28 @@ describe('web page', () => {
       expect(CATALOG.some(o => o.route.method === 'GET' && o.route.path === p)).toBe(true)
   })
 })
+
+describe('serveSocket idle timer after the reply', () => {
+  test('a client that never closes is destroyed after the reply', async () => {
+    const { createServer, connect } = await import('node:net')
+    let closed: Promise<void> | undefined
+    const srv = createServer(s => {
+      closed = new Promise<void>(r => s.once('close', () => r()))
+      serveSocket(s as never, async () => new Response('ok'), 200)
+    })
+    await new Promise<void>(r => srv.listen(0, '127.0.0.1', () => r()))
+    const c = connect({ port: (srv.address() as { port: number }).port, host: '127.0.0.1', allowHalfOpen: true })
+    try {
+      let got = ''
+      c.on('data', d => (got += d))
+      c.write('GET /x HTTP/1.1\r\nhost: x\r\n\r\n')
+      for (let i = 0; i < 20 && !got.startsWith('HTTP/1.1 200'); i++) await Bun.sleep(50)
+      expect(got.startsWith('HTTP/1.1 200')).toBe(true)
+      const res = await Promise.race([closed!.then(() => 'closed'), Bun.sleep(1500).then(() => 'open')])
+      expect(res).toBe('closed')
+    } finally {
+      c.destroy()
+      srv.close()
+    }
+  })
+})

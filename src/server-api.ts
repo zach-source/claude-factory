@@ -812,6 +812,9 @@ export function serveSocket(
       sock.end(out)
     } catch {
       if (!sock.destroyed) bad(500, 'internal error')
+    } finally {
+      // the reply is out: a client that never closes must not keep the socket
+      sock.setTimeout(idleMs, () => sock.destroy())
     }
   }
   sock.on('data', (chunk: Buffer) => {
