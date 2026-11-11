@@ -1,6 +1,8 @@
 import { closeSync, openSync, readdirSync, readSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { inProc, type Ctx, type Input, type RunResult } from '../catalog'
+import { appendLog, readLog } from '../../once'
+import { BRIEFER_LOG_CAP, PATROL_LOG_CAP, PM_LOG_CAP, REVIEWER_LOG_CAP } from '../../../mod/hooks/view'
+import { inProc, OpError, type Ctx, type Input, type RunResult } from '../catalog'
 
 /** the window of a model that the transcript does not tell; a larger use means the 1M window */
 export const DEFAULT_WINDOW = 200_000
@@ -71,5 +73,58 @@ export async function context(ctx: Ctx, _i: Input): Promise<RunResult> {
     const c = newest && contextOf(tail(newest.f), w > 0 ? w : DEFAULT_WINDOW)
     // no session is a normal state (a local manager has none here): null, not an error
     print(JSON.stringify(newest && c ? { ...c, at: newest.at } : null))
+  })
+}
+
+/** the log of each kind that the manager task reports: its file and its cap */
+const LOGS: Record<string, [file: string, cap: number]> = {
+  patrol: ['patrol-log.jsonl', PATROL_LOG_CAP],
+  pm: ['pm-log.jsonl', PM_LOG_CAP],
+  brief: ['brief-log.jsonl', BRIEFER_LOG_CAP],
+  review: ['review-log.jsonl', REVIEWER_LOG_CAP],
+  // ponytail: fixed caps for usage and health; make them settings when a reader needs more rows
+  usage: ['manager-usage.jsonl', 5000],
+  health: ['manager-health.jsonl', 200],
+}
+
+/** `manager.log`: the manager task adds one row to a log of the factory home. `entry` is one JSON object. */
+export async function log(ctx: Ctx, i: Input): Promise<RunResult> {
+  const [file, cap] = Object.hasOwn(LOGS, i.kind as string) ? LOGS[i.kind as string]! : []
+  if (!file || !cap) throw new OpError(422, 'unknown log kind')
+  let row: unknown
+  try {
+    row = JSON.parse(i.entry as string)
+  } catch {}
+  if (!row || typeof row !== 'object' || Array.isArray(row))
+    throw new OpError(422, 'entry must be a JSON object')
+  appendLog(ctx.home, file, cap, row)
+  return { code: 0, out: 'logged\n', err: '' }
+}
+
+/** `manager.show`: the last health row of the manager task, or null when it never reported */
+export async function show(ctx: Ctx, _i: Input): Promise<RunResult> {
+  return inProc(print => print(JSON.stringify({ health: readLog(ctx.home, LOGS.health![0]).at(-1) ?? null })))
+}
+
+/** `manager.brief`: what a new manager session reads first (the contract says: replaces the transcript resume) */
+export async function brief(ctx: Ctx, _i: Input): Promise<RunResult> {
+  return inProc(print => {
+    const board = ctx.board() as { manager?: unknown } | null | undefined
+    print(
+      JSON.stringify({
+        decisions: ctx.port.decisionsList(),
+        mail: Array.isArray(board?.manager) ? board.manager : [],
+        plan: ctx.port.planShowText(),
+        patrol: readLog(ctx.home, LOGS.patrol![0]).slice(-20),
+      }),
+    )
+  })
+}
+
+/** `manager.say`: type text into the manager pane. The person only (the catalog marks it owner). */
+export async function say(ctx: Ctx, i: Input): Promise<RunResult> {
+  return inProc(async print => {
+    await ctx.port.say(i.text as string)
+    print('sent')
   })
 }

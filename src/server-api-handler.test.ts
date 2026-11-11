@@ -31,6 +31,7 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
   // each port function logs into the same array as the runner, so a "zero calls" check counts both
   const log = (port: string, args: unknown[]) => calls.push({ port, args })
   const port: Port = {
+    say: () => {},
     gcPass: () => {},
     gcWorktreesPass: () => {},
     gcRigs: () => [],
@@ -321,6 +322,17 @@ describe('action routes', () => {
       { factory: 'lifecycle', station: 'plan', rig: 'acme', goal: 'g', owned: true },
       [{ argv: ['start', 'lifecycle@plan', 'acme', 'g', '--owned'] }],
     ],
+    ['/v1/runs/r1/poke', {}, [{ argv: ['poke', 'r1'] }]],
+    ['/v1/runs/r1/poke', { text: 'hurry' }, [{ argv: ['poke', 'r1', 'hurry'] }]],
+    ['/v1/runs/r1/retry', {}, [{ argv: ['retry', 'r1'] }]],
+    ['/v1/runs/r1/fork', { station: 'plan' }, [{ argv: ['fork', 'r1', 'plan'] }]],
+    ['/v1/runs/r1/fork', { station: 'plan', note: 'n' }, [{ argv: ['fork', 'r1', 'plan', 'n'] }]],
+    ['/v1/queue', { rig: 'acme', bead: 'b1' }, [{ argv: ['queue', 'acme', 'b1'] }]],
+    ['/v1/queue', { rig: 'acme', bead: 'b1', station: 'plan' }, [{ argv: ['queue', 'acme', 'b1', 'plan'] }]],
+    ['/v1/rigs/ax/unhold', {}, [{ argv: ['unhold', 'ax'] }]],
+    ['/v1/rigs/ax/unhold', { codex: true }, [{ argv: ['unhold', 'ax', '--codex'] }]],
+    ['/v1/adopt', { rig: 'acme' }, [{ argv: ['adopt', 'acme'] }]],
+    ['/v1/adopt', { rig: 'acme', template: 'lifecycle' }, [{ argv: ['adopt', 'acme', 'lifecycle'] }]],
     ['/v1/halt', { mode: 'stop' }, [{ argv: ['stop'] }]],
     ['/v1/halt', { mode: 'resume' }, [{ argv: ['resume'] }]],
     ['/v1/decisions/acme/b1/answer', { text: 'yes' }, [p('decisionsAnswer', 'acme', 'b1', 'yes')]],
@@ -332,6 +344,27 @@ describe('action routes', () => {
       expect(r.status).toBe(200)
       expect(t.calls).toEqual(calls)
     })
+})
+
+describe('DELETE route', () => {
+  const del = (h: H, path: string, key: string) =>
+    h(
+      new Request(`http://x${path}`, {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json', 'idempotency-key': key },
+        body: '{}',
+      }),
+      '127.0.0.1',
+    )
+  test('DELETE /v1/runs/:id runs rm; a repeat with the same key does not run it again', async () => {
+    const t = setup()
+    expect((await del(t.h, '/v1/runs/r1', 'key-del-00001')).status).toBe(200)
+    expect((await del(t.h, '/v1/runs/r1', 'key-del-00001')).status).toBe(200)
+    expect(t.calls).toEqual([{ argv: ['rm', 'r1'] }])
+  })
+  test('POST on the DELETE path gives 404', async () => {
+    expect((await post(setup().h, '/v1/runs/r1', {})).status).toBe(404)
+  })
 })
 
 describe('refusals make zero calls', () => {
