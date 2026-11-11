@@ -248,6 +248,16 @@ const stopped = (id: string, age: number) =>
     last: { node: 'plan', attempt: 1, outcome: 'fail', summary: 'Stop.', at: ago(age) },
   })
 
+test('rig page shows the halt under the title', () => {
+  const at = Date.parse('2026-01-02T03:04:05Z')
+  for (const state of ['paused', 'stopping'] as const) {
+    const t = renderRigPage('acme', [], new Set(), [], [], NOW, { state, at })
+    expect(t).toContain(`# acme\n\n> The factory is ${state} since 2026-01-02T03:04:05Z.\n`)
+  }
+  expect(page([])).not.toContain('The factory is')
+  expect(renderRigPage('acme', [], new Set(), [], [], NOW, null)).not.toContain('since')
+})
+
 test.each([
   ['waiting live row', () => page([run('w')], ['w']), 'Goal w', 'Waits on a person'],
   ['live row', () => page([run('l')]), 'Goal l', 'In progress'],
