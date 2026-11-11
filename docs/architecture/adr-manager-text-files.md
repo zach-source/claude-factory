@@ -146,6 +146,18 @@ Use the CI environment requirements from `.github/workflows/ci.yml` for mandator
 Run `bunx prettier@3.9.9 --check .`, `bun audit`, and `gitleaks detect --log-opts=origin/main..HEAD`.
 Record local tool gaps and exact-head CI evidence. Never weaken a check.
 
+AC6 local gap rule (re-plan after four partial implement rounds). One class of local failure does not block ready:
+a test that fails because the memory model cannot load on the VM (claude-factory-v4kta).
+A failure is in this class only if all three conditions are true:
+- The output of that failed test itself shows one of these texts: `ECONNRESET`, `ENOTFOUND`, `ETIMEDOUT`, `fetch failed`, or a `huggingface.co` URL.
+- After the suite, `bun -e 'await (await import("./src/memory.ts")).fetchModel()'` at the same HEAD exits non-zero with the same error. This probe only confirms the VM gap. It never puts a test in the class alone.
+- The exact-head CI `test` job passes. That job runs the same tests and fetches the model (src/memory.ts:550; ci.yml has no cache step).
+Every other local failure blocks ready, also a time-bound failure and the Git builtin failure.
+Run the gate with Nix Git (`nix-shell -p git ...`). Host Git 2.47.0 fails the Git builtin test; Nix Git 2.56.0 passes it.
+Do not copy the model cache, change egress or ask again for a cache input.
+The required checks are test, plugin, typecheck and format (ci.yml:3). Also report nix.
+Put the count and names of model-class failures and the CI job URL in the run report.
+
 ## Test plan and tasks
 
 One implementation pass can finish this scope in 120 minutes.
@@ -160,6 +172,8 @@ All tasks ship in one pull request; no intermediate test failure ships alone.
 4. `claude-factory-0s5e.4`: Prove the guards and complete AC6. Commit only necessary final corrections and evidence in this ADR.
    After the fix commit, use `factory mutate` for independent confinement, conflict, and replay checks.
    Each mutant must build and fail its focused test. Restore the committed source after each probe.
+5. `claude-factory-0s5e.7`: Merge current origin/main and run the AC6 gate one time under the local gap rule.
+   Ready when all non-model local failures are zero and the four required exact-head PR checks pass.
 
 ## Risk
 
