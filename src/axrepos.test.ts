@@ -10,8 +10,11 @@ import {
   httpsRemote,
   mapRigs,
   mapRunRepo,
+  mapRunWorktree,
   planRepoSync,
+  switchDir,
   syncRepos,
+  worktreeBase,
 } from './axrepos'
 import { bootstrapBeads, clone } from './worker'
 
@@ -366,4 +369,27 @@ test('clone gives git -- before FACTORY_REPO in both clone calls', async () => {
   const lines = readFileSync(log, 'utf8').split('\n')
   expect(lines.some(l => l.startsWith(`clone --branch main -- ${URL} `))).toBe(true)
   expect(lines.some(l => l.startsWith(`clone -- ${URL} `))).toBe(true)
+})
+
+test('FACTORY_SERVER_MODE puts the repos, run worktrees, worktree base and swap state under FACTORY_HOME', () => {
+  const env = { FACTORY_SERVER_MODE: '1', FACTORY_HOME: '/var/lib/factory/home' }
+  expect(axRepoPath('alpha', env)).toBe('/var/lib/factory/home/repos/alpha')
+  expect(mapRigs(rigs, env).map(r => r.repo)).toEqual([
+    '/var/lib/factory/home/repos/alpha',
+    '/var/lib/factory/home/repos/beta',
+  ])
+  expect(mapRunRepo(rigs, '/home/u/repos/beta', env)).toBe('/var/lib/factory/home/repos/beta')
+  const run = { id: 'r1', repo: '/home/u/repos/alpha', worktree: '/home/u/wt' }
+  expect(mapRunWorktree(rigs, run, env)).toBe('/var/lib/factory/home/worktrees/r1')
+  expect(worktreeBase('alpha', env.FACTORY_HOME, '/home/u', env)).toBe(
+    '/var/lib/factory/home/worktrees/alpha',
+  )
+  expect(switchDir(env.FACTORY_HOME, '/home/u', env)).toBe('/var/lib/factory/home/claude-switch-backup')
+})
+
+test('without FACTORY_SERVER_MODE the worktree base and swap state stay on the user home', () => {
+  for (const env of [{}, AX]) {
+    expect(worktreeBase('alpha', '/h', '/home/u', env)).toBe('/home/u/.herdr/worktrees/alpha')
+    expect(switchDir('/h', '/home/u', env)).toBe('/home/u/.claude-switch-backup')
+  }
 })

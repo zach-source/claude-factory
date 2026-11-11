@@ -244,8 +244,11 @@ import {
   mapRigs,
   mapRunRepo,
   mapRunWorktree,
+  ownsClones,
   stationRunnerName,
+  switchDir,
   syncRepos,
+  worktreeBase,
 } from './axrepos'
 import * as broker from './broker'
 import * as server from './server'
@@ -1104,7 +1107,7 @@ export function rigBeadsSync(r: Rig['beadsRemote'], way: 'push' | 'pull', conn?:
   // ponytail: in the AX task bd holds an embedded store and no Dolt server, so there is no SQL path to the remote's user:
   // plain `bd dolt push|pull` runs with DOLT_REMOTE_USER from env.json (axrepos). A pull conflict stops with bd's own
   // error, where the laptop's pullResolving keeps the VM's row; the manager reports it and a person resolves it
-  if (!r || inAx()) return ['bd', 'dolt', way]
+  if (!r || ownsClones()) return ['bd', 'dolt', way]
   if (![r.name, r.user].every(s => BEADS_WORD.test(s))) fail(BEADS_WORD_MSG)
   if (!conn) return fail(`beads: bd shows no Dolt server for this repo`)
   const call = `CALL DOLT_${way.toUpperCase()}('--user', '${r.user}', '${r.name}', 'main')`
@@ -1159,7 +1162,7 @@ function syncRigBeads(
   r = rigOf(run.repo)?.beadsRemote,
 ) {
   const show =
-    r && !inAx()
+    r && !ownsClones()
       ? Bun.spawnSync(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree, timeout: syncTimeoutMs() })
       : null
   const conn = show?.exitCode === 0 ? (JSON.parse(show.stdout.toString()) as DoltConn) : undefined
@@ -1183,7 +1186,9 @@ async function syncRigBeadsBounded(
 ) {
   const timeoutMs = syncTimeoutMs()
   const show =
-    r && !inAx() ? await runBounded(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree, timeoutMs }) : null
+    r && !ownsClones()
+      ? await runBounded(['bd', 'dolt', 'show', '--json'], { cwd: run.worktree, timeoutMs })
+      : null
   if (show?.timedOut)
     return { code: null, out: '', err: timedOutText(`beads ${way}`, timeoutMs), timedOut: true }
   const conn = show?.code === 0 ? (JSON.parse(show.out) as DoltConn) : undefined
@@ -1808,7 +1813,7 @@ function loadRun(id: string | undefined): Run {
   const run: Run = readJson(file)
   // a run the laptop made names the laptop's repo and worktree paths. In the AX task they are the rig's clone
   // and a worktree under the factory home (launchTask revives it)
-  return inAx()
+  return ownsClones()
     ? { ...run, repo: mapRunRepo(rawRigs(), run.repo), worktree: mapRunWorktree(rawRigs(), run) }
     : run
 }
@@ -3190,7 +3195,8 @@ export function nextAccount(sequence: string[], active: string, limits: Record<s
  * for the first reset. Returns that wait's end, or 0 to restart now
  */
 // shared by every factory on the machine, as the account is: one factory's swap is not another's to redo
-const LIMITS = join(homedir(), '.claude-switch-backup', 'factory-limits.json')
+const SWITCH_DIR = switchDir(HOME, homedir())
+const LIMITS = join(SWITCH_DIR, 'factory-limits.json')
 type Limits = { at: number; limits: Record<string, number>; hitAt?: Record<string, number> }
 
 /**
@@ -3202,9 +3208,7 @@ export function clearLimit(at: number) {
   const s = readJson<Limits>(LIMITS)
   let active: string
   try {
-    active = readJson<{ activeAccountId: string }>(
-      join(homedir(), '.claude-switch-backup', 'sequence.json'),
-    ).activeAccountId
+    active = readJson<{ activeAccountId: string }>(join(SWITCH_DIR, 'sequence.json')).activeAccountId
   } catch {
     return
   }
@@ -3240,7 +3244,7 @@ function swapAccount(hit: { at: number; resetsAt: number }, now: number): number
   if (hit.at < s.at) return 0
   let seq: { activeAccountId: string; sequence: string[] }
   try {
-    seq = readJson(join(homedir(), '.claude-switch-backup', 'sequence.json'))
+    seq = readJson(join(SWITCH_DIR, 'sequence.json'))
   } catch {
     return hit.resetsAt // no ccswitch: wait out the limit
   }
@@ -9084,7 +9088,7 @@ async function createRun(
   // claude-factory-1d9l: a run on a PR branch loads the factory the default branch holds, never the branch's own
   const checkout = onto && !from ? factoryDirAt(repo, base) : undefined
   let ws = ''
-  let worktree = join(homedir(), '.herdr', 'worktrees', basename(repo), `factory-${id}`)
+  let worktree = join(worktreeBase(basename(repo), HOME, homedir()), `factory-${id}`)
   let source = ''
   let def: Factory
   // pinned resolved, as data: a base it extends may change after the run starts
@@ -9466,7 +9470,10 @@ function linearMail(now: number): (Mail & { run: string })[] {
 }
 /** `factory repos sync`: clone or fetch each rig's repo in the AX task and bootstrap its beads store; the problems, one per line */
 const reposSync = (): string[] => {
-  if (!inAx()) fail('factory repos sync runs inside the AX manager task (FACTORY_IN_AX=1)')
+  if (!ownsClones())
+    fail(
+      'factory repos sync runs inside the AX manager task (FACTORY_IN_AX=1) or the server pod (FACTORY_SERVER_MODE=1)',
+    )
   return [...syncRepos(rawRigs(), HOME), ...reviveLiveWorktrees()]
 }
 
