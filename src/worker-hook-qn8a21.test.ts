@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as hook from './worker-hook'
@@ -455,12 +455,12 @@ describe('qn8a.122 bounded worker cache copy', () => {
   test.each([
     [cp(A), A],
     [cp(B), B],
-    [`cp -R '${A.hd}${MC}' '${A.root}${MC}'`, A],
-    [`cp -R "${B.hd}${MC}" "${B.root}${MC}"`, B],
+    [`cp -R '${A.hd}${MC}' "${A.root}${MC}"`, A],
+    [`cp -R "${B.hd}${MC}" '${B.root}${MC}'`, B],
     [`\\${cp(A)}`, A],
     [`'cp' -R ${B.hd}${MC} ${B.root}${MC}`, B],
-    [`(${cp(B)})`, B],
-    [`${cp(B)} &`, B],
+    [`(${cp(A)})`, A],
+    [`${cp(A)} &`, A],
   ])('allows the cache copy %s', (c, f) => expect(run(c, f)).toBeUndefined())
 
   test.each([
@@ -484,6 +484,7 @@ describe('qn8a.122 bounded worker cache copy', () => {
     `mv ${S} ${D}`,
     `ln -s ${S} ${D}`,
     `rsync -a ${S} ${D}`,
+    `rsync -R ${S} ${D}`,
     `gcp -R ${S} ${D}`,
     `busybox cp -R ${S} ${D}`,
     `env cp -R ${S} ${D}`,
@@ -499,6 +500,7 @@ describe('qn8a.122 bounded worker cache copy', () => {
     `cp -R ${S} ${D}/`,
     `cp -R ${S} ${D}*`,
     `cp -R ${S} ${ROOT}${MC}/../../../.claude`,
+    `cp -R ${S} ${ROOT}${MC}/../../../../../.claude`,
     `cp -R ${S} ${ROOT}${MC}/../../../../.git`,
     `cp -R ${S} /w/other${MC}`,
     `cp -R ${S} node_modules/@huggingface/transformers/.cache`,
@@ -506,16 +508,28 @@ describe('qn8a.122 bounded worker cache copy', () => {
     `${cp(B)}; cp -R ${S} ${H}/src`,
     `${cp(B)} | tee ${H}/package.json`,
     `${cp(B)} > ${H}/src/cut.ts`,
+    `${cp(B)} > ${ROOT}/.claude/settings.json`,
+    `${cp(B)} && tee ${ROOT}/.claude/settings.json`,
     `${cp(B)} 2>&1`,
     `alias cp='echo'; ${cp(B)}`,
   ])('denies %s', c => expect(run(c)).toBeDefined())
+
+  test('denies the cache copy when the gate aliases cp', () =>
+    expect(
+      hook.denyReason(cp(B), ROOT, undefined, {
+        cwd: ROOT,
+        hookDir: H,
+        shellAliases: () => new Map([['cp', 'rm -rf']]),
+        gitAliases: () => new Map(),
+      }),
+    ).toBeDefined())
 
   test('denies a root with a trailing slash', () =>
     expect(
       hook.denyReason(`cp -R ${H}${MC} ${ROOT}/${MC}`, `${ROOT}/`, undefined, { cwd: ROOT, hookDir: H }),
     ).toBeDefined())
   test('denies a root with a space', () =>
-    expect(run(`cp -R ${H}${MC} /w/a b${MC}`, { root: '/w/a b', hd: H })).toBeDefined())
+    expect(run(`cp -R ${H}${MC} '/w/a b${MC}'`, { root: '/w/a b', hd: H })).toBeDefined())
   test.each([
     ['/w/../acme', H],
     ['/w/./acme', H],
@@ -529,6 +543,7 @@ describe('qn8a.122 bounded worker cache copy', () => {
   test('keeps allowing ordinary rows', () => {
     expect(run(`cp -R x .scratch/y`)).toBeUndefined()
     expect(run(`cat ${H}/src/worker-hook.ts`)).toBeUndefined()
+    expect(run(`cp src/worker-hook.ts .scratch/b.ts`)).toBeUndefined()
   })
 
   test.each(['parent', 'leaf'])('denies a %s symlink from the destination into the hook source', kind => {
@@ -544,6 +559,8 @@ describe('qn8a.122 bounded worker cache copy', () => {
       else symlinkSync(join(hd, 'src'), join(par, 'transformers', '.cache'))
       const c = `cp -R ${hd}${MC} ${rt}${MC}`
       expect(hook.denyReason(c, rt, undefined, { cwd: rt, hookDir: hd })).toBeDefined()
+      expect(existsSync(join(hd, 'src', '.cache'))).toBe(false)
+      if (kind === 'leaf') expect(lstatSync(join(par, 'transformers', '.cache')).isSymbolicLink()).toBe(true)
     } finally {
       rmSync(d, { recursive: true })
     }
@@ -555,6 +572,10 @@ describe('qn8a.122 bounded worker cache copy', () => {
     `${f.hd}/src`,
     `${f.hd}/node_modules`,
     `${f.hd}/node_modules/@huggingface`,
+    '/',
+    `${f.hd}/src/worker-hook.ts`,
+    `${f.hd}/src/home-guard.ts`,
+    `${f.hd}/src/cut.ts`,
     `${f.hd}/package.json`,
     `${f.root}/.claude`,
     `${f.root}/.claude/settings.json`,
@@ -562,15 +583,34 @@ describe('qn8a.122 bounded worker cache copy', () => {
     `${f.root}/.cursor`,
     `${f.root}/.cursor/hooks.json`,
     `${f.root}/.grok`,
+    `${f.root}/.grok/config.toml`,
+    `${f.root}/.grok/hooks/x.json`,
     `${f.root}/.git`,
     `${f.root}/.git/config`,
+    `${f.root}/.git/hooks/pre-commit`,
+    '~/.gitconfig',
+    '~/.config/git/config',
+    '~/.claude/shell-snapshots/x.sh',
     `${f.hd}/shell-snapshots`,
     `${f.hd}/rigs.json`,
     `${f.hd}/worker-settings.json`,
     `${f.hd}/inbox.jsonl`,
     `${f.hd}/state.json`,
+    '/h/rigs.json',
+    '/h/worker-settings.json',
+    '/h/runs/r1/inbox.jsonl',
+    '/h/runs/r1/state.json',
   ]
   test.each(prot(A))('still denies a cache source copy into %s', p =>
     expect(run(`cp -R ${A.hd}${MC} ${p}`, A)).toBeDefined(),
+  )
+  // the current scan allows these destinations with a plain source (ADR out of scope; .git/config is a sibling)
+  const allowedToday = (p: string) =>
+    p === `${A.root}/.git` ||
+    p === `${A.root}/.git/config` ||
+    p === `${A.root}/.git/hooks/pre-commit` ||
+    p === '~/.claude/shell-snapshots/x.sh'
+  test.each(prot(A).filter(p => !allowedToday(p)))('still denies a plain copy into %s', p =>
+    expect(run(`cp -R .scratch/x ${p}`, A)).toBeDefined(),
   )
 })
