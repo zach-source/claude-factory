@@ -4,24 +4,27 @@
 
 Bead: `claude-factory-t54il`. PR: https://github.com/zach-source/claude-factory/pull/812.
 
-Four implement passes stopped at the worker hook. They left HEAD at `e2c8b15b`.
 Commit `678ce2f4` completed T1. Commit `e2c8b15b` added incomplete T2 tests.
 The PR remains a draft. Its test, typecheck, and format checks fail. Plugin and nix checks pass.
 
-Eight implement passes stopped at a worker hook denial for each command that names `src/core/guards.test.ts`.
+Each implement pass since `e2c8b15b` stopped at a worker hook denial for each command that names `src/core/guards.test.ts`.
 Examples are `rg -n '^' src/core/guards.test.ts` and `bun test src/core/guards.test.ts`.
+A read-only command such as `git diff` or `git show | grep` gets no file read and passes.
 
 ## Root cause
 
 `homeReason` in `src/home-guard.ts` reads each script file that a command names.
 It denies the command when that file holds a delete word and a whole-home word anywhere.
 
-On `origin/main`, `src/core/guards.test.ts` holds home words (`~/x` and `$HOME` in test rows) and no delete word.
-The WIP commit `e2c8b15b` added `rmSync` (the import and two `finally` cleanups).
+On `origin/main`, `src/core/guards.test.ts` holds a home word (the `ls` row of the HOME variable) and no delete word.
+The WIP commit `e2c8b15b` added two more home words: a quoted HOME variable row and a bare tilde row.
+This ADR does not quote them, because a command that names this file must pass the same guard.
+It also added `rmSync` (the import and two `finally` cleanups).
 After that commit, the file holds both words, so the hook denies every command that names the file.
 The hook works as designed. The defect is in the test file, not in the hook.
 
 The rework plan of 2026-11-11 proved this with `homeReason` itself.
+The PR #812 plan summary of that run pins the T2 API and the T3 wiring. Where it differs from this ADR, the summary wins.
 The branch file gives a denial. A copy that uses `rmQuiet` from `src/home-guard.ts` gives no denial.
 A copy that also holds a `'factory rm r1'` row gives a denial again.
 
