@@ -153,7 +153,7 @@ export function managerCodexAuthText(auth) {
   return auth ? 'manager codex: key refused' : ''
 }
 
-/** the result of `factory snapshot --views board,decisions`: { tick, decisions } for the tabs to share */
+/** the result of `factory snapshot --views board` or `--views decisions`: { tick, decisions } for the tabs to share */
 export function parseSnapshot(code, out, err) {
   if (code !== 0) return { tick: { error: line(err || out || `factory snapshot exited ${code}`, 300) } }
   let views
@@ -187,8 +187,16 @@ export function parseConfig(text) {
 /** the options that send an exec or a file read to the machine of a remote config */
 export const onOf = cfg => (cfg.machine ? { on: cfg.machine } : undefined)
 
-/** the one read-only call of a beat: the slim board and the decisions (claude-factory-hpmc.23) */
-export const SNAPSHOT_WORDS = ['snapshot', '--views', 'board,decisions']
+/**
+ * The read-only calls of a beat (claude-factory-hpmc.23, ql0jz). The board and the decisions are two calls, so the
+ * slow decisions (one bd call for each rig) never hold the board. `maxAge` (ms) lets the core answer from its cache.
+ */
+export const snapshotWords = (view, maxAge) => ['snapshot', '--views', view, '--max-age', String(maxAge)]
+/** the board is at most this old (ms) on each beat; the first beat takes any cached board, so a screen opens at once */
+export const BOARD_MAX_AGE = 4_000
+export const FIRST_MAX_AGE = 3_600_000
+/** the decisions are refreshed this often (ms) */
+export const DECISIONS_MS = 60_000
 
 /** the shell words of a control button; only these CLI commands are allowed */
 export function actionWords(action, arg) {

@@ -1033,3 +1033,31 @@ describe('e0qu temp file', () => {
     expect(Object.keys(JSON.parse(readFileSync(store(t), 'utf8')))).toContain('key-e0qu-0002')
   })
 })
+
+describe('web page', () => {
+  test('GET / serves the page, and a worker token still gets 403', async () => {
+    const t = setup()
+    const ok = await t.h(new Request('https://x.invalid/'), '1.1.1.1')
+    expect(ok.status).toBe(200)
+    expect(ok.headers.get('content-type')).toStartWith('text/html')
+    const html = await ok.text()
+    // every section calls a route of the catalog, none calls another API
+    for (const s of ['Overview', 'Runs', 'Epics and backlog', 'PRs', 'Rigs', 'Runners', 'Mail', 'Manager'])
+      expect(html).toContain(s)
+    expect(html).toContain("connect-src 'self'")
+    const bad = await t.h(
+      new Request('https://x.invalid/', { headers: { authorization: 'Bearer x' } }),
+      '1.1.1.1',
+    )
+    expect(bad.status).toBe(403)
+    expect((await t.h(new Request('https://x.invalid/', { method: 'POST' }), '1.1.1.1')).status).toBe(404)
+  })
+  test('every route that the page calls is in the catalog', async () => {
+    const { CATALOG } = await import('./core/catalog')
+    const html = readFileSync(join(import.meta.dir, 'web', 'index.html'), 'utf8')
+    const paths = [...html.matchAll(/'(\/v1\/[a-z]+)'/g)].map(m => m[1])
+    expect(paths.length).toBeGreaterThan(5)
+    for (const p of paths)
+      expect(CATALOG.some(o => o.route.method === 'GET' && o.route.path === p)).toBe(true)
+  })
+})

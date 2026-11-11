@@ -37,7 +37,10 @@ import {
   shortId,
   statusText,
   actionWords,
-  SNAPSHOT_WORDS,
+  snapshotWords,
+  BOARD_MAX_AGE,
+  FIRST_MAX_AGE,
+  DECISIONS_MS,
   chatArgv,
   chatLabel,
   directJob,
@@ -72,6 +75,9 @@ export default class Factory extends View {
     this.flowWindow = '24h'
     this.flowFactory = 'lifecycle'
     this.flow = null // { graph } | { error }
+    this.flowCache = {} // 'factory/window' -> { graph }: the last good graph, shown while a new one loads
+    this.decisionsAt = 0
+    this.beats = 0
     const p = props() ?? {}
     if (p.band || p.dialog) return // only the panel copy polls
     cx.spawn(async cx => {
@@ -121,18 +127,31 @@ export default class Factory extends View {
   beat(cx) {
     cx.spawn(async cx => {
       const r = this.finished('snapshot')
-      if (r) {
-        const s = parseSnapshot(r.code, r.out, r.err)
-        this.onTick(s.tick)
+      if (r) this.onTick(parseSnapshot(r.code, r.out, r.err).tick)
+      const d = this.finished('decisions')
+      if (d) {
+        const s = parseSnapshot(d.code, d.out, d.err)
         if (s.decisions) setShared('factory.decisions', s.decisions)
       }
       const fl = this.finished('flows')
-      if (fl) this.flow = parseFlows(fl.code, fl.out, fl.err)
+      if (fl) {
+        this.flow = parseFlows(fl.code, fl.out, fl.err)
+        if (this.flow.graph) this.flowCache[this.flowKey()] = this.flow
+      }
       // the Flow tab asks for the graph while it is shown
       if (this.tab === 'flow') this.start('flows', flowJobWords(this.flowFactory, this.flowWindow))
-      this.start('snapshot', SNAPSHOT_WORDS)
+      // the first beat takes any cached board; later beats take one at most BOARD_MAX_AGE old
+      this.start('snapshot', snapshotWords('board', this.beats++ ? BOARD_MAX_AGE : FIRST_MAX_AGE))
+      if (Date.now() - this.decisionsAt >= DECISIONS_MS && !this.jobs.decisions) {
+        this.decisionsAt = Date.now()
+        this.start('decisions', snapshotWords('decisions', this.beats > 1 ? DECISIONS_MS : FIRST_MAX_AGE))
+      }
       cx.notify()
     })
+  }
+
+  flowKey() {
+    return `${this.flowFactory}/${this.flowWindow}`
   }
 
   onTick(res) {
@@ -353,14 +372,14 @@ export default class Factory extends View {
   tabs(t) {
     return this.picker(t, 'tab', ['board', 'flow'], this.tab, n => {
       this.tab = n
-      this.flow = null
+      this.flow = this.flowCache[this.flowKey()] ?? null
     })
   }
 
   /** the Flow tab: the graph of the workflow, drawn with native paths */
   flowTab(t) {
     const pick = (id, names, picked, set) => this.picker(t, id, names, picked, set)
-    const reset = () => (this.flow = null)
+    const reset = () => (this.flow = this.flowCache[this.flowKey()] ?? null)
     const bar = h_flex()
       .gap(14)
       .flex_wrap()
@@ -445,7 +464,7 @@ export default class Factory extends View {
             .text_color(t.muted)
             .on_click((_e, cx) => {
               this.flowFactory = x.opens
-              this.flow = null
+              this.flow = this.flowCache[this.flowKey()] ?? null
               cx.notify()
             })
             .child(`${x.from} → ${x.outcome}: open ${x.opens}`)
