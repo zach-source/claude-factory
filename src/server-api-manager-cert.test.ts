@@ -16,7 +16,7 @@ test('managerCert makes a CN=manager cert; the key is 0600; no helper file stays
   expect(out).toContain('manager.crt')
   expect(statSync(join(dir, 'manager.key')).mode & 0o777).toBe(0o600)
   const subject = Bun.spawnSync(['openssl', 'x509', '-noout', '-subject', '-in', join(dir, 'manager.crt')])
-  expect(subject.stdout.toString()).toContain('CN=manager')
+  expect(subject.stdout.toString().replace(/ /g, '')).toContain('CN=manager')
   for (const f of ['manager.csr', 'manager.ext', 'ca.srl']) expect(Bun.file(join(dir, f)).size).toBe(0)
 })
 
