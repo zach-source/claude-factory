@@ -146,6 +146,7 @@ export function cliRunner(
   home: string,
   cli = join(import.meta.dir, 'cli.ts'),
   timeoutMs = 60_000,
+  killMs = 5_000,
 ): (argv: string[], text?: string, env?: Record<string, string>) => Promise<RunResult> {
   return async (argv, text, env) => {
     let file: string | undefined
@@ -171,19 +172,32 @@ export function cliRunner(
         },
       )
       let timedOut = false as boolean
+      let killTimer: ReturnType<typeof setTimeout> | undefined
+      // After SIGKILL the call returns at once. A grandchild (bd, git) can hold the pipes open, so the output is not awaited.
+      const killed = new Promise<RunResult>(res => {
+        killTimer = setTimeout(
+          () => {
+            proc.kill('SIGKILL')
+            res({ code: 137, out: '', err: '', timedOut: true })
+          },
+          timeoutMs + killMs,
+        )
+      })
       const timer = setTimeout(() => {
         timedOut = true
         proc.kill()
       }, timeoutMs)
       try {
-        const [out, err, code] = await Promise.all([
+        const all = Promise.all([
           new Response(proc.stdout).text(),
           new Response(proc.stderr).text(),
           proc.exited,
-        ])
-        return { code, out, err, ...(timedOut ? { timedOut } : {}) }
+        ]).then(([out, err, code]): RunResult => ({ code, out, err, ...(timedOut ? { timedOut } : {}) }))
+        all.catch(() => {})
+        return await Promise.race([all, killed])
       } finally {
         clearTimeout(timer)
+        clearTimeout(killTimer)
       }
     } finally {
       if (file) rmSync(file, { force: true })
