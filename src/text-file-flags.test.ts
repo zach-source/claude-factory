@@ -212,3 +212,42 @@ test('inside a VM, a bad file queues nothing: exit 1 for mail, 2 for memory add 
   expect(factory(['mail', 'r1', 'manager', '--text-file', txt('ok.txt', 'ok'), 'extra'], env).code).toBe(1)
   expect(existsSync(outbox)).toBe(false)
 })
+
+test('9ydy AC2/AC3: mail refuses a word that starts with --text-file=; a longer word stays text', () => {
+  const events = makeRun('r9')
+  for (const rest of [
+    ['--text-file=/x/ok.md'],
+    ['--text-file='],
+    ['--wake', '--text-file=/x/ok.md'],
+    ['--wake', '--text-file='],
+    ['hello', '--text-file=/x/ok.md'],
+    ['--wake', 'hello', '--text-file='],
+  ]) {
+    const r = factory(['mail', 'r9', 'manager', ...rest], {}, wt)
+    expect([rest, r.code]).toEqual([rest, 1])
+    expect(r.err).toContain('usage: factory mail')
+  }
+  expect(events().filter(e => e.type === 'MAIL')).toHaveLength(0)
+  for (const t of ['x--text-file=y', 'use --text-file=y']) {
+    expect(factory(['mail', 'r9', 'manager', t]).code).toBe(0)
+    expect(events().at(-1).text).toBe(t)
+  }
+})
+
+test('9ydy AC3: memory add refuses --body-file= with exit 2 and writes nothing', () => {
+  mkdirSync(home, { recursive: true })
+  const f = txt('eq.md', 'body')
+  expect(factory([...ADD, `--body-file=${f}`, 's'], {}, wt).code).toBe(2)
+  expect(notes()).toEqual([])
+})
+
+test('9ydy AC4: inside a VM, equals-form flags queue nothing', () => {
+  mkdirSync(home, { recursive: true })
+  const outbox = join(dir, 'outbox-eq.jsonl')
+  const env = { FACTORY_OUTBOX: outbox, FACTORY_FROM: 'a' }
+  const f = txt('eq.md', 'body')
+  expect(factory(['mail', 'r1', 'manager', `--text-file=${f}`], env, wt).code).toBe(1)
+  expect(factory(['report', 'r1', '1', 'ready', `--summary-file=${f}`], env, wt).code).toBe(1)
+  expect(factory([...ADD, `--body-file=${f}`, 's'], env, wt).code).toBe(2)
+  expect(existsSync(outbox)).toBe(false)
+})

@@ -149,3 +149,25 @@ test('--summary-file over 100 KiB exits 1, names the flag and posts nothing (cla
   expect(p.err).toContain('102400')
   expect(r.lines()).toEqual([])
 })
+
+test('9ydy AC1/AC3: report refuses a word that starts with --summary-file=; a longer word stays text', () => {
+  const r = makeRun('r9')
+  const f = join(dir, 'f9')
+  writeFileSync(f, 'secret')
+  for (const rest of [
+    [`--summary-file=${f}`],
+    [`--summary-file=${join(dir, 'missing')}`],
+    ['--summary-file='],
+    ['see', `--summary-file=${f}`],
+    ['see', '--summary-file='],
+  ]) {
+    const p = factory(['report', 'r9', String(r.seq), 'ready', ...rest])
+    expect([rest, p.code]).toEqual([rest, 1])
+    expect(p.err).toContain('usage: factory report')
+  }
+  expect(r.lines()).toEqual([])
+  for (const t of ['x--summary-file=y', 'use --summary-file=y']) {
+    expect(factory(['report', 'r9', String(r.seq), 'ready', t]).code).toBe(0)
+    expect(r.lines().at(-1).summary).toBe(t)
+  }
+})
