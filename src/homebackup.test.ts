@@ -943,6 +943,7 @@ test('9u12: secretFile finds the new token shapes', () => {
   expect(K.length).toBe(40)
   const hit = [
     'https://' + 'a'.repeat(24) + '@host/p',
+    'https://' + 'a'.repeat(20) + '@host/p',
     'aws_secret_access_key = ' + K,
     'AWS_SECRET_ACCESS_KEY=' + K,
     '"SecretAccessKey": "' + K + '"',
