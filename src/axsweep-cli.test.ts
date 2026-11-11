@@ -219,6 +219,15 @@ test('a halted home clears the old rows of the dispatch and label passes', () =>
   expect(JSON.parse(readFileSync(join(home(), 'labels.json'), 'utf8'))).toEqual([])
 })
 
+test('a home with no rigs clears the old rows of the dispatch pass', () => {
+  setup()
+  writeFileSync(join(home(), 'dispatch.json'), JSON.stringify([{ id: 'rig:a', error: 'old' }]))
+  writeFileSync(join(home(), 'dispatch.stamp'), '')
+  writeFileSync(join(home(), 'rigs.json'), '[]')
+  pass()
+  expect(JSON.parse(readFileSync(join(home(), 'dispatch.json'), 'utf8'))).toEqual([])
+})
+
 test('AC8: a failed list deletes nothing and shows an error row; a failed delete does not stop the others', () => {
   const { doneId } = setup()
   const a = taskName(doneId, 1)
