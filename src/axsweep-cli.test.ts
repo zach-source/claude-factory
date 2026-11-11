@@ -296,3 +296,21 @@ test("AC3: a pass keeps a working run's task at its own seq with no pane", () =>
   pass()
   expect(deletes()).toEqual([])
 })
+
+test('claude-factory-x5ms: factory beads refuses while the AX manager task lives, with no bd or ax write', () => {
+  const { doneId } = setup()
+  script('ax', [
+    `echo "$*" >> "${join(dir, 'calls.log')}"`,
+    'case "$*" in',
+    `  *"get task f-manager") printf '  phase: Running\\n';;`,
+    '  *) exit 1;;',
+    'esac',
+  ])
+  writeFileSync(join(dir, 'tasks.txt'), table('NAME ATESPACE PHASE', [taskName(doneId, 16)]))
+  rmSync(join(home(), 'ax-sweep.stamp'), { force: true })
+  const r = factory(['beads'], { FACTORY_AX_CONTEXT: 'acme' })
+  expect(r.code).not.toBe(0)
+  expect(r.err).toContain('the factory manager runs in AX task f-manager')
+  expect(calls()).toEqual(['--context acme -a factory get task f-manager'])
+  expect(existsSync(join(home(), 'ax-sweep.stamp'))).toBe(false)
+})

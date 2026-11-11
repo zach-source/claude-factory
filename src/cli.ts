@@ -13865,6 +13865,7 @@ if (import.meta.main && !outboxCmd)
       }
       case 'beads':
         refuseWorker('beads')
+        lease()
         await beadsPass()
         break
       case 'watch':
