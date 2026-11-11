@@ -49,8 +49,8 @@ Without a valid header, scan the complete text. Do not add a line-count cutoff t
 After a populated header, body lines remain prose and cannot change scope.
 An empty header has one compatibility exception, defined below.
 
-For an empty header, locate the first subsequent complete `---` line in the normalized text.
-The line can end at EOF. Spaces around that delimiter do not count.
+For an empty header, locate the first subsequent line that starts with `---` in the normalized text.
+The line can end at EOF. `--- `, `---x` and `----` count as delimiters. ` ---` (indented) does not.
 If it exists, inspect only the lines between the empty header and that delimiter.
 If any line matches the rig-like grammar, reject the note for every query rig.
 This rule includes canonical, malformed, empty, and duplicate declarations. Do not assign any declaration from this region as metadata.
@@ -158,7 +158,7 @@ Cross LF, CRLF, mixed line ends, BOM plus LF, and BOM plus CRLF with these cases
 - Allowed shared: an empty header at EOF; body declarations without another delimiter; declarations only after the next delimiter.
 - Allowed scoped: a populated `rig: acme` header with each body declaration form and later delimiters.
 
-Test the next delimiter with a newline and at EOF. A line with spaces around `---` is not a delimiter.
+Test the next delimiter with a newline and at EOF. Add `--- `, `---x` and `----` as delimiters. An indented ` ---` is not a delimiter.
 For denied rows, query `acme`, `other`, no rig, and the invalid sentinel. Assert zero rank callbacks.
 For allowed shared rows, each query retains the note. Scoped controls retain the existing query semantics.
 Extract archives and check denied paths, body markers, index entries, and usage entries; compare allowed file bytes.

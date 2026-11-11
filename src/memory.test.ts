@@ -2463,6 +2463,9 @@ test('u509 ambiguous scope is closed', () => {
     whitespace: '---\nsummary: s\nrig:   \n---\nbody',
     noClose: '---\nsummary: s\nrig: acme\nbody',
     deepNoHeader: `${'pad\n'.repeat(100)}rig: acme\n`,
+    bareCr: '---\nrig: other\rrig: acme\n---\nbody',
+    lineSep: '---\nrig: other\u2028rig: acme\n---\nbody',
+    paraSep: '---\nrig: other\u2029rig: acme\n---\nbody',
   }
   for (const [name, text] of Object.entries(bad)) {
     const sentinel = parse('ci/a.md', text).rig
@@ -2563,13 +2566,15 @@ test('u509 empty header exception matrix', () => {
     duplicate: '---\n---\nrig: other\nrig: acme\n---\nbody',
     delimiterAtEof: '---\n---\nrig: other\n---',
     delimiterNewline: '---\n---\nrig: other\n---\n',
+    spaceAfter: '---\n---\nrig: other\n--- \nbody',
+    dashX: '---\n---\nrig: other\n---x\nbody',
+    fourDashes: '---\n---\nrig: other\n----\nbody',
   }
   const shared: Record<string, string> = {
     eofEmpty: '---\n---',
     noDelimiter: '---\n---\nrig: other\n',
     noDelimiterDup: '---\n---\nrig: other\nrig: acme\n',
     afterDelimiter: '---\n---\nbody\n---\nrig: other\n---\n',
-    spaceAfter: '---\n---\nrig: other\n--- \nbody',
     spaceBefore: '---\n---\nrig: other\n ---\nbody',
   }
   const sentinel = parse('x.md', denied.canonicalOther ?? '').rig
