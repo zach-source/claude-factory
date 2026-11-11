@@ -5151,7 +5151,7 @@ function stoppedInVm(id: string, broker: string, more: object = {}) {
     join(dir, 'ax'),
     `#!/bin/sh
 echo "$*" >> ${calls}
-case "$*" in *"get task"*) echo 'getting task: rpc error: code = NotFound' >&2; exit 1 ;; esac
+case "$*" in *"get task"*) for a; do n=$a; done; printf 'Error: getting task "%s": rpc error: code = NotFound desc = task "%s" not found in atespace "factory"\\n' "$n" "$n" >&2; exit 1 ;; esac
 `,
   )
   chmodSync(join(dir, 'ax'), 0o755)
