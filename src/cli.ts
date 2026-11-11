@@ -177,7 +177,7 @@ import {
   type TickOut,
   type Io,
 } from './once'
-import { guardHook } from './core/chat'
+import { guardHook, runApproved } from './core/chat'
 import { check } from './core/guards'
 import { REPAIR_CAP, closableParents, conflictProbes, heldBeads, repairs, type PrFact } from './repairs'
 import { digestText, type DigestRig, type RepairLog } from './state'
@@ -13717,6 +13717,7 @@ export const corePort: Port = {
   screen: screenRun,
   mail: mailRun,
   chatModel: runModelAsync,
+  chatRun: runApproved,
 }
 const cliCtx = (): OpCtx => ({
   home: HOME,
