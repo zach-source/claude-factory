@@ -35,7 +35,7 @@ Rejected alternatives:
 
 - Accept equals-form file input: this adds file reads and path semantics beyond the requested refusal.
 - Search arbitrary substrings: this rejects permitted prose and longer words.
-- Add a shared parser or dependency: two existing checks and standard string methods cover the defect.
+- Add a shared parser or dependency: three existing checks and standard string methods cover the defect.
 - Change replayable alone: local commands would still post the wrong text.
 
 ## Acceptance criteria
@@ -74,9 +74,9 @@ Assert exit 1 for report and mail, exit 2 for memory, and zero outbox entries.
 Retain the valid split-form VM tests that queue text rather than paths.
 Strip inherited caller markers and disable self-update for all child CLI tests.
 
-AC5. Prove both new conditions and preserve the required checks.
+AC5. Prove all three new conditions and preserve the required checks.
 Record each report and mail regression failure before the fix; a network or setup failure does not qualify.
-Commit the tests first, then the fix, within one PR.
+Commit the tests first. Commit the fix in the same PR.
 After the fix commit, use `factory mutate <file:line> <old> <new> -- <test cmd>` for each new condition alone.
 Replace only that `startsWith` result with false. Each mutant must compile and fail the corresponding `9ydy` test.
 Record exit 0 from each mutation command and a clean source restore.
@@ -86,11 +86,33 @@ Also run `gitleaks detect --log-opts=origin/main..HEAD`, `bun audit`, and the st
 The final PR head must pass CI checks `test`, `plugin`, `typecheck`, and `format`.
 Record local environment gaps separately. Never weaken a test or ship a deliberately red final head.
 
+AC6. Server-mode mail must apply the same token rule before file resolution or an HTTP request.
+Run `bun test --timeout 30000 src/client.test.ts`.
+The test `9ydy equals-form --text-file refuses in server mode, longer words stay text` covers eight denied rows.
+Cover empty and nonempty suffixes, first and later text slots, with and without leading `--wake`.
+Each row must return a route error, exit 1, and send zero requests.
+The longer word `x--text-file=y` must remain a text route.
+Retain existing split-form, invalid-file, and malformed-form tests.
+The server predicate needs its own pre-fix failure and killed mutant under AC5.
+
+AC7. Preserve the text-root validation from main after the merge.
+Keep `readTextFile('--summary-file', textFilePath('--summary-file', path))` and the equals-prefix refusal.
+Run the five-file command below, TypeScript, and Prettier 3.9.9.
+Report split-form files inside the text roots must pass; outside paths, dotdot paths, and symlink escapes must fail.
+Each refusal must create zero report events. Keep the AC1 equals-token tests beside these path tests.
+Check both merged files for conflict markers, including the seven-pipe base marker.
+Run `git merge-tree --write-tree origin/main HEAD`; it must exit 0.
+This command proves no text conflict. The tests and exact-head CI prove behavior.
+
+```sh
+bun test --timeout 30000 src/report-summary-file.test.ts src/text-file-flags.test.ts src/client.test.ts src/remote.test.ts src/security-route-cli.test.ts
+```
+
 ## Test plan and evidence
 
 Implement writes AC1 through AC4 tests first and records the two expected pre-fix failures.
 Use the existing fixtures and synthetic text. Do not use real reports, mail recipients, or secret files.
-Then implement the two predicate changes and complete AC5.
+Then implement the three predicate changes and complete AC5.
 
 Plan installed dependencies with `bun install --frozen-lockfile`.
 The focused baseline produced 13 passes and one failure, with 132 assertions.
@@ -111,7 +133,7 @@ Security-sensitive: yes (CLI input parsing)
 
 ## Rollout and rollback
 
-Use one draft PR with both task commits. A person merges after verify, review, and security.
+Use the existing draft PR with all task commits. A person merges after verify, review, and security.
 Use the normal CLI release path. No migration order or feature flag applies.
 Do not change `.factory/`, deploy from plan, or perform an owner-only action.
 If rollback is necessary, open a revert PR for a person to merge, then use the normal release path.
@@ -127,8 +149,36 @@ No AC is must-see-live. No production read is a pre-merge acceptance gate.
 
 ## Tasks
 
-1. `claude-factory-9ydy.1`: Commit AC1 through AC4 tests after the pre-fix proof.
-2. `claude-factory-9ydy.2`: Commit the two checks after the focused tests pass; complete AC5 and the draft PR.
+1. `claude-factory-9ydy.1`: Tests and pre-fix proof. Closed.
+2. `claude-factory-9ydy.2`: Local predicates and mutations. Closed.
+3. `claude-factory-9ydy.3`: Complete the mail matrix and per-row event checks. Closed.
+4. `claude-factory-9ydy.4`: Server-mail predicate, eight refusal rows, and mutation. Closed.
+5. `claude-factory-9ydy.5`: Merge main and retain both test groups. Closed at `6e28a4d4`.
+6. `claude-factory-9ydy.6`: Commit final evidence after the merge. This is the only open task.
 
-Task 1 blocks task 2. Both fit one 120-minute implement pass and one PR.
-No external bead, merge, owner decision, or live step blocks this plan.
+## Revised scope after the round cap
+
+The first plan missed the separate server-mail entry point in its numbered criteria and task list.
+The first implementation also omitted two required mail rows and per-row event checks.
+A later main change caused a merge conflict after those fixes. These are separate causes, not one unresolved predicate defect.
+The current source has all three checks. The current tests have both eight-row mail matrices.
+The merge retains the text-root check and both report test groups.
+
+The next implement pass has one bounded task: final evidence for AC1 through AC7.
+Commit only an evidence update to this ADR unless a check proves a new regression in this scope.
+Do not repeat closed tasks, create another PR, or change production predicates without that evidence.
+Use PR #861. Keep it a draft through verify, review, and security.
+Run the five-file command and the AC5 checks. Record failures by test name, assertion, and revision.
+The journal proves the memory success test failed at baseline with ECONNRESET.
+It does not prove the four other memory search failures share that cause.
+For each remaining failure, obtain exact-head green CI or prove the same failure on main in an isolated home.
+Do not call those failures environment defects without evidence.
+Existing red-first and mutation records remain valid for unchanged predicates.
+The report predicate mutation after the merge already passed in implement round 4.
+Repeat a mutation only if its predicate changes.
+
+Record the final code SHA and all check results in one ADR commit.
+After that commit, require green CI on the new head before implement reports ready.
+The task fits one 120-minute pass. If CI exceeds that time, report blocked on PR #861.
+Verify checks the final head. Security reviews the merge resolution and any later code delta.
+No new feature, external bead, owner action, or live read is part of this task.
