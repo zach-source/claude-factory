@@ -442,8 +442,9 @@ const halted = (): Halt | null => (existsSync(haltFile()) ? readJson(haltFile())
  * removed it, or a new stop that replaced it, must win over the stale copy (claude-factory-sg4s3).
  * ponytail: a check and a write, not a lock; the gap is microseconds. Upgrade path: take the tick lock in stop and resume.
  */
-export function writeHaltIfSame(halt: Halt, next: Halt = halt) {
-  if (halted()?.at === halt.at) writeJson(haltFile(), next)
+export function writeHaltIfSame(halt: Halt, next: Halt = halt, file = haltFile()) {
+  const now = existsSync(file) ? readJson<Halt>(file) : null
+  if (now?.at === halt.at) writeJson(file, next)
 }
 
 /** what a stop does next to one working worker */
@@ -8170,8 +8171,10 @@ async function tick(isPatrol = false) {
     showInSidebar(out.runs, now, isPatrol, halted()?.state)
     reap(out.runs)
     // stopped once no worker is still being told to stop: everything that was working has closed
-    if (halt?.state === 'stopping' && !out.runs.some(r => r.agent === 'stopping'))
-      writeHaltIfSame(halt, { ...halt, state: 'paused' })
+    // each run's halt write is in the file, not in this tick's first read: re-read it, and keep a resume or a new stop
+    const now_ = halted()
+    if (halt?.state === 'stopping' && now_?.at === halt.at && !out.runs.some(r => r.agent === 'stopping'))
+      writeHaltIfSame(now_, { ...now_, state: 'paused' })
     return { ...out, halt: halted()?.state }
   } finally {
     release()
