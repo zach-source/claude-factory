@@ -170,10 +170,11 @@ describe('CATALOG', () => {
     ])
     expect(CATALOG.filter(o => o.route.path === '/v1/gc')).toHaveLength(1)
   })
-  test('has 31 operations: 21 GET and 10 POST', () => {
-    expect(CATALOG.length).toBe(31)
+  test('has 38 operations: 21 GET, 16 POST and 1 DELETE', () => {
+    expect(CATALOG.length).toBe(38)
     expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(21)
-    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(10)
+    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(16)
+    expect(CATALOG.filter(o => o.route.method === 'DELETE').map(o => o.name)).toEqual(['runs.remove'])
     expect(CATALOG.filter(o => o.route.method === 'POST' && !o.mutates).map(o => o.name)).toEqual([
       'guard.check',
     ])
@@ -239,6 +240,7 @@ describe('CATALOG', () => {
   })
   test('names and routes', () => {
     expect(CATALOG.map(o => `${o.name} ${o.route.method} ${o.route.path}`)).toEqual([
+      'backlog.queue POST /v1/queue',
       'backlog.show GET /v1/backlog',
       'board.show GET /v1/board',
       'catalog.echo GET /v1/catalog/echo',
@@ -259,11 +261,17 @@ describe('CATALOG', () => {
       'metrics.show GET /v1/metrics',
       'plan.show GET /v1/plan',
       'prs.show GET /v1/prs',
+      'rigs.adopt POST /v1/adopt',
       'rigs.list GET /v1/rigs',
+      'rigs.unhold POST /v1/rigs/:rig/unhold',
       'runners.show GET /v1/runners',
       'runs.abort POST /v1/runs/:id/abort',
+      'runs.fork POST /v1/runs/:id/fork',
       'runs.goto POST /v1/runs/:id/goto',
       'runs.mail POST /v1/runs/:id/mail',
+      'runs.poke POST /v1/runs/:id/poke',
+      'runs.remove DELETE /v1/runs/:id',
+      'runs.retry POST /v1/runs/:id/retry',
       'runs.screen GET /v1/runs/:id/screen',
       'runs.show GET /v1/runs/:id',
       'runs.start POST /v1/start',

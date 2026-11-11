@@ -88,7 +88,7 @@ export type Op = {
   rights: 'read' | 'owner' | 'manager'
   mutates: boolean
   long: boolean
-  route: { method: 'GET' | 'POST'; path: string }
+  route: { method: 'GET' | 'POST' | 'DELETE'; path: string }
   since: number
   run: (ctx: Ctx, input: Input) => Promise<RunResult>
 }
@@ -238,6 +238,9 @@ const H: Record<string, string> = {
   owned: 'the person owns the run',
   mode: 'stop or resume',
   bead: 'the bead id',
+  runner: 'the remote runner name, for example ax',
+  codex: 'wake the stations that a Codex limit holds',
+  template: 'the factory template; lifecycle when not set',
 }
 const f = (name: string, kind: Kind, required = true, help = H[name]!, values?: string[]): Field => ({
   name,
@@ -251,7 +254,7 @@ const id = (name: string) => f(name, 'id')
 type Spec = {
   name: string
   summary: string
-  method: 'GET' | 'POST'
+  method: 'GET' | 'POST' | 'DELETE'
   path: string
   inputs?: Field[]
   rights?: Op['rights']
@@ -267,7 +270,7 @@ const bridge = (
   inputs: s.inputs ?? [],
   output,
   rights: s.rights ?? (s.method === 'GET' ? 'read' : 'manager'),
-  mutates: s.method === 'POST',
+  mutates: s.method !== 'GET',
   long: false,
   route: { method: s.method, path: s.path },
   since: CATALOG_VERSION,
@@ -843,6 +846,77 @@ export const CATALOG: Op[] = makeCatalog([
       inputs: [f('mode', 'enum', true, undefined, ['stop', 'resume'])],
     },
     i => [i.mode as string],
+  ),
+  bridge(
+    {
+      name: 'runs.poke',
+      summary: 'Nudge the worker of a run.',
+      method: 'POST',
+      path: '/v1/runs/:id/poke',
+      inputs: [id('id'), f('text', 'text', false, 'the nudge text; a standard nudge when not set')],
+    },
+    i => ['poke', i.id as string, ...(i.text ? [i.text as string] : [])],
+  ),
+  bridge(
+    {
+      name: 'runs.retry',
+      summary: 'Retry a stuck station of a run.',
+      method: 'POST',
+      path: '/v1/runs/:id/retry',
+      inputs: [id('id')],
+    },
+    i => ['retry', i.id as string],
+  ),
+  bridge(
+    {
+      name: 'runs.fork',
+      summary: 'Start a new run from the branch and state of a run.',
+      method: 'POST',
+      path: '/v1/runs/:id/fork',
+      inputs: [id('id'), id('station'), f('note', 'note', false, 'a note for the new run')],
+    },
+    i => ['fork', i.id as string, i.station as string, ...(i.note ? [i.note as string] : [])],
+  ),
+  bridge(
+    {
+      name: 'runs.remove',
+      summary: 'Remove a finished run. The branch stays.',
+      method: 'DELETE',
+      path: '/v1/runs/:id',
+      inputs: [id('id')],
+    },
+    i => ['rm', i.id as string],
+  ),
+  bridge(
+    {
+      name: 'backlog.queue',
+      summary: 'Hand a bead to the factory.',
+      method: 'POST',
+      path: '/v1/queue',
+      inputs: [id('rig'), id('bead'), f('station', 'id', false)],
+    },
+    i => ['queue', i.rig as string, i.bead as string, ...(i.station ? [i.station as string] : [])],
+  ),
+  bridge(
+    {
+      name: 'rigs.unhold',
+      summary: 'Wake the stations that a usage limit of a runner holds.',
+      method: 'POST',
+      // ponytail: the CLI form takes a runner; the contract names the path param :rig. The value is the runner name.
+      path: '/v1/rigs/:rig/unhold',
+      inputs: [{ ...id('rig'), help: H.runner! }, f('codex', 'flag', false)],
+    },
+    i => ['unhold', i.rig as string, ...(i.codex ? ['--codex'] : [])],
+  ),
+  bridge(
+    {
+      name: 'rigs.adopt',
+      summary: 'Copy a factory into the repo of a rig for the repo to own.',
+      method: 'POST',
+      path: '/v1/adopt',
+      inputs: [id('rig'), f('template', 'id', false)],
+    },
+    i => ['adopt', i.rig as string, ...(i.template ? [i.template as string] : [])],
   ),
   local(
     {
