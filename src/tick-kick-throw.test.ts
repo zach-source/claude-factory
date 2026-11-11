@@ -19,7 +19,13 @@ test('tick survives kickSelfUpdate throwing and still runs kickSweeps', () => {
   utimesSync(stamp, old, old) // due
   const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_NO_KICK, ...laptop } = process.env
   const p = Bun.spawnSync([CLI, 'tick'], {
-    env: { ...laptop, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '1', FACTORY_GC: '0', FACTORY_GC_WORKTREES: '0' },
+    env: {
+      ...laptop,
+      FACTORY_HOME: home,
+      FACTORY_SELF_UPDATE: '1',
+      FACTORY_GC: '0',
+      FACTORY_GC_WORKTREES: '0',
+    },
   })
   expect(p.stderr.toString()).toContain('kickSelfUpdate failed')
   expect(p.exitCode).toBe(0)
