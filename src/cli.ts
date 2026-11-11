@@ -6057,7 +6057,8 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
   const idx = { GIT_INDEX_FILE: join(tmp, 'index') }
   try {
     const steps = [old ? ['read-tree', old] : ['read-tree', '--empty']]
-    for (const e of keep)
+    // deletes first: a directory that becomes a file needs its entries gone before the add
+    for (const e of [...keep.filter(e => e.status === 'D'), ...keep.filter(e => e.status !== 'D')])
       steps.push(
         e.status === 'D'
           ? ['update-index', '--force-remove', '--', e.path]
