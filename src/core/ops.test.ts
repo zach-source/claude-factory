@@ -244,7 +244,17 @@ describe('moved reads run in process (AC1)', () => {
       await op.run(t.ctx(), input)
       if (t.cli.length) bridged.push(op.name)
     }
-    expect(bridged).toEqual(['factory.halt', 'runs.start'])
+    expect(bridged).toEqual([
+      'backlog.queue',
+      'factory.halt',
+      'rigs.adopt',
+      'rigs.unhold',
+      'runs.fork',
+      'runs.poke',
+      'runs.remove',
+      'runs.retry',
+      'runs.start',
+    ])
   })
 })
 
