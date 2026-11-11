@@ -165,6 +165,10 @@ const READERS = new Set([
   'head',
   'tail',
   'wc',
+  'sort',
+  'uniq',
+  'cut',
+  'tr',
   'ls',
   'diff',
   'grep',
@@ -264,6 +268,8 @@ function readerSegment(w: string[]): boolean {
     return w[1] === '-n' && SED_SCRIPT.test(script) && !w.slice(3).some(a => unquote(a).startsWith('-'))
   }
   if (!READERS.has(w[0] ?? '')) return false
+  // claude-factory-3ytgs: sort --compress-program runs a program
+  if (w[0] === 'sort') return !w.some(a => unquote(a).startsWith('--compress'))
   if (w[0] !== 'git') return true
   return GIT_SUBS.has(w[gitSub(w)] ?? '')
 }

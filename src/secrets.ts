@@ -9,12 +9,12 @@ export const SECRETS = [
   /gh[pousr]_[A-Za-z0-9]{30,}/,
   /github_pat_[A-Za-z0-9_]{20,}/,
   /sk-ant-[A-Za-z0-9_-]{20,}/,
-  /AKIA[0-9A-Z]{16}/,
+  /(?:AKIA|ASIA)[0-9A-Z]{16}/,
   /secret_?access_?key["']?\s*[=:]\s*["']?[A-Za-z0-9/+]{40,}/i, // AWS secret key by its name
   /xox[bpsa]-[A-Za-z0-9-]{10,}/,
   /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/,
   /-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/,
-  /Authorization:\s*(Basic|Bearer)\s+[A-Za-z0-9+/=._-]{20,}/i,
+  /Authorization["']?\s*:\s*["']?(Basic|Bearer)\s+[A-Za-z0-9+/=._-]{20,}/i,
   /:\/\/[^\s/:@]*:[^\s/@]+@/, // URL userinfo
   /:\/\/[^\s/:@]{20,}@/, // URL token, no colon
   /(?<![A-Za-z0-9_-])(?=([A-Za-z0-9_-]*?eyJ))\1[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\./, // JWT: one start per run, linear

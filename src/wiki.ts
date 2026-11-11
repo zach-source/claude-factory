@@ -323,10 +323,10 @@ export function writeGroups(beads: WriteBead[], prs: WritePr[], cap = writeCap()
     .slice(0, cap)
 }
 
-// The PEM BEGIN and Authorization patterns of SECRETS match only a marker, so these run first and cover the secret.
+// The PEM, AKIA/ASIA and Authorization patterns of SECRETS match only a marker, so these run first and cover the secret.
 const MASKS = [
   /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*/g,
-  /Authorization:\s*(?:Basic|Bearer)\s+\S+/gi,
+  /Authorization["']?\s*:\s*["']?(?:Basic|Bearer)\s+\S+/gi,
   /:\/\/[^\s/:@]*:[^\s/]+@/g, // URL password: SECRETS stops at the first @
   /gl(?:pat|dt|rt|ptt)-[A-Za-z0-9_.-]{20,}/g, // SECRETS leaves the tail after a dot
   /:\/\/[^\s/:]{20,}@/g, // URL token: SECRETS stops at the first @
@@ -334,7 +334,7 @@ const MASKS = [
   TOKEN_SHAPE,
   ...SECRETS.map(r => new RegExp(r.source, r.flags.includes('g') ? r.flags : r.flags + 'g')),
 ]
-const WHOLE = /AKIA[0-9A-Z]{16}|-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/
+const WHOLE = /(?:AKIA|ASIA)[0-9A-Z]{16}|-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/
 /** Replaces each token shape with `***`. A string with an AWS key id or a PEM END line becomes `***`: the secret next to it has no shape. */
 const mask = (s: string) => (WHOLE.test(s) ? '***' : MASKS.reduce((t, r) => t.replace(r, '***'), s))
 /** mask() for one line of rules text: each run of whitespace or control characters becomes one space. */

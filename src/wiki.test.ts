@@ -517,6 +517,7 @@ const pem = (body: string) =>
   `\n${body}\n` +
   ['-----END RSA', 'PRIVATE KEY-----'].join(' ')
 const akia = 'AKIA' + 'Z'.repeat(16)
+const asia = 'ASIA' + 'Z'.repeat(16)
 const awsSecret = 'wJalrXUtnFEMI' + 'K7MDENGbPxRfiCY' + 'EXAMPLEKEY'
 const K = awsSecret + 'zq'
 const lead = (s: string) =>
@@ -556,6 +557,17 @@ test.each<[string, string, string]>([
   ['empty URL user', 'redis://:' + 'zqPass' + 'word12@cache:6379', 'zqPassword12'],
   ['gldt with dot tail', 'tok ' + ['gldt', 'abcdefghij0123456789xyz.01.tAiL12345'].join('-'), 'tAiL12345'],
   ['empty URL user, raw @', 'redis://:' + 'zqP' + '@ss' + 'Tail@cache:6379', 'ssTail'],
+  [
+    'quoted Authorization',
+    '"Authorization": "Bearer ' + 'zqTok' + 'enTail12345678901' + '"',
+    'zqTokenTail12345678901',
+  ],
+  [
+    'quoted Bearer with tilde',
+    '"Authorization": "Bearer ' + 'abc~def~ghi' + '~jkl~mno~pqr' + '"',
+    'def~ghi~jkl',
+  ],
+  ['ASIA secret next to key id', `id ${asia} secret ${awsSecret}`, awsSecret],
 ])('AC6 mask %s', (_n, text, secret) => {
   const t = lead(text)
   expect(t).not.toContain(secret)
@@ -577,6 +589,12 @@ test('9u12: mask returns in under 1 s on 1 MiB', () => {
     lead(s)
     expect(performance.now() - t).toBeLessThan(1000)
   }
+})
+
+test('tlgw: the quoted Authorization mask returns in under 1 s on 1 MiB', () => {
+  const t0 = performance.now()
+  lead('"Authorization": '.repeat(65_536))
+  expect(performance.now() - t0).toBeLessThan(1000)
 })
 
 test('AC6 mask leaves a URL with @ in the path', () => {

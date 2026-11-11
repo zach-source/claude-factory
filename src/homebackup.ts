@@ -35,7 +35,12 @@ export type BackupCfg = {
   excludes?: string[]
   /** test hook: the gitleaks binary (default `gitleaks` on PATH) */
   gitleaks?: string
+  /** test hook: the gitleaks time limit in ms (default SCAN_MS) */
+  scanMs?: number
 }
+
+/** the gitleaks time limit: a real home took 300 to 380 s of the old 600 s */
+export const SCAN_MS = 1_800_000
 
 /** gitignore rules, relative to the workspace: what never goes in the backup */
 export const EXCLUDES = [
@@ -240,7 +245,7 @@ export function redact(text: Buffer, leaks: Leak[]): Buffer {
  * gitleaks over the files of dir; the findings, or an error. The report holds the secrets: it goes to a pipe
  * only (stdout), never to a file or a log, and no error text gets any of it
  */
-function gitleaks(bin: string, dir: string): Leak[] | { error: string } {
+function gitleaks(bin: string, dir: string, ms: number): Leak[] | { error: string } {
   const p = Bun.spawnSync(
     [
       bin,
@@ -256,7 +261,7 @@ function gitleaks(bin: string, dir: string): Leak[] | { error: string } {
       '--report-path',
       '-',
     ],
-    { stdout: 'pipe', stderr: 'pipe', timeout: 600_000 },
+    { stdout: 'pipe', stderr: 'pipe', timeout: ms },
   )
   if (p.exitCode !== 0) return { error: `gitleaks exit ${p.exitCode}` }
   try {
@@ -343,7 +348,7 @@ function scrub(cfg: BackupCfg, staged: Staged[]): { redacted: string[] } | { err
     const dir = mkdtempSync(join(cfg.ws, '.backup-scan-')) // the workspace disk: /tmp can be small; no pathspec covers it
     try {
       for (const [i, b] of files) writeFileSync(join(dir, String(i)), b)
-      const leaks = gitleaks(bin, dir)
+      const leaks = gitleaks(bin, dir, cfg.scanMs ?? SCAN_MS)
       if ('error' in leaks) return leaks
       const by = new Map<number, Leak[]>()
       for (const l of leaks) {
@@ -515,7 +520,39 @@ export function backup(
   lock: () => (() => void) | null = () => () => {},
 ): Outcome {
   if (!cfg.remote) return { skipped: 'no remote' }
-  const remote = cfg.remote
+  // one backup per workspace, manual or host: both use backup.git and its index.lock
+  const run = runLock(cfg)
+  if (!run) return { skipped: 'lock' }
+  try {
+    return backupLocked(cfg, ready, lock)
+  } finally {
+    run()
+  }
+}
+
+/** a pid file in the workspace (outside home, so not in the backup); a dead holder's file is taken over */
+function runLock(cfg: BackupCfg): (() => void) | null {
+  const f = join(cfg.ws, 'backup-run.lock')
+  for (let n = 0; n < 2; n++) {
+    try {
+      writeFileSync(f, String(process.pid), { flag: 'wx' })
+      return () => rmSync(f, { force: true })
+    } catch {
+      try {
+        const pid = Number(readFileSync(f, 'utf8'))
+        process.kill(pid, 0)
+        return null // alive
+      } catch (e) {
+        if ((e as { code?: string }).code === 'EPERM') return null
+        rmSync(f, { force: true }) // dead or unreadable
+      }
+    }
+  }
+  return null
+}
+
+function backupLocked(cfg: BackupCfg, ready: boolean, lock: () => (() => void) | null): Outcome {
+  const remote = cfg.remote!
   const fail = (error: string) => {
     const o = { error }
     record(cfg, o)

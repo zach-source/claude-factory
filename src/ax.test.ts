@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, expect, test } from 'bun:test'
+import { afterAll, beforeEach, expect, spyOn, test } from 'bun:test'
 import {
   chmodSync,
   cpSync,
@@ -36,11 +36,12 @@ writeFileSync(
   `#!/bin/sh
 echo "$*" >> ${calls}
 echo "\${AX_AUTH_TOKEN:+set}" >> ${dir}/auth
+[ -f ${dir}/axerr ] && { cat ${dir}/axerr >&2; exit 1; }
 case "$3 $4" in
   "apply -f") cat > ${dir}/applied; echo created ;;
-  "get task") [ -f ${dir}/get ] && cat ${dir}/get || { echo 'getting task: rpc error: code = NotFound' >&2; exit 1; } ;;
+  "get task") [ -f ${dir}/get ] && cat ${dir}/get || { printf 'Error: getting task "%s": rpc error: code = NotFound desc = task "%s" not found in atespace "%s"\\n' "$5" "$5" "$2" >&2; exit 1; } ;;
   "get tasks"|"get workspaces") [ -f ${dir}/listfail ] && { cat ${dir}/list; exit 1; }; [ -f ${dir}/list ] && cat ${dir}/list || { echo 'boom' >&2; exit 1; } ;;
-  "get workspace") [ -f ${dir}/wsfail ] && { echo 'boom' >&2; exit 1; }; [ -f ${dir}/ws ] && cat ${dir}/ws || { echo 'getting workspace: rpc error: code = NotFound' >&2; exit 1; } ;;
+  "get workspace") [ -f ${dir}/wsfail ] && { echo 'boom' >&2; exit 1; }; [ -f ${dir}/ws ] && cat ${dir}/ws || { printf 'Error: getting workspace "%s": rpc error: code = NotFound desc = workspace "%s" not found in atespace "%s"\\n' "$5" "$5" "$2" >&2; exit 1; } ;;
   "delete task") if [ -f ${dir}/deltask ]; then cat ${dir}/deltask >&2; exit 1; fi ;;
   "delete workspace") if [ -f ${dir}/delws ]; then cat ${dir}/delws >&2; exit 1; fi ;;
   ssh*) cat ${dir}/ssh ;;
@@ -92,6 +93,7 @@ beforeEach(() => {
     'updated',
     'ws',
     'wsfail',
+    'axerr',
   ])
     rmSync(join(dir, f), { force: true })
 })
@@ -198,14 +200,36 @@ test('names lists the first column, and is null on a failure or a table with no 
   expect(ax.names('tasks')).toEqual([]) // an empty cluster is a list, not a failure
 })
 
+const NF_DEL_TASK =
+  'Error: deleting task a/f-a-1: rpc error: code = NotFound desc = task "f-a-1" not found in atespace "a"'
+const NF_DEL_WS =
+  'Error: deleting workspace a/f-a-1: rpc error: code = NotFound desc = workspace "f-a-1" not found in atespace "a"'
+const NEG = (kind: string) => [
+  'Error: context "x" not found',
+  'sh: ax-wrap: command not found',
+  'rpc error: code = NotFound',
+  `Error: rpc error: code = NotFound desc = ${kind} "f-other" not found in atespace "a"`,
+  `Error: rpc error: code = NotFound desc = ${kind === 'task' ? 'workspace' : 'task'} "f-a-1" not found in atespace "a"`,
+]
+
 test('remove runs both deletes and returns the failure text, not a not-found', () => {
   expect(ax.remove('f-a-1')).toBeUndefined()
   expect(logged().filter(l => l.includes('delete '))).toHaveLength(2)
-  writeFileSync(join(dir, 'deltask'), 'rpc error: code = NotFound')
-  writeFileSync(join(dir, 'delws'), 'rpc error: code = NotFound')
+  writeFileSync(join(dir, 'deltask'), NF_DEL_TASK)
+  writeFileSync(join(dir, 'delws'), NF_DEL_WS)
   expect(ax.remove('f-a-1')).toBeUndefined()
-  writeFileSync(join(dir, 'deltask'), 'forbidden')
+  writeFileSync(join(dir, 'axerr'), 'Error: context "x" not found')
+  rmSync(join(dir, 'deltask'))
   rmSync(join(dir, 'delws'))
+  const both = ax.remove('f-a-1')!
+  expect(both).toContain('delete task:')
+  expect(both).toContain('delete workspace:')
+  expect(both).toContain('context "x" not found')
+  rmSync(join(dir, 'axerr'))
+  writeFileSync(join(dir, 'deltask'), NF_DEL_TASK.replaceAll('f-a-1', 'f-other'))
+  expect(ax.remove('f-a-1')).toContain('delete task:')
+  rmSync(join(dir, 'deltask'))
+  writeFileSync(join(dir, 'deltask'), 'forbidden')
   expect(ax.remove('f-a-1')).toContain('forbidden')
   expect(logged().at(-1)).toContain('delete workspace f-a-1') // the second delete ran anyway
   writeFileSync(join(dir, 'deltask'), 'x'.repeat(500))
@@ -358,6 +382,15 @@ test('workspaceExists: true when ax has it, false when not found, and any other 
   writeFileSync(join(dir, 'wsfail'), '')
   expect(() => ax.workspaceExists('f-manager')).toThrow('boom')
   expect(logged().at(-1)).toEndWith('get workspace f-manager')
+})
+
+test('workspaceExists: only the NotFound text for this workspace name is false', () => {
+  expect(ax.workspaceExists('f-a-1')).toBe(false)
+  const neg = NEG('workspace')
+  for (const e of [neg[0]!, neg[3]!, neg[4]!]) {
+    writeFileSync(join(dir, 'axerr'), e)
+    expect(() => ax.workspaceExists('f-a-1')).toThrow(/^ax get workspace: /)
+  }
 })
 
 test('launchIdOf reads FACTORY_AX_LAUNCH_ID from the task YAML, and launchId gets the task', () => {
@@ -700,6 +733,15 @@ test("a task's phase is read from ax get, and a deleted task has none", () => {
   expect(ax.phase('t')).toBeNull()
   writeFileSync(join(dir, 'get'), 'metadata:\n  name: t\nstatus:\n  phase: Suspended\n  actor: t\n')
   expect(ax.phase('t')).toBe('Suspended')
+})
+
+test('only the NotFound text for this task name reads as a deleted task', () => {
+  expect(ax.read('f-a-1')).toEqual({ phase: null })
+  for (const e of NEG('task')) {
+    writeFileSync(join(dir, 'axerr'), e)
+    expect(() => ax.read('f-a-1')).toThrow(/^ax get task: /)
+    expect(() => ax.read('f-a-1')).toThrow(e)
+  }
 })
 
 const AS_WORKER = [
@@ -2789,6 +2831,19 @@ test('remoteManager skips AX with no cluster and refuses a running manager', () 
     expect(ax.remoteManager()).toMatch(/factory attach/)
     rmSync(join(dir, 'get'))
     expect(ax.remoteManager()).toBeUndefined() // not found: no manager task
+    const warn = spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      expect(ax.remoteManager()).toBeUndefined()
+      expect(warn).toHaveBeenCalledTimes(0)
+      writeFileSync(join(dir, 'axerr'), 'Error: context "x" not found')
+      expect(ax.remoteManager()).toBeUndefined()
+      expect(warn).toHaveBeenCalledTimes(1)
+      const msg = String(warn.mock.calls[0]?.[0])
+      expect(msg).toContain('warning: AX unreachable, manager lease not checked:')
+      expect(msg).toContain('context "x" not found')
+    } finally {
+      warn.mockRestore()
+    }
   } finally {
     process.env = saved
   }

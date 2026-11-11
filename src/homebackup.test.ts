@@ -19,6 +19,7 @@ import {
   backupWanted,
   EXCLUDES,
   restore,
+  SCAN_MS,
   SECRETS,
   secretFile,
   type BackupCfg,
@@ -735,6 +736,47 @@ test('JWT shape: 1 MiB of eyJa text returns in under 1 s', () => {
   expect(r.ms).toBeLessThan(1000)
 })
 
+const tok = 'zq' + 'a'.repeat(20)
+
+test('tlgw: secretFile finds a quoted Authorization header and an ASIA key id', () => {
+  const hit = [
+    `"Authorization": "Bearer ${tok}"`,
+    `"Authorization":"Bearer ${tok}"`,
+    `Authorization: "Bearer ${tok}"`,
+    `'Authorization': 'Basic ${tok}'`,
+    `"authorization": "bearer ${tok}"`,
+    `Authorization: Bearer ${tok}`,
+    'ASIA' + 'Z'.repeat(16),
+  ]
+  for (const s of hit) expect([s, secretFile(wrap(s))]).toEqual([s, true])
+})
+
+test('tlgw: secretFile leaves the near misses', () => {
+  const miss = [
+    '"Authorization": "Bearer short"',
+    `"Authorization": "Token ${tok}"`,
+    `Authorization = Bearer ${tok}`,
+    `"Authorization"" : "Bearer ${tok}"`,
+    'ASIA' + 'Z'.repeat(15),
+    'AGPA' + 'Z'.repeat(16),
+    'asia' + 'z'.repeat(16),
+  ]
+  for (const s of miss) expect([s, secretFile(wrap(s))]).toEqual([s, false])
+})
+
+test('tlgw: the Authorization and ASIA shapes return in under 1 s on 1 MiB', () => {
+  const inputs = [
+    '"Authorization": '.repeat(65_536),
+    "\"Authorization'  :  '".repeat(52_429),
+    ('ASIA' + 'Z'.repeat(15) + ' ').repeat(52_429),
+  ]
+  for (const s of inputs) {
+    const r = timed(Buffer.from(s))
+    expect(r.got).toBe(false)
+    expect(r.ms).toBeLessThan(1000)
+  }
+})
+
 test('JWT shape: real-shape JWTs match', () => {
   const jwt = 'eyJ' + 'hbGciOiJIUzI1NiJ9' + '.' + 'eyJ' + 'zdWIiOiIxMjM0In0' + '.' + 'sig'
   const long = 'eyJ' + 'a'.repeat(6000) + '.eyJ' + 'b'.repeat(6000) + '.sig'
@@ -995,4 +1037,33 @@ test('9u12: the new shapes return in under 1 s on 1 MiB', () => {
     expect(r.got).toBe(false)
     expect(r.ms).toBeLessThan(1000)
   }
+})
+
+test('xpsys: the gitleaks limit is 1800 s by default and cfg.scanMs lowers it', () => {
+  expect(SCAN_MS).toBe(1_800_000)
+  const r = remote()
+  const ws = workspace()
+  const bin = join(tmp(), 'gitleaks')
+  writeFileSync(bin, `#!/bin/sh\nsleep 5\necho '[]'\n`, { mode: 0o755 })
+  const out = backup({ ...cfg(ws, r), gitleaks: bin, scanMs: 300 }, true)
+  expect(out.error).toBe('backup refused: gitleaks exit null')
+})
+
+test('xpsys: a second backup of one workspace skips while the first runs; a dead holder does not block', () => {
+  const r = remote()
+  const ws = workspace()
+  const bin = join(tmp(), 'gitleaks')
+  writeFileSync(bin, `#!/bin/sh\necho '[]'\n`, { mode: 0o755 })
+  const c = { ...cfg(ws, r), gitleaks: bin }
+  let inner: ReturnType<typeof backup> | undefined
+  // while the first backup holds its snapshot lock, a second one runs on the same workspace
+  backup(c, true, () => {
+    inner = backup(c, true)
+    return () => {}
+  })
+  expect(inner).toEqual({ skipped: 'lock' })
+  // a lock of a dead process is taken over
+  writeFileSync(join(ws, 'backup-run.lock'), '2147483646')
+  expect(backup(c, true).error).toBeUndefined()
+  expect(existsSync(join(ws, 'backup-run.lock'))).toBe(false)
 })
