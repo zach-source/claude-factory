@@ -251,6 +251,7 @@ describe('moved reads run in process (AC1)', () => {
       'backlog.queue',
       'factory.halt',
       'rigs.adopt',
+      'rigs.set',
       'rigs.unhold',
       'runs.fork',
       'runs.poke',

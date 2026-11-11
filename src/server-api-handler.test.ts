@@ -346,13 +346,13 @@ describe('action routes', () => {
     })
 })
 
-describe('DELETE route', () => {
-  const del = (h: H, path: string, key: string) =>
+describe('DELETE and PATCH routes', () => {
+  const del = (h: H, path: string, key: string, method = 'DELETE', body = '{}') =>
     h(
       new Request(`http://x${path}`, {
-        method: 'DELETE',
+        method,
         headers: { 'content-type': 'application/json', 'idempotency-key': key },
-        body: '{}',
+        body,
       }),
       '127.0.0.1',
     )
@@ -361,6 +361,20 @@ describe('DELETE route', () => {
     expect((await del(t.h, '/v1/runs/r1', 'key-del-00001')).status).toBe(200)
     expect((await del(t.h, '/v1/runs/r1', 'key-del-00001')).status).toBe(200)
     expect(t.calls).toEqual([{ argv: ['rm', 'r1'] }])
+  })
+  test('PATCH /v1/rigs/:rig gives the flags to rig set, the goal last', async () => {
+    const t = setup()
+    const body = JSON.stringify({ goal: 'ship it', max: '3', param: 'a=1\nb=2' })
+    expect((await del(t.h, '/v1/rigs/acme', 'key-patch-001', 'PATCH', body)).status).toBe(200)
+    expect(t.calls).toEqual([
+      { argv: ['rig', 'set', 'acme', '--max', '3', '--param', 'a=1', '--param', 'b=2', '--goal', 'ship it'] },
+    ])
+  })
+  test('POST /v1/sweeps/all runs sweep; another name gives 422 and no call', async () => {
+    const t = setup()
+    expect((await post(t.h, '/v1/sweeps/all', {})).status).toBe(200)
+    expect((await post(t.h, '/v1/sweeps/x', {})).status).toBe(422)
+    expect(t.calls).toEqual([{ argv: ['sweep'] }])
   })
   test('POST on the DELETE path gives 404', async () => {
     expect((await post(setup().h, '/v1/runs/r1', {})).status).toBe(404)
