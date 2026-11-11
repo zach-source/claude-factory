@@ -13,8 +13,37 @@ import {
   planRepoSync,
   syncRepos,
 } from './axrepos'
+import { bootstrapBeads } from './worker'
 
 const AX = { FACTORY_IN_AX: '1' }
+const URL = 'https://github.com/acme/widget.git'
+
+/** make git read the https URL as the local path `origin`; the returned function restores the env */
+function mapOrigin(origin: string) {
+  const keys = ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0']
+  const saved = keys.map(k => process.env[k])
+  process.env.GIT_CONFIG_COUNT = '1'
+  process.env.GIT_CONFIG_KEY_0 = `url.${origin}.insteadOf`
+  process.env.GIT_CONFIG_VALUE_0 = URL
+  return () =>
+    keys.forEach((k, i) => {
+      if (saved[i] === undefined) delete process.env[k]
+      else process.env[k] = saved[i]
+    })
+}
+
+/** a fake git on PATH that logs its argv; ls-remote prints a refs/dolt/data line */
+function fakeGit(root: string, exit: number) {
+  const fake = join(root, 'bin')
+  const log = join(root, 'git.log')
+  mkdirSync(fake, { recursive: true })
+  writeFileSync(
+    join(fake, 'git'),
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\n[ "$1" = ls-remote ] && printf 'abc\\trefs/dolt/data\\n'\nexit ${exit}\n`,
+    { mode: 0o755 },
+  )
+  return { fake, log }
+}
 const rigs = [
   { name: 'alpha', repo: '/home/u/repos/alpha', remote: 'git@github.com:example/alpha.git' },
   { name: 'beta', repo: '/home/u/repos/beta' },
@@ -93,16 +122,18 @@ test('repos sync reports a rig with no beadsRemote whose origin has no refs/dolt
   writeFileSync(bd, '#!/bin/sh\nmkdir -p .beads/embeddeddolt\n', { mode: 0o755 })
   const saved = process.env.FACTORY_BD
   process.env.FACTORY_BD = bd
+  const restore = mapOrigin(origin)
   try {
     const home = join(root, 'home')
     const env = { ...AX, FACTORY_HOME: home, FACTORY_REPOS: join(root, 'repos') }
-    const problems = syncRepos([{ name: 'widget', repo: '/x', remote: origin }], home, env)
+    const problems = syncRepos([{ name: 'widget', repo: '/x', remote: URL }], home, env)
     expect(problems.join('\n')).toContain('no refs/dolt/data')
     const dir = beadsDirOf(home, join(root, 'repos', 'widget'))
     expect(existsSync(join(dir, '.beads', 'embeddeddolt'))).toBe(false)
   } finally {
     if (saved === undefined) delete process.env.FACTORY_BD
     else process.env.FACTORY_BD = saved
+    restore()
   }
 })
 
@@ -146,11 +177,12 @@ test('repos sync bootstraps a rig with a beadsRemote and no .beads in git, from 
   writeFileSync(bd, '#!/bin/sh\nmkdir -p .beads/embeddeddolt\n', { mode: 0o755 })
   const saved = process.env.FACTORY_BD
   process.env.FACTORY_BD = bd
+  const restore = mapOrigin(origin)
   try {
     const home = join(root, 'home')
     const env = { ...AX, FACTORY_HOME: home, FACTORY_REPOS: join(root, 'repos') }
     const beadsRemote = { url: 'dolt://dolt.example/widget', user: 'u' }
-    const problems = syncRepos([{ name: 'widget', repo: '/x', remote: origin, beadsRemote }], home, env)
+    const problems = syncRepos([{ name: 'widget', repo: '/x', remote: URL, beadsRemote }], home, env)
     expect(problems).toEqual([])
     const clone = join(root, 'repos', 'widget')
     const dir = beadsDirOf(home, clone)
@@ -162,6 +194,7 @@ test('repos sync bootstraps a rig with a beadsRemote and no .beads in git, from 
   } finally {
     if (saved === undefined) delete process.env.FACTORY_BD
     else process.env.FACTORY_BD = saved
+    restore()
   }
 })
 
@@ -185,10 +218,11 @@ test('repos sync gives a rig with no beadsRemote a store from its git origin, an
   )
   const saved = process.env.FACTORY_BD
   process.env.FACTORY_BD = bd
+  const restore = mapOrigin(origin)
   try {
     const home = join(root, 'home')
     const env = { ...AX, FACTORY_HOME: home, FACTORY_REPOS: join(root, 'repos') }
-    const problems = syncRepos([{ name: 'widget', repo: '/x', remote: origin }], home, env)
+    const problems = syncRepos([{ name: 'widget', repo: '/x', remote: URL }], home, env)
     expect(problems).toEqual([])
     const clone = join(root, 'repos', 'widget')
     const dir = beadsDirOf(home, clone)
@@ -198,5 +232,106 @@ test('repos sync gives a rig with no beadsRemote a store from its git origin, an
   } finally {
     if (saved === undefined) delete process.env.FACTORY_BD
     else process.env.FACTORY_BD = saved
+    restore()
   }
+})
+
+const SHAPE = 'it must be an https:// or git@ URL'
+const USER = 'it carries a user or password'
+const CLONE = { rig: 'widget', path: '/workspace/w/repos/widget', do: 'clone', url: URL }
+const refused = (why: string) => ({
+  rig: 'widget',
+  path: '/workspace/w/repos/widget',
+  do: 'missing',
+  why: `rig widget: the "remote" in rigs.json is refused: ${why}`,
+})
+
+test('remoteRefusal: only https (git@ maps to it) with no user or password goes to git', () => {
+  const rows: [string, unknown][] = [
+    [URL, CLONE],
+    ['git@github.com:acme/widget.git', CLONE],
+    ['ssh://git@github.com/acme/widget.git', CLONE],
+    ...[
+      '--upload-pack=touch x',
+      '-c',
+      'http://github.com/acme/widget.git',
+      'ssh://deploy@github.com/acme/widget.git',
+      'file:///srv/widget',
+      '/srv/widget',
+      'ext::sh -c touch% x',
+      ` ${URL}`,
+      `${URL}\n`,
+      'https://',
+      'https://[github.com/acme/widget.git',
+      'https://github.com:99999/acme/widget.git',
+    ].map((u): [string, unknown] => [u, refused(SHAPE)]),
+    ...[
+      'https://user:zqsecret@github.com/acme/widget.git',
+      'https://zqsecret@github.com/acme/widget.git',
+      'https://@github.com/acme/widget.git',
+      'https://github.com@evil.example/acme/widget.git',
+    ].map((u): [string, unknown] => [u, refused(USER)]),
+  ]
+  for (const [remote, want] of rows) {
+    const got = planRepoSync([{ name: 'widget', repo: '/x', remote }], () => false, AX)
+    expect(got).toEqual([want as never])
+    expect(JSON.stringify(got)).not.toContain('zqsecret')
+  }
+})
+
+function withFakePath<T>(fake: string, f: () => T) {
+  const saved = process.env.PATH
+  process.env.PATH = `${fake}:${saved}`
+  try {
+    return f()
+  } finally {
+    process.env.PATH = saved
+  }
+}
+
+test('a refused remote makes no git call and no repos dir', () => {
+  const root = mkdtempSync(join(tmpdir(), 'axrepos-sync-'))
+  const home = join(root, 'home')
+  const { fake, log } = fakeGit(root, 1)
+  const env = { ...AX, FACTORY_HOME: home, FACTORY_REPOS: join(root, 'repos') }
+  const problems = withFakePath(fake, () =>
+    syncRepos([{ name: 'widget', repo: '/x', remote: '--upload-pack=touch x' }], home, env),
+  )
+  expect(problems).toEqual([`rig widget: the "remote" in rigs.json is refused: ${SHAPE}`])
+  expect(existsSync(log)).toBe(false)
+  expect(existsSync(join(root, 'repos'))).toBe(false)
+})
+
+test('git clone gets -- before the URL', () => {
+  const root = mkdtempSync(join(tmpdir(), 'axrepos-sync-'))
+  const home = join(root, 'home')
+  const { fake, log } = fakeGit(root, 1)
+  const env = { ...AX, FACTORY_HOME: home, FACTORY_REPOS: join(root, 'repos') }
+  const problems = withFakePath(fake, () =>
+    syncRepos([{ name: 'widget', repo: '/x', remote: URL }], home, env),
+  )
+  expect(problems).toHaveLength(1)
+  expect(problems[0]).toStartWith('widget: git clone:')
+  expect(readFileSync(log, 'utf8')).toBe(`clone -q -- ${URL} ${join(root, 'repos', 'widget')}\n`)
+})
+
+test('bootstrapBeads gives git -- before the origin in ls-remote and remote add', () => {
+  const root = mkdtempSync(join(tmpdir(), 'axrepos-sync-'))
+  const { fake, log } = fakeGit(root, 0)
+  const bd = join(root, 'bd')
+  writeFileSync(bd, '#!/bin/sh\nmkdir -p .beads/embeddeddolt\n', { mode: 0o755 })
+  const saved = process.env.FACTORY_BD
+  process.env.FACTORY_BD = bd
+  try {
+    bootstrapBeads(join(root, 'store'), undefined, URL, {
+      ...process.env,
+      PATH: `${fake}:${process.env.PATH}`,
+    })
+  } finally {
+    if (saved === undefined) delete process.env.FACTORY_BD
+    else process.env.FACTORY_BD = saved
+  }
+  const lines = readFileSync(log, 'utf8').split('\n')
+  expect(lines).toContain(`ls-remote -- ${URL} refs/dolt/data`)
+  expect(lines).toContain(`remote add -- origin ${URL}`)
 })
