@@ -254,7 +254,7 @@ import {
 } from './axrepos'
 import * as broker from './broker'
 import * as server from './server'
-import { personCerts } from './server-api'
+import { managerCert, personCerts } from './server-api'
 import { AUTO_LABEL, autoPick, autoQueueOf, recentPicks, type AutoQueue } from './autoqueue'
 import * as pkggate from './pkggate'
 import { startUi, withBeads } from './ui'
@@ -13977,10 +13977,11 @@ if (import.meta.main && !outboxCmd)
       case 'cert': {
         refuseWorker('cert', true)
         const [what, dir, name, ...more] = args
-        if (what !== 'person' || !dir || !name || more.length)
-          fail('usage: factory cert person <dir> <server-name>')
+        const manager = what === 'manager' && dir && !name
+        if (!manager && (what !== 'person' || !dir || !name || more.length))
+          fail('usage: factory cert person <dir> <server-name> | factory cert manager <dir>')
         try {
-          const out = personCerts(resolve(dir!), name!)
+          const out = manager ? managerCert(resolve(dir!)) : personCerts(resolve(dir!), name!)
           console.log(out)
         } catch (e) {
           fail((e as Error).message)

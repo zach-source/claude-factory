@@ -37,16 +37,8 @@ export type { RunResult, Runner } from './core/catalog'
 const NAME = /^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/
 
-/**
- * Make a new folder with the person CA, the person certificate and the server certificate.
- * If the folder exists or the name is bad, throw before any write. Call openssl with an argv array, not a shell.
- * ponytail: the person CA also signs the server certificate, because the client pins one ca.crt. That certificate has serverAuth only, so the CA does not accept it as a client certificate.
- */
-export function personCerts(dir: string, serverName: string) {
-  if (!NAME.test(serverName)) throw new Error('server-name must match ^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$')
-  if (existsSync(dir)) throw new Error(`${dir} exists: choose a new folder, no key is overwritten`)
-  mkdirSync(dir, { mode: 0o700 })
-  chmodSync(dir, 0o700)
+/** openssl helpers that work in `dir`; they call openssl with an argv array, not a shell */
+function opensslIn(dir: string) {
   const ssl = (...a: string[]) => {
     const r = Bun.spawnSync(['openssl', ...a], { cwd: dir })
     if (r.exitCode !== 0) throw new Error(`openssl ${a[0]} failed: ${r.stderr.toString().slice(0, 300)}`)
@@ -64,6 +56,20 @@ export function personCerts(dir: string, serverName: string) {
       ...['-days', '825', '-sha256', '-extfile', `${n}.ext`, '-out', `${n}.crt`],
     )
   }
+  return { ssl, key, leaf }
+}
+
+/**
+ * Make a new folder with the person CA, the person certificate and the server certificate.
+ * If the folder exists or the name is bad, throw before any write. Call openssl with an argv array, not a shell.
+ * ponytail: the person CA also signs the server certificate, because the client pins one ca.crt. That certificate has serverAuth only, so the CA does not accept it as a client certificate.
+ */
+export function personCerts(dir: string, serverName: string) {
+  if (!NAME.test(serverName)) throw new Error('server-name must match ^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$')
+  if (existsSync(dir)) throw new Error(`${dir} exists: choose a new folder, no key is overwritten`)
+  mkdirSync(dir, { mode: 0o700 })
+  chmodSync(dir, 0o700)
+  const { ssl, key, leaf } = opensslIn(dir)
   try {
     key('ca')
     ssl(
@@ -107,6 +113,29 @@ export function personCerts(dir: string, serverName: string) {
     `  2. kubectl -n factory create secret tls factory-server-tls --cert=${dir}/server.crt --key=${dir}/server.key`,
     `  3. kubectl -n factory create secret generic factory-person-ca --from-file=ca.crt=${dir}/ca.crt`,
     `  4. Keep ca.key offline: move it off this machine.`,
+  ].join('\n')
+}
+
+/**
+ * Add the manager certificate (CN=manager, clientAuth) to a folder that personCerts made. The folder must hold the CA key and certificate.
+ * If manager.key or manager.crt exists, throw before any write.
+ */
+export function managerCert(dir: string) {
+  for (const f of ['ca.key', 'ca.crt']) if (!existsSync(join(dir, f))) throw new Error(`${dir} has no ${f}`)
+  for (const f of ['manager.key', 'manager.crt'])
+    if (existsSync(join(dir, f))) throw new Error(`${join(dir, f)} exists: no key is overwritten`)
+  try {
+    opensslIn(dir).leaf('manager', 'manager', 'extendedKeyUsage=clientAuth\nbasicConstraints=CA:FALSE\n')
+  } catch (e) {
+    for (const f of ['manager.key', 'manager.crt']) rmSync(join(dir, f), { force: true })
+    throw e
+  } finally {
+    for (const f of ['manager.csr', 'manager.ext', 'ca.srl']) rmSync(join(dir, f), { force: true })
+  }
+  return [
+    `made ${dir}/manager.key and manager.crt (CN=manager). Next steps for the owner:`,
+    `  1. Give manager.crt, manager.key and ca.crt to the manager task. The pod does this at create.`,
+    `  2. Keep the CA key offline: move it off this machine.`,
   ].join('\n')
 }
 
