@@ -20,6 +20,8 @@ import {
   OpError,
   readBody,
   readQuery,
+  allowed,
+  type Caller,
   type Ctx,
   type Input,
   type Op,
@@ -347,7 +349,7 @@ export function clientHandler(o: ClientOpts) {
     }
   }
 
-  const handle = async (req: Request, ip: string): Promise<Response> => {
+  const handle = async (req: Request, ip: string, who: Caller = 'person'): Promise<Response> => {
     // A worker token must not open this port, whatever the value or the route (FR-010).
     if (req.headers.has('authorization'))
       return refuse(403, 'worker tokens are not accepted on the client port')
@@ -366,7 +368,8 @@ export function clientHandler(o: ClientOpts) {
     const { op, params } = m
     const q = readQuery(op, params, url.search)
     if (typeof q === 'string') return refuse(400, q)
-    // ponytail: op.rights is not enforced. Every caller holds the person certificate, so every caller is the owner. Enforcement needs identity transport (aya5.6).
+    if (!allowed(op.rights, who))
+      return refuse(403, `the ${who} role cannot call ${op.name}: it is for the person only`)
     if (op.route.method === 'GET') {
       try {
         return await call(op, q)
@@ -878,7 +881,7 @@ export function clientListener(o: {
   cert: string
   key: string
   ca: string
-  handle: (req: Request, ip: string) => Promise<Response>
+  handle: (req: Request, ip: string, who: Caller) => Promise<Response>
   idleMs?: number
 }) {
   return listen({
@@ -893,7 +896,9 @@ export function clientListener(o: {
       minVersion: 'TLSv1.2',
     },
     authorize: s => s.authorized,
-    handle: o.handle,
+    // The person CA signs the certificate. CN=manager is the manager task; any other CN is a person (FR-019).
+    handle: (req, ip, sock) =>
+      o.handle(req, ip, sock.getPeerCertificate().subject?.CN === 'manager' ? 'manager' : 'person'),
     idleMs: o.idleMs ?? 30_000,
   })
 }
@@ -924,7 +929,7 @@ function listen(o: {
   label: 'client' | 'worker'
   tls: TlsOptions
   authorize: (s: TLSSocket) => boolean
-  handle: (req: Request, ip: string) => Promise<Response>
+  handle: (req: Request, ip: string, sock: TLSSocket) => Promise<Response>
   idleMs: number
 }) {
   const open = new Set<Socket>()
@@ -932,7 +937,7 @@ function listen(o: {
     if (!o.authorize(sock)) return sock.destroy()
     open.add(sock)
     sock.on('close', () => open.delete(sock))
-    serveSocket(sock, o.handle, o.idleMs)
+    serveSocket(sock, (req, ip) => o.handle(req, ip, sock), o.idleMs)
   })
   srv.on('tlsClientError', () => {})
   srv.on('error', () => {})

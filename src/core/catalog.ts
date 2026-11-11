@@ -84,6 +84,7 @@ export type Op = {
   summary: string
   inputs: Field[]
   output: 'table' | 'text' | 'json' | 'stream'
+  /** read: any caller. manager: the person or the manager. owner: the person only. */
   rights: 'read' | 'owner' | 'manager'
   mutates: boolean
   long: boolean
@@ -146,6 +147,11 @@ export function fieldOk(f: Field, v: unknown): boolean {
 
 const routeKey = (o: Op) => `${o.route.method} ${o.route.path.replace(/:[^/]+/g, ':')}`
 const params = (o: Op) => o.route.path.split('/').filter(s => s.startsWith(':'))
+
+export type Caller = 'person' | 'manager'
+
+/** The person may call every operation. The manager may not call an owner operation (FR-019). */
+export const allowed = (rights: Op['rights'], who: Caller): boolean => who === 'person' || rights !== 'owner'
 
 /** Check every rule, else throw: a bad catalog serves nothing. Return a copy sorted by name. */
 export function makeCatalog(ops: Op[]): Op[] {
@@ -242,7 +248,14 @@ const f = (name: string, kind: Kind, required = true, help = H[name]!, values?: 
 })
 const id = (name: string) => f(name, 'id')
 
-type Spec = { name: string; summary: string; method: 'GET' | 'POST'; path: string; inputs?: Field[] }
+type Spec = {
+  name: string
+  summary: string
+  method: 'GET' | 'POST'
+  path: string
+  inputs?: Field[]
+  rights?: Op['rights']
+}
 const bridge = (
   s: Spec,
   argv: (i: Input) => string[],
@@ -253,7 +266,7 @@ const bridge = (
   summary: s.summary,
   inputs: s.inputs ?? [],
   output,
-  rights: s.method === 'GET' ? 'read' : 'owner',
+  rights: s.rights ?? (s.method === 'GET' ? 'read' : 'manager'),
   mutates: s.method === 'POST',
   long: false,
   route: { method: s.method, path: s.path },
@@ -430,6 +443,7 @@ export const CATALOG: Op[] = makeCatalog([
       summary: 'Remove eligible run data or worktrees.',
       method: 'POST',
       path: '/v1/gc',
+      rights: 'owner',
       inputs: [
         f('worktrees', 'flag', false, 'use the worktree pass'),
         f('dryRun', 'flag', false, 'preview without removal'),
@@ -546,6 +560,7 @@ export const CATALOG: Op[] = makeCatalog([
         summary: 'Send a message to the manager chat and wait for its answer.',
         method: 'POST',
         path: '/v1/conversations/:id',
+        rights: 'owner',
         inputs: [
           f('id', 'id', true, 'the conversation id'),
           f('text', 'text', true, 'the message to the manager'),
@@ -824,6 +839,7 @@ export const CATALOG: Op[] = makeCatalog([
       summary: 'Stop or resume the factory.',
       method: 'POST',
       path: '/v1/halt',
+      rights: 'owner',
       inputs: [f('mode', 'enum', true, undefined, ['stop', 'resume'])],
     },
     i => [i.mode as string],

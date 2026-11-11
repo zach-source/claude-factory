@@ -1196,6 +1196,18 @@ export const OPENAI_RULE: Egress = {
 }
 
 /**
+ * The devenv build in the VM (buildctl) fetches its own ghcr.io registry token: the VM sends a placeholder Basic login
+ * to ghcr.io/token and the gateway puts the real login there (claude-factory-kraoa). Only /token gets the key.
+ */
+export const GHCR_TOKEN_RULE: Egress = {
+  hosts: ['ghcr.io'],
+  pathPrefixes: ['/token'],
+  key: 'GITHUB_BASIC_MANAGER',
+  header: 'Authorization',
+  prefix: 'Basic ',
+}
+
+/**
  * the manager's egress beyond a worker's defaults (Anthropic, GitHub, the caches): claude.ai for Claude's login,
  * and plain-HTTP (h2c) rules for the in-cluster services its VM calls: the AX server, the atenet router and the
  * policy broker. Through the gateway, plain HTTP to a service needs an `http` rule; an `https` rule fails.
@@ -1264,6 +1276,7 @@ export function managerEgress(
     OPENAI_RULE,
     CODEX_CHATGPT_RULE,
     BUILDER_RULE,
+    GHCR_TOKEN_RULE,
     ...cursor,
     ...typesafe,
   ]

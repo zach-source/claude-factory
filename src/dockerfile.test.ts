@@ -169,3 +169,25 @@ test('the worker image installs gitleaks and jq and smokes them (claude-factory-
   expect(worker.match(/nixpkgs#go\b/g)).toHaveLength(2)
   expect(worker).toContain("'substituters = https://cache.nixos.org https://devenv.cachix.org'")
 })
+
+// claude-factory-gogxc.2 (spec 010 R1): the server pod runs these tools in a tick and in the home backup
+test('the server image installs every tool a tick runs, and a smoke test runs them', () => {
+  const docker = serverStage()
+  const smoke = docker.slice(docker.indexOf('RUN bun --version'), docker.indexOf('WORKDIR /opt/factory'))
+  for (const tool of ['bun', 'claude', 'git', 'gh', 'bd', 'dolt', 'ax', 'kubectl', 'gitleaks'])
+    expect(smoke).toMatch(new RegExp(`(?:RUN|&&) ${tool} (?:--)?(?:version|client)?`))
+  for (const tool of ['gh', 'bd', 'dolt', 'kubectl', 'gitleaks', 'ax', 'claude'])
+    expect(docker).toMatch(new RegExp(`/usr/local/bin/${tool}\\b|/usr/local/bin ${tool}\\b`))
+  expect(docker).toMatch(/apt-get install[^\n]*\bgit\b[^\n]*\bopenssh-client\b/)
+})
+
+test('CI builds the server image for a pull request and pushes it to ghcr.io on main', () => {
+  const wf = readFileSync(join(ROOT, '.github/workflows/server-image.yml'), 'utf8')
+  expect(wf).toContain('file: Dockerfile.server')
+  expect(wf).toMatch(/push: \$\{\{ github.event_name != 'pull_request' \}\}/)
+  expect(wf).toContain('ghcr.io/${{ github.repository_owner }}/factory-server')
+  expect(wf).toContain('steps.build.outputs.digest')
+  expect(wf).toMatch(/packages: write/)
+  // an action that holds a package token must use a full commit SHA
+  for (const m of wf.matchAll(/uses: (\S+)@(\S+)/g)) expect(m[2]).toMatch(/^[0-9a-f]{40}$/)
+})
