@@ -2404,6 +2404,39 @@ test("the gate's own rule is https at its default port when the gate URL is http
   })
 })
 
+test('a pkg-gate URL whose host is not a plain name fails closed: wildcards, %2A, single label, IPv6, bad scheme (q0dg)', () => {
+  for (const bad of [
+    'https://*:8443',
+    'https://*.svc.cluster.local:8443',
+    'http://*.svc:8080',
+    'https://%2A.svc:8443',
+    'https://a*b.svc:8443',
+    'http://pkg-gate:8080',
+    'https://[::1]:8443',
+    'https://a_b.svc',
+    'ftp://pkg.example.com',
+    'not a url',
+  ])
+    expect(() => ax.egressPolicy('', [], bad)).toThrow('FACTORY_AX_PKG_GATE')
+  expect(ax.egressPolicy('', [], 'http://pkg-gate.pkg-gate.svc.cluster.local:8080').rules).toContainEqual({
+    http: { hostnames: ['pkg-gate.pkg-gate.svc.cluster.local'], ports: { numbers: [8080] } },
+  })
+  expect(ax.egressPolicy('', [], 'https://PKG.Example.COM').rules).toContainEqual({
+    https: { hostnames: ['pkg.example.com'] },
+  })
+  expect(ax.egressPolicy('', [], 'http://10.0.0.5:8080').rules).toContainEqual({
+    http: { hostnames: ['10.0.0.5'], ports: { numbers: [8080] } },
+  })
+  process.env.FACTORY_AX_PKG_GATE = 'https://*:8443'
+  try {
+    writeFileSync(join(dir, 'actor'), '')
+    expect(() => ax.createPolicy('t9')).toThrow('FACTORY_AX_PKG_GATE')
+    expect(existsSync(join(dir, 'policy'))).toBe(false)
+  } finally {
+    delete process.env.FACTORY_AX_PKG_GATE
+  }
+})
+
 test('a launched task carries the registry env only when FACTORY_AX_PKG_GATE is set, http or https', () => {
   const base = { name: 't-gate', repo: 'r', branch: 'b', image: 'i', env: {} }
   ax.launch(base)
@@ -3749,7 +3782,17 @@ test('unset or empty, the server env leaves every policy unchanged (akiq.13)', (
 })
 
 test('a bad server URL fails closed: http, junk and the person-CA port 8444 throw and createPolicy writes nothing (akiq.13)', () => {
-  for (const bad of ['http://factory.factory.svc:8443', 'not a url', 'https://factory.factory.svc:8444']) {
+  for (const bad of [
+    'http://factory.factory.svc:8443',
+    'not a url',
+    'https://factory.factory.svc:8444',
+    'https://*:8443',
+    'https://*.svc.cluster.local:8443',
+    'https://%2A.svc:8443',
+    'https://factory.factory.svc.cluster.local',
+    'https://factory.factory.svc.cluster.local:443',
+    'https://factory.factory.svc.cluster.local:9443',
+  ]) {
     expect(() => polWith(bad, '')).toThrow('FACTORY_AX_WORKER_SERVER')
     process.env.FACTORY_AX_WORKER_SERVER = bad
     try {
@@ -3760,9 +3803,7 @@ test('a bad server URL fails closed: http, junk and the person-CA port 8444 thro
       delete process.env.FACTORY_AX_WORKER_SERVER
     }
   }
-  expect(serverRules(polWith('https://factory.factory.svc.cluster.local', ''))).toEqual([
-    { https: { hostnames: ['factory.factory.svc.cluster.local'] } },
-  ])
+  expect(serverRules(polWith('https://factory.factory.svc.cluster.local:08443', ''))).toEqual([SERVER_RULE])
 })
 
 // claude-factory-jluz.1: the VM has no info/private-patterns; the laptop sends the rig repo's file
@@ -3892,4 +3933,32 @@ test('serve records resumed: true for a cloned repo, and survives an unwritable 
   } finally {
     process.env = saved
   }
+})
+
+test('q0dg: managerEgress and the rig Dolt URL refuse a wildcard or non-plain host', () => {
+  const bad = ['*', '*.svc.cluster.local', '%2A.svc', 'a*b.svc']
+  for (const h of bad) {
+    const cases: [string, string][] = [
+      ['FACTORY_AX_MANAGER_AX_SERVER', 'https'],
+      ['FACTORY_AX_MANAGER_AX_SERVER', 'http'],
+      ['FACTORY_AX_MANAGER_ROUTER', 'http'],
+      ['FACTORY_AX_MANAGER_BROKER', 'http'],
+    ]
+    for (const [k, proto] of cases) {
+      expect(() => ax.managerEgress({ [k]: proto + '://' + h + ':8443' })).toThrow(k)
+    }
+    const url = 'https://' + h + '/acme/x'
+    expect(() => ax.managerEgress({}, [{ beadsRemote: { url } }])).toThrow('beadsRemote')
+  }
+  expect(ax.managerEgress({ FACTORY_AX_MANAGER_AX_SERVER: 'https://ax.example.com:8443' })).toContainEqual(
+    expect.objectContaining({ hosts: ['ax.example.com'], key: 'AX_AUTH' }),
+  )
+  expect(ax.managerEgress({ FACTORY_AX_MANAGER_BROKER: 'http://b.example.svc:8080' })).toContainEqual({
+    hosts: ['b.example.svc'],
+    port: 8080,
+    http: true,
+  })
+  expect(ax.managerEgress({}, [{ beadsRemote: { url: 'https://dolt.example.com/x' } }])).toContainEqual(
+    expect.objectContaining({ hosts: ['dolt.example.com'], key: 'DOLT_BASIC' }),
+  )
 })
