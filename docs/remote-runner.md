@@ -437,7 +437,7 @@ The pass lists `ax get tasks` and `ax get workspaces`. If one list fails, it del
 - The name is not the manager task (`f-manager`).
 - The name is `f-<run>-<seq>` for exactly one run of this home. A name that this home does not own stays.
 - `<seq>` is not above the run's `seq` in `state.json`. A higher number is a launch that the state does not show yet.
-- The run is done or aborted, or `<seq>` is below the run's `seq` and the run's worker is not `ax://<name>`.
+- The run is done or aborted. Or the run's worker is not `ax://<name>`, and `<seq>` is below the run's `seq` or the run has no worker (sub-state `waiting`, `backoff` or `stuck`).
 
 One pass deletes 10 names at most. `ax.log` in the factory home gets one `ax-sweep:` summary line for each pass, a `swept` line for each name, and a `remove ... failed` line for each failed delete. The close path writes the same failed line. `factory stop` halts the pass.
 
