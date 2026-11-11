@@ -328,54 +328,92 @@ test('u509 snapshot scope matrix', () => {
 })
 
 test('u509 empty header exception snapshot', () => {
-  const bom = '﻿'
+  let flip = 0
+  const ends: Record<string, (s: string) => string> = {
+    lf: s => s,
+    crlf: s => s.replace(/\n/g, '\r\n'),
+    mixed: s => s.replace(/\n/g, () => (flip++ % 2 ? '\r\n' : '\n')),
+    bomLf: s => `﻿${s}`,
+    bomCrlf: s => `﻿${s.replace(/\n/g, '\r\n')}`,
+  }
   const denied: Record<string, string> = {
-    'lf.md': '---\n---\nrig: other\n---\nbody MARK',
-    'crlf.md': '---\r\n---\r\nrig: acme\r\n---\r\nbody MARK',
-    'bomCrlf.md': `${bom}---\r\n---\r\nRig: other\r\n---\r\nbody MARK`,
-    'mixed.md': '---\r\n---\n rig: other\r\n---\nbody MARK',
-    'blank.md': '---\n---\nrig:\n---\nbody MARK',
-    'dup.md': `${bom}---\n---\nrig: other\nrig: acme\n---\nbody MARK`,
-    'eof.md': '---\n---\nrig: other\n---',
+    canonicalOther: '---\n---\nrig: other\n---\nbody MARK',
+    canonicalAcme: '---\n---\nrig: acme\n---\nbody MARK',
+    capital: '---\n---\nRig: other\n---\nbody MARK',
+    indented: '---\n---\n rig: other\n---\nbody MARK',
+    blank: '---\n---\nrig:\n---\nbody MARK',
+    dup: '---\n---\nrig: other\nrig: acme\n---\nbody MARK',
+    eof: '---\n---\nrig: other\n---',
+    newline: '---\n---\nrig: other\n---\n',
   }
   const kept: Record<string, string> = {
-    'eofEmpty.md': '---\n---',
-    'noDelim.md': '---\r\n---\r\nrig: other\r\n',
-    'after.md': '---\n---\nbody\n---\nrig: other\n---\n',
-    'spaced.md': '---\n---\nrig: other\n--- \nbody\n',
+    eofEmpty: '---\n---',
+    noDelim: '---\n---\nrig: other\n',
+    noDelimDup: '---\n---\nrig: other\nrig: acme\n',
+    after: '---\n---\nbody\n---\nrig: other\n---\n',
+    spaceAfter: '---\n---\nrig: other\n--- \nbody\n',
+    spaceBefore: '---\n---\nrig: other\n ---\nbody\n',
+    popBodyCapital: '---\nsummary: s\n---\nRig: other\nbody\n',
+    popBodyIndented: '---\nsummary: s\n---\n rig: other\n',
+    popBodyDup: '---\nsummary: s\n---\nrig: other\nrig: acme\n',
+    popBodyDelim: '---\nsummary: s\n---\nx\n---\nrig: other\n---\ny\n',
   }
-  const readme = '---\n---\nrig: other\n---\nbody MARK'
-  const sentinel = parse('x.md', denied['lf.md'] ?? '').rig
-  for (const rig of ['acme', 'other', undefined, sentinel]) {
-    const dir = tmp('u509e')
-    mkdirSync(join(dir, 'ci'))
-    mkdirSync(join(dir, 'ops'))
-    const all = { ...denied, ...kept }
-    for (const [f, t] of Object.entries(all)) writeFileSync(join(dir, 'ci', f), t)
-    writeFileSync(join(dir, 'ops', 'README.md'), readme)
-    const paths = [...Object.keys(all).map(f => `ci/${f}`), 'ops/README.md']
-    writeFileSync(
-      join(dir, '.index.json'),
-      JSON.stringify({ model: 'm', vecs: Object.fromEntries(paths.map(p => [p, [1, 0]])) }),
-    )
-    writeFileSync(
-      join(dir, '.usage.jsonl'),
-      paths.map(path => JSON.stringify({ path, at: 1, shown: 1 })).join('\n') + '\n',
-    )
-    const out = join(tmp('out'), 'm.tgz')
-    expect(snapshot(dir, rig, out)).not.toBeNull()
-    const x = tmp('x')
-    tar('-xzf', out, '-C', x)
-    expect(readdirSync(join(x, 'ci')).sort(), `${rig}`).toEqual(Object.keys(kept).sort())
-    for (const f of Object.keys(kept))
-      expect(readFileSync(join(x, 'ci', f))).toEqual(readFileSync(join(dir, 'ci', f)))
-    const names = listing(out).map(n => n.replace(/^\.\//, ''))
-    expect(names.some(n => n.startsWith('ops/') && n !== 'ops/')).toBe(false)
-    for (const f of ['.index.json', '.usage.jsonl']) {
-      const t = readFileSync(join(x, f), 'utf8')
-      for (const k of Object.keys(denied)) expect(t).not.toContain(`ci/${k}`)
-      expect(t).not.toContain('ops/')
-      for (const k of Object.keys(kept)) expect(t).toContain(`ci/${k}`)
+  const sentinel = parse('x.md', denied.canonicalOther ?? '').rig
+  for (const [en, conv] of Object.entries(ends)) {
+    for (const rig of ['acme', 'other', undefined, sentinel]) {
+      const dir = tmp('u509e')
+      mkdirSync(join(dir, 'ci'))
+      const keptFiles = Object.keys(kept).map(k => `${k}.md`)
+      const deniedFiles = Object.keys(denied).map(k => `${k}.md`)
+      for (const [k, t] of Object.entries({ ...denied, ...kept }))
+        writeFileSync(join(dir, 'ci', `${k}.md`), conv(t))
+      // topic README.md rows: one topic dir per row
+      const topics: string[] = []
+      for (const [k, t] of Object.entries({ ...denied, ...kept })) {
+        mkdirSync(join(dir, `t_${k}`))
+        writeFileSync(join(dir, `t_${k}`, 'README.md'), conv(t))
+        topics.push(`t_${k}/README.md`)
+      }
+      const paths = [...keptFiles.concat(deniedFiles).map(f => `ci/${f}`), ...topics]
+      writeFileSync(
+        join(dir, '.index.json'),
+        JSON.stringify({ model: 'm', vecs: Object.fromEntries(paths.map(p => [p, [1, 0]])) }),
+      )
+      writeFileSync(
+        join(dir, '.usage.jsonl'),
+        paths.map(path => JSON.stringify({ path, at: 1, shown: 1 })).join('\n') + '\n',
+      )
+      const out = join(tmp('out'), 'm.tgz')
+      expect(snapshot(dir, rig, out)).not.toBeNull()
+      const x = tmp('x')
+      tar('-xzf', out, '-C', x)
+      const label = `${en} ${rig}`
+      expect(readdirSync(join(x, 'ci')).sort(), label).toEqual([...keptFiles].sort())
+      const keptTopics = Object.keys(kept).map(k => `t_${k}`)
+      const gotTopics = readdirSync(x).filter(n => n.startsWith('t_'))
+      expect(gotTopics.sort(), label).toEqual(keptTopics.sort())
+      for (const f of keptFiles)
+        expect(readFileSync(join(x, 'ci', f)), label).toEqual(readFileSync(join(dir, 'ci', f)))
+      for (const k of keptTopics)
+        expect(readFileSync(join(x, k, 'README.md')), label).toEqual(readFileSync(join(dir, k, 'README.md')))
+      const payload = [
+        ...readdirSync(join(x, 'ci')).map(f => join(x, 'ci', f)),
+        ...gotTopics.map(k => join(x, k, 'README.md')),
+      ]
+        .map(f => readFileSync(f, 'utf8'))
+        .join('\n')
+      expect(payload, label).not.toContain('MARK')
+      for (const f of ['.index.json', '.usage.jsonl']) {
+        const t = readFileSync(join(x, f), 'utf8')
+        for (const k of Object.keys(denied)) {
+          expect(t, label).not.toContain(`ci/${k}.md`)
+          expect(t, label).not.toContain(`t_${k}/`)
+        }
+        for (const k of Object.keys(kept)) {
+          expect(t, label).toContain(`ci/${k}.md`)
+          expect(t, label).toContain(`t_${k}/README.md`)
+        }
+      }
     }
   }
 })

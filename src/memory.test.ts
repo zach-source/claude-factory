@@ -2412,10 +2412,10 @@ test('bareValueFlag names the first value flag with no value (claude-factory-sva
 
 // claude-factory-u509: a rig declaration must be unique and canonical, or the note fails closed
 const U509_VEC = [1, 0]
-const u509Ranked = (text: string, rig?: string) => {
+const u509Ranked = (text: string, rig?: string, path = 'ci/case.md') => {
   const calls = { vec: 0, topic: 0, act: 0 }
   const found = rank(
-    [parse('ci/case.md', text)],
+    [parse(path, text)],
     () => (calls.vec++, U509_VEC),
     () => (calls.topic++, U509_VEC),
     U509_VEC,
@@ -2578,17 +2578,40 @@ test('u509 empty header exception matrix', () => {
       const t = conv(text)
       expect(parse('ci/a.md', t).rig, `${en} ${name}`).toBe(sentinel)
       for (const rig of ['acme', 'other', undefined, sentinel]) {
-        const { found, calls } = u509Ranked(t, rig)
-        expect(found, `${en} ${name} ${rig}`).toHaveLength(0)
-        expect(calls, `${en} ${name}`).toEqual({ vec: 0, topic: 0, act: 0 })
+        for (const path of ['ci/case.md', 'ci/README.md']) {
+          const { found, calls } = u509Ranked(t, rig, path)
+          expect(found, `${en} ${name} ${rig} ${path}`).toHaveLength(0)
+          expect(calls, `${en} ${name} ${path}`).toEqual({ vec: 0, topic: 0, act: 0 })
+        }
       }
     }
     for (const [name, text] of Object.entries(shared)) {
       const t = conv(text)
       expect(parse('ci/a.md', t).rig, `${en} ${name}`).toBeUndefined()
-      for (const rig of ['acme', 'other', undefined])
-        expect(u509Ranked(t, rig).found, `${en} ${name} ${rig}`).toHaveLength(1)
+      for (const rig of ['acme', 'other', undefined, sentinel])
+        for (const path of ['ci/case.md', 'ci/README.md'])
+          expect(u509Ranked(t, rig, path).found, `${en} ${name} ${rig} ${path}`).toHaveLength(1)
+    }
+    // populated header: body declarations never change scope; same result as a bare populated header
+    const bodies = [
+      'rig: other',
+      'Rig: other',
+      ' rig: other',
+      'rig: other\nrig: acme',
+      'x\n---\nrig: other\n---\ny',
+      '',
+    ]
+    for (const hdr of ['summary: s\nrig: acme', 'summary: s']) {
+      for (const body of bodies) {
+        const t = conv(`---\n${hdr}\n---\n${body}`)
+        const base = conv(`---\n${hdr}\n---\n`)
+        expect(parse('ci/a.md', t).rig, `${en} ${hdr} ${body}`).toBe(parse('ci/a.md', base).rig)
+        for (const rig of ['acme', 'other', undefined, sentinel])
+          for (const path of ['ci/case.md', 'ci/README.md'])
+            expect(u509Ranked(t, rig, path).found, `${en} ${hdr} ${body} ${rig} ${path}`).toHaveLength(
+              u509Ranked(base, rig, path).found.length,
+            )
+      }
     }
   }
-  expect(u509Ranked('---\nsummary: s\nrig: acme\n---\nrig: other\n---\nx', 'acme').found).toHaveLength(1)
 })
