@@ -317,7 +317,7 @@ test('server Codex steps get a cwd and retain an explicit cwd', async () => {
     await runStep(shome, 'pm', { ...CALL, baseEnv, codex: 'gpt-5', cwd }, async c => {
       expect(c.cwd).toBe(cwd ?? join(shome, 'steps', 'pm'))
       expect(existsSync(c.cwd!)).toBe(true)
-      return { isOk: true, text: 'done' }
+      return { isOk: true, text: 'done', reason: 'success', durationMs: 0, commands: [], calls: [] }
     })
   }
 })
