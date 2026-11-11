@@ -17,8 +17,13 @@ The plan resumed after four implement rounds. The original body-isolation rule m
 The old parser read `---\n---\nrig: other\n---\nbody` as scoped metadata.
 The empty-header fix changed that note to shared scope. Security required a conservative exception.
 Commit `cd77518f` implements that exception. This revision defines it and replaces the conflicting body-isolation promise.
-The current six focused tests pass, but the empty-header cases lack direct topic README coverage.
-Finish with one test commit. Do not redesign the parser or repeat completed fixes.
+At `2659bf0c`, eight focused tests pass with 3804 assertions. Both paths now have empty-header coverage.
+The next two review rounds found incomplete populated-header controls, not another production defect.
+The snapshot test puts every populated-header fixture in an unconditional `kept` map. It has no scoped populated header.
+The plan used “each body declaration form” without an explicit fixture inventory or consumer outcome table.
+That omission let shared controls stand in for scoped controls. Total assertion counts did not expose the missing dimension.
+Narrow the remaining work to task `.7`: complete populated-header controls and the three mutation checks below.
+Preserve all denied and shared controls. Do not redesign the parser or repeat completed fixes.
 
 ## Decision and grammar
 
@@ -160,6 +165,45 @@ Extract archives and check denied paths, body markers, index entries, and usage 
 Run the AC1 command. Both current empty-header tests and all other `u509` tests must stay green.
 This extends the existing tests; no new fixture file or test framework is necessary.
 
+### AC6 completion contract after review round four
+
+This contract makes the remaining AC6 work explicit. It does not expand the parser grammar.
+In both existing exception tests, cross these eight literal bodies with populated headers:
+
+| Body ID | Body before line-end conversion |
+| --- | --- |
+| other | `rig: other` |
+| acme | `rig: acme` |
+| capital | `Rig: other` |
+| indented | ` rig: other` |
+| blank | `rig:` |
+| duplicate | `rig: other\nrig: acme` |
+| later | `x\n---\nrig: other\n---\ny` |
+| empty | Empty string |
+
+Use two headers: `summary: s` and `summary: s\nrig: acme`, between exact delimiter lines.
+Cross eight bodies, two headers, five line-end forms, two paths, and four query rigs in each consumer.
+This gives 640 populated-header cases per consumer. Existing empty-header cases remain separate and unchanged.
+The forms are LF, CRLF, mixed LF/CRLF, BOM plus LF, and BOM plus CRLF.
+The paths are a short note and a topic `README.md`. Query rigs are `acme`, `other`, absent, and the sentinel.
+
+Use this explicit expected-result table. Do not derive expectations from `parse()`, `rank()`, or the snapshot predicate.
+
+| Header scope | Consumer | acme | other | absent | sentinel |
+| --- | --- | --- | --- | --- | --- |
+| shared | rank | retain | retain | retain | retain |
+| shared | snapshot | retain | retain | retain | retain |
+| acme | rank | retain | exclude | retain | exclude |
+| acme | snapshot | retain | exclude | exclude | exclude |
+
+In snapshot fixtures, separate scoped cases from the unconditional `kept` map, or give each case an explicit expected scope.
+Use a unique body marker for each nonempty body fixture and path. Preserve the empty-body control without a marker.
+For each query, assert exact retained paths and marker presence or absence in extracted note payloads.
+Check index and usage paths against the same explicit expected set. Compare each retained file with its source bytes.
+Retain zero callback checks for invalid notes. No new zero-call rule applies to valid scoped exclusions.
+Report the body IDs and matrix dimensions, not only the assertion total, before task `.7` closes.
+Check: `bun test --timeout 60000 src/memory.test.ts src/memory-snapshot.test.ts -t u509`.
+
 ## Test plan
 
 Implement must commit the regression tests first and record failures against the parent code.
@@ -174,6 +218,14 @@ For this resumed plan, retain the completed test and fix commits. Do not manufac
 Extend AC6 first; current production code should pass. Then prove the new rows catch the former defects with mutations.
 Remove `gapRig ||` to test disclosure. Scan the complete gap to test over-refusal past the first delimiter.
 Scan the whole body after an empty header to test over-refusal without a later delimiter.
+Use these three distinct edits at `src/memory.ts:94-96`, one at a time:
+
+1. Remove `gapRig ||` from the refusal condition.
+2. Replace `Math.max(gap.indexOf('---'), 0)` with `gap.length`.
+3. Replace `(m ? (m[1] ?? '') : src)` with `(m?.[1] ?? src)`.
+
+The third mutation scans an empty-header body even without a later delimiter. It is not mutation two or `indexOf + 3`.
+Run the AC6 completion command for each edit. Record each edit, exit status, and failed test names separately.
 Commit before each mutation check, restore the source, and confirm a clean worktree afterward.
 No production edit is necessary unless the matrix identifies a failure within this exact grammar.
 
@@ -213,7 +265,8 @@ No AC is must-see-live. No live store, pod, database, or private service read ga
 Tasks `claude-factory-u509.1` through `.6` are closed. Preserve their commits and evidence.
 The release station owns the changelog entry, as task `.5` records.
 
-1. `claude-factory-u509.7`: Extend AC6 tests for short notes and topic README files. Check: focused command and three mutations.
+1. `claude-factory-u509.7`: Complete the explicit AC6 populated-header matrix in the two existing test files.
+   Commit once. Check the 640 cases per consumer, focused command, and all three distinct mutations.
 
 Task `.7` follows completed task `.6`.
 One test commit fits one 120-minute implement pass in existing draft PR #862.
