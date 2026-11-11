@@ -193,7 +193,8 @@ test('inside a VM, report --summary-file queues the file text; a bad file queues
   const outbox = join(dir, 'outbox-sf.jsonl')
   const env = { FACTORY_OUTBOX: outbox, FACTORY_FROM: 'a' }
   const empty = join(dir, 'sf-empty')
-  const f = join(dir, 'sf.md')
+  mkdirSync(join(home, 'text'), { recursive: true })
+  const f = join(home, 'text', 'sf.md')
   writeFileSync(empty, '')
   writeFileSync(f, 'long\nsummary "x"\n')
   const blank = join(dir, 'sf-blank')
@@ -217,11 +218,18 @@ test('inside a VM, report --summary-file queues the file text; a bad file queues
     expect(bad.code).toBe(1)
     expect(bad.err).toContain('--summary-file')
   }
+  // claude-factory-pc2f: a file outside the text roots is refused before the bead sync
+  const outside = join(dir, 'sf-outside.md')
+  writeFileSync(outside, 'secret')
+  const out = factory(['report', 'r1', '1', 'ready', '--summary-file', outside], envBd)
+  expect(out.code).toBe(1)
+  expect(out.err).toContain('--summary-file')
   expect(existsSync(marker)).toBe(false)
   expect(existsSync(outbox)).toBe(false)
   expect(factory(['report', 'r1', '1', 'ready', '--summary-file', f], env).code).toBe(0)
   const lines = readFileSync(outbox, 'utf8').trim().split('\n')
   expect(lines.map(l => JSON.parse(l).argv)).toEqual([['report', 'r1', '1', 'ready', 'long\nsummary "x"\n']])
+  rmSync(join(home, 'text'), { recursive: true, force: true })
 })
 
 test('a report argv that still holds --summary-file is not replayable; the flag after summary words is', () => {
@@ -4741,7 +4749,8 @@ test('inside a VM, report --summary-file over 100 KiB exits 1 and queues nothing
   mkdirSync(dir, { recursive: true })
   const outbox = join(dir, 'outbox-bigsf.jsonl')
   const bd = fakeBd('bigsf')
-  const f = join(dir, 'bigsf.md')
+  mkdirSync(join(home, 'text'), { recursive: true })
+  const f = join(home, 'text', 'bigsf.md')
   writeFileSync(f, 'x'.repeat(1_200_000))
   const r = factory(['report', 'r1', '1', 'ready', '--summary-file', f], bd.env(outbox))
   expect(r.code).toBe(1)
@@ -4749,6 +4758,7 @@ test('inside a VM, report --summary-file over 100 KiB exits 1 and queues nothing
   expect(r.err).toContain('102400')
   expect(existsSync(outbox)).toBe(false)
   expect(existsSync(bd.marker)).toBe(false)
+  rmSync(join(home, 'text'), { recursive: true, force: true })
 })
 
 test('a tick never spawns an outbox line over 100 KiB: it marks it seen, logs it and prompts the worker (claude-factory-amzl)', () => {
