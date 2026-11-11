@@ -326,3 +326,56 @@ test('u509 snapshot scope matrix', () => {
     }
   }
 })
+
+test('u509 empty header exception snapshot', () => {
+  const bom = '﻿'
+  const denied: Record<string, string> = {
+    'lf.md': '---\n---\nrig: other\n---\nbody MARK',
+    'crlf.md': '---\r\n---\r\nrig: acme\r\n---\r\nbody MARK',
+    'bomCrlf.md': `${bom}---\r\n---\r\nRig: other\r\n---\r\nbody MARK`,
+    'mixed.md': '---\r\n---\n rig: other\r\n---\nbody MARK',
+    'blank.md': '---\n---\nrig:\n---\nbody MARK',
+    'dup.md': `${bom}---\n---\nrig: other\nrig: acme\n---\nbody MARK`,
+    'eof.md': '---\n---\nrig: other\n---',
+  }
+  const kept: Record<string, string> = {
+    'eofEmpty.md': '---\n---',
+    'noDelim.md': '---\r\n---\r\nrig: other\r\n',
+    'after.md': '---\n---\nbody\n---\nrig: other\n---\n',
+    'spaced.md': '---\n---\nrig: other\n--- \nbody\n',
+  }
+  const readme = '---\n---\nrig: other\n---\nbody MARK'
+  const sentinel = parse('x.md', denied['lf.md'] ?? '').rig
+  for (const rig of ['acme', 'other', undefined, sentinel]) {
+    const dir = tmp('u509e')
+    mkdirSync(join(dir, 'ci'))
+    mkdirSync(join(dir, 'ops'))
+    const all = { ...denied, ...kept }
+    for (const [f, t] of Object.entries(all)) writeFileSync(join(dir, 'ci', f), t)
+    writeFileSync(join(dir, 'ops', 'README.md'), readme)
+    const paths = [...Object.keys(all).map(f => `ci/${f}`), 'ops/README.md']
+    writeFileSync(
+      join(dir, '.index.json'),
+      JSON.stringify({ model: 'm', vecs: Object.fromEntries(paths.map(p => [p, [1, 0]])) }),
+    )
+    writeFileSync(
+      join(dir, '.usage.jsonl'),
+      paths.map(path => JSON.stringify({ path, at: 1, shown: 1 })).join('\n') + '\n',
+    )
+    const out = join(tmp('out'), 'm.tgz')
+    expect(snapshot(dir, rig, out)).not.toBeNull()
+    const x = tmp('x')
+    tar('-xzf', out, '-C', x)
+    expect(readdirSync(join(x, 'ci')).sort(), `${rig}`).toEqual(Object.keys(kept).sort())
+    for (const f of Object.keys(kept))
+      expect(readFileSync(join(x, 'ci', f))).toEqual(readFileSync(join(dir, 'ci', f)))
+    const names = listing(out).map(n => n.replace(/^\.\//, ''))
+    expect(names.some(n => n.startsWith('ops/') && n !== 'ops/')).toBe(false)
+    for (const f of ['.index.json', '.usage.jsonl']) {
+      const t = readFileSync(join(x, f), 'utf8')
+      for (const k of Object.keys(denied)) expect(t).not.toContain(`ci/${k}`)
+      expect(t).not.toContain('ops/')
+      for (const k of Object.keys(kept)) expect(t).toContain(`ci/${k}`)
+    }
+  }
+})

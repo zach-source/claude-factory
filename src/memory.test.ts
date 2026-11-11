@@ -2543,3 +2543,52 @@ test('u509 empty header then a rig block closed by a later delimiter fails close
       expect(u509Ranked(text, rig).found, `${name} ${rig}`).toHaveLength(0)
   }
 })
+
+// AC6: the empty header exception, across line ends and query rigs (rank; snapshot rows are in memory-snapshot.test.ts)
+test('u509 empty header exception matrix', () => {
+  let flip = 0
+  const ends: Record<string, (s: string) => string> = {
+    lf: s => s,
+    crlf: s => s.replace(/\n/g, '\r\n'),
+    mixed: s => s.replace(/\n/g, () => (flip++ % 2 ? '\r\n' : '\n')),
+    bomLf: s => `﻿${s}`,
+    bomCrlf: s => `﻿${s.replace(/\n/g, '\r\n')}`,
+  }
+  const denied: Record<string, string> = {
+    canonicalOther: '---\n---\nrig: other\n---\nbody',
+    canonicalAcme: '---\n---\nrig: acme\n---\nbody',
+    capital: '---\n---\nRig: other\n---\nbody',
+    indented: '---\n---\n rig: other\n---\nbody',
+    blank: '---\n---\nrig:\n---\nbody',
+    duplicate: '---\n---\nrig: other\nrig: acme\n---\nbody',
+    delimiterAtEof: '---\n---\nrig: other\n---',
+    delimiterNewline: '---\n---\nrig: other\n---\n',
+  }
+  const shared: Record<string, string> = {
+    eofEmpty: '---\n---',
+    noDelimiter: '---\n---\nrig: other\n',
+    noDelimiterDup: '---\n---\nrig: other\nrig: acme\n',
+    afterDelimiter: '---\n---\nbody\n---\nrig: other\n---\n',
+    spaceAfter: '---\n---\nrig: other\n--- \nbody',
+    spaceBefore: '---\n---\nrig: other\n ---\nbody',
+  }
+  const sentinel = parse('x.md', denied.canonicalOther ?? '').rig
+  for (const [en, conv] of Object.entries(ends)) {
+    for (const [name, text] of Object.entries(denied)) {
+      const t = conv(text)
+      expect(parse('ci/a.md', t).rig, `${en} ${name}`).toBe(sentinel)
+      for (const rig of ['acme', 'other', undefined, sentinel]) {
+        const { found, calls } = u509Ranked(t, rig)
+        expect(found, `${en} ${name} ${rig}`).toHaveLength(0)
+        expect(calls, `${en} ${name}`).toEqual({ vec: 0, topic: 0, act: 0 })
+      }
+    }
+    for (const [name, text] of Object.entries(shared)) {
+      const t = conv(text)
+      expect(parse('ci/a.md', t).rig, `${en} ${name}`).toBeUndefined()
+      for (const rig of ['acme', 'other', undefined])
+        expect(u509Ranked(t, rig).found, `${en} ${name} ${rig}`).toHaveLength(1)
+    }
+  }
+  expect(u509Ranked('---\nsummary: s\nrig: acme\n---\nrig: other\n---\nx', 'acme').found).toHaveLength(1)
+})
