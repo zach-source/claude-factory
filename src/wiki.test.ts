@@ -517,6 +517,7 @@ const pem = (body: string) =>
   `\n${body}\n` +
   ['-----END RSA', 'PRIVATE KEY-----'].join(' ')
 const akia = 'AKIA' + 'Z'.repeat(16)
+const asia = 'ASIA' + 'Z'.repeat(16)
 const awsSecret = 'wJalrXUtnFEMI' + 'K7MDENGbPxRfiCY' + 'EXAMPLEKEY'
 const lead = (s: string) =>
   writePrompt([{ beads: [{ ...wb('a', 1, u(1)), comments: [s] }], prs: [] }], [], [])
@@ -537,11 +538,28 @@ test.each<[string, string, string]>([
   ['Basic after odd char', 'Authorization: Basic dXNlcjpw!cGFzc3dvcmQ=zzzzzz', 'cGFzc3dvcmQ'],
   ['URL password with raw @', 'dsn postgres://app:p@ssw0rdTail@db.internal:5432/x', 'ssw0rdTail'],
   ['glpat with dot tail', 'tok ' + ['glpat', 'abcdefghij0123456789xyz.01.tAiL12345'].join('-'), 'tAiL12345'],
+  [
+    'quoted Authorization',
+    '"Authorization": "Bearer ' + 'zqTok' + 'enTail12345678901' + '"',
+    'zqTokenTail12345678901',
+  ],
+  [
+    'quoted Bearer with tilde',
+    '"Authorization": "Bearer ' + 'abc~def~ghi' + '~jkl~mno~pqr' + '"',
+    'def~ghi~jkl',
+  ],
+  ['ASIA secret next to key id', `id ${asia} secret ${awsSecret}`, awsSecret],
 ])('AC6 mask %s', (_n, text, secret) => {
   const t = lead(text)
   expect(t).not.toContain(secret)
   expect(t).toContain('***')
   expect(scanPages([{ path: 'p.md', text: `---\nkind: topic\ntitle: T\n---\n${t}` }])).toEqual([])
+})
+
+test('tlgw: the quoted Authorization mask returns in under 1 s on 1 MiB', () => {
+  const t0 = performance.now()
+  lead('"Authorization": '.repeat(65_536))
+  expect(performance.now() - t0).toBeLessThan(1000)
 })
 
 test('AC6 mask leaves a URL with @ in the path', () => {

@@ -323,10 +323,10 @@ export function writeGroups(beads: WriteBead[], prs: WritePr[], cap = writeCap()
     .slice(0, cap)
 }
 
-// The PEM, AKIA and Authorization patterns of SECRETS match only a marker, so these run first and cover the secret.
+// The PEM, AKIA/ASIA and Authorization patterns of SECRETS match only a marker, so these run first and cover the secret.
 const MASKS = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g,
-  /Authorization:\s*(?:Basic|Bearer)\s+\S+/gi,
+  /Authorization["']?\s*:\s*["']?(?:Basic|Bearer)\s+\S+/gi,
   /:\/\/[^\s/:@]+:[^\s/]+@/g, // URL password: SECRETS stops at the first @
   /glpat-[A-Za-z0-9_.-]{20,}/g, // SECRETS leaves the tail after a dot
   TOKEN_SHAPE,
@@ -334,7 +334,7 @@ const MASKS = [
 ]
 /** Replaces each token shape with `***`. A string with an AWS key id becomes `***`: its secret key has no shape. */
 const mask = (s: string) =>
-  /AKIA[0-9A-Z]{16}/.test(s) ? '***' : MASKS.reduce((t, r) => t.replace(r, '***'), s)
+  /(?:AKIA|ASIA)[0-9A-Z]{16}/.test(s) ? '***' : MASKS.reduce((t, r) => t.replace(r, '***'), s)
 /** mask() for one line of rules text: each run of whitespace or control characters becomes one space. */
 const line = (s: string) =>
   mask(s)
