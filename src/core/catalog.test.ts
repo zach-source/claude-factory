@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   allowed,
+  boardView,
   CATALOG,
   CATALOG_VERSION,
   fieldOk,
@@ -312,6 +313,11 @@ describe('slimBoard and snapshot (claude-factory-hpmc.23)', () => {
     expect(s.rigs as unknown[]).toEqual([{ name: 'a', factory: 'lifecycle', maxRuns: 3 }])
     expect(s.lease).toEqual({ holder: 'h' })
     expect(JSON.stringify(s).length).toBeLessThan(JSON.stringify(board).length)
+  })
+  test('the board view and the slim board keep the halt state and its age first', () => {
+    const paused = { halt: 'paused', haltAt: 1, ...board }
+    for (const v of [boardView(paused), slimBoard(paused)])
+      expect(Object.keys(v as object).slice(0, 2)).toEqual(['halt', 'haltAt'])
   })
   test('slimBoard returns a value that is not a board unchanged', () => {
     expect(slimBoard(null)).toBeNull()

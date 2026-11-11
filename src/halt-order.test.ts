@@ -3,7 +3,7 @@ import { expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { drainHaltQueue, haltSeq, runHaltCmd } from './halt-order'
+import { drainHaltQueue, haltLine, haltSeq, runHaltCmd } from './halt-order'
 
 const home = () => mkdtempSync(join(tmpdir(), 'halt-order-'))
 const busy = () => null // a tick holds the lock
@@ -51,4 +51,12 @@ test('stop with a free lock applies at once, and a refusal reaches the caller', 
   await expect(runHaltCmd(h, free, 'stop', model(h))).rejects.toThrow('already')
   expect(readFileSync(join(h, 'halt-seq'), 'utf8')).toBe('2')
   rmSync(h, { recursive: true })
+})
+
+test('the first line of status names the halt state and its age', () => {
+  const at = 1_000_000
+  expect(haltLine({ state: 'paused', at, closed: { r1: 1, r2: 2 } }, at + 12 * 60_000)).toBe(
+    'PAUSED for 12 min: 2 worker(s) wait for factory resume',
+  )
+  expect(haltLine({ state: 'stopping', at, closed: {} }, at)).toStartWith('STOPPING for 0 min')
 })

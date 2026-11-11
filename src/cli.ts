@@ -231,7 +231,7 @@ import { REASON, boundedRun } from './screen'
 import * as client from './client'
 import { backupAge, backupError, backupWanted } from './homebackup'
 import * as managerhost from './managerhost'
-import { drainHaltQueue, runHaltCmd } from './halt-order'
+import { drainHaltQueue, haltLine, runHaltCmd } from './halt-order'
 import * as leases from './lease'
 import * as herdrApp from './herdr-install'
 import * as migrate from './migrate'
@@ -8199,7 +8199,8 @@ async function tick(isPatrol = false) {
     const now_ = halted()
     if (halt?.state === 'stopping' && now_?.at === halt.at && !out.runs.some(r => r.agent === 'stopping'))
       writeHaltIfSame(now_, { ...now_, state: 'paused' })
-    return { ...out, halt: halted()?.state }
+    // halt and its age come first, so every view of the board shows a pause at the top
+    return { halt: halted()?.state, haltAt: halted()?.at, ...out }
   } finally {
     release()
     // FACTORY_NO_KICK=1 (tests): a detached pass would recreate a removed home
@@ -13311,12 +13312,7 @@ async function flowData(name: string | undefined): Promise<{ def: Factory; runs:
 
 async function status(id: string | undefined, print: Print = l => console.log(l)) {
   const halt = halted()
-  if (halt && !id)
-    print(
-      halt.state === 'paused'
-        ? `PAUSED since ${clock(halt.at)}: ${Object.keys(halt.closed).length} worker(s) wait for factory resume`
-        : `STOPPING since ${clock(halt.at)}: workers are committing and going quiet`,
-    )
+  if (halt && !id) print(haltLine(halt, Date.now()))
   const stale = !id && managerStale(HOME, managerCommand([], ''))
   if (stale) print(stale)
   if (!id && process.env.FACTORY_IN_AX === '1' && process.env.FACTORY_AX_BACKUP_REMOTE) {
