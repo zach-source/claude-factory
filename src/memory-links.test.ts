@@ -1,7 +1,10 @@
 // claude-factory-eqxi: a symlink in the memory store is never read and a dream removes it
 import { expect, test } from 'bun:test'
 import {
+  closeSync,
+  constants,
   existsSync,
+  openSync,
   lstatSync,
   mkdirSync,
   readdirSync,
@@ -416,5 +419,37 @@ test('compact reads the logs strict: a link throws and the usage log stays', () 
   rmSync(join(dir, '.usage.jsonl'))
   symlinkSync(secret, join(dir, '.usage.jsonl'))
   expect(() => compact(dir, {})).toThrow(/ELOOP/)
+  rmSync(root, { recursive: true, force: true })
+})
+
+// a blocked openSync cannot stop in process, so each FIFO case runs in a child with a timeout
+const inChild = (script: string) => {
+  const p = Bun.spawnSync(
+    [
+      'bun',
+      '-e',
+      `import * as m from ${JSON.stringify(join(import.meta.dir, 'memory.ts'))};try{${script};console.log('ok')}catch(e){console.log(e.code)}`,
+    ],
+    { timeout: 5000 },
+  )
+  return { signal: p.signalCode ?? null, out: p.stdout.toString().trim() }
+}
+
+test('a writer at a FIFO throws at once and does not block (claude-factory-fkw4 R3)', () => {
+  const { root, dir } = linkStore()
+  expect(Bun.spawnSync(['mkfifo', join(dir, '.usage.jsonl')]).exitCode).toBe(0)
+  const a = inChild(`m.use(${JSON.stringify(dir)},['topic/a.md'],'helped')`)
+  expect(a.signal).toBeNull()
+  expect(a.out).toBe('ENXIO')
+  const fifo = join(dir, 'inbox', 'f.md')
+  expect(Bun.spawnSync(['mkfifo', fifo]).exitCode).toBe(0)
+  const reader = openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK)
+  try {
+    const b = inChild(`m.writeStore(${JSON.stringify(dir)},${JSON.stringify(fifo)},'x')`)
+    expect(b.signal).toBeNull()
+    expect(b.out).toBe('ENOTREG')
+  } finally {
+    closeSync(reader)
+  }
   rmSync(root, { recursive: true, force: true })
 })

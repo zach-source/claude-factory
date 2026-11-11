@@ -429,8 +429,11 @@ export const tryRead = (store: string, f: string): string | null => {
 }
 const put = (store: string, f: string, data: string, flags: number) =>
   inDir(store, f, name => {
-    const fd = openSync(name, flags | O_WRONLY | O_CREAT | O_NOFOLLOW, 0o666)
+    // O_NONBLOCK: a FIFO with no reader gives ENXIO, not a hang
+    const fd = openSync(name, flags | O_WRONLY | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0o666)
     try {
+      if (!fstatSync(fd).isFile())
+        throw Object.assign(new Error('not a regular file: ' + f), { code: 'ENOTREG' })
       writeFileSync(fd, data)
     } finally {
       closeSync(fd)
