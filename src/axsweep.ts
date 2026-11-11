@@ -17,6 +17,9 @@ export type SweepRun = {
   sub: string
 }
 
+// A run in one of these has no launch in progress: a new launch raises seq first (the `working` entry in machine.ts).
+const PARKED = new Set(['waiting', 'backoff', 'stuck'])
+
 const LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
 
 /**
@@ -39,7 +42,8 @@ export function parseNames(out: string): string[] {
  * the names to delete, sorted, at most SWEEP_CAP. Fail closed: a name goes only when all hold.
  * (1) it is not the manager's task. (2) it ends in `-<s>` and exactly one run's taskName(id, s) is it.
  * (3) s <= the run's seq (a higher number is a launch the state does not show yet). (4) the run is over,
- * or s < seq and the run's pane is not ax://<name> (an older attempt).
+ * or the run's pane is not ax://<name> and either s < seq (an older attempt) or the run is parked (sub-state
+ * waiting, backoff or stuck: no launch is in progress).
  */
 export function sweepNames(names: string[], runs: SweepRun[], manager: string): string[] {
   const picked = new Set<string>()
@@ -52,7 +56,7 @@ export function sweepNames(names: string[], runs: SweepRun[], manager: string): 
     if (owners.length !== 1) continue
     const r = owners[0]!
     if (s > r.seq) continue
-    if (r.over || (s < r.seq && r.pane !== `ax://${n}`)) picked.add(n)
+    if (r.over || (r.pane !== `ax://${n}` && (s < r.seq || PARKED.has(r.sub)))) picked.add(n)
   }
   return [...picked].sort().slice(0, SWEEP_CAP)
 }
