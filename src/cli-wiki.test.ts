@@ -865,8 +865,9 @@ test('953a a person add lifts only a delete that is its ancestor, in both parent
     put()
     git('add', p)
     by('main re-add', '2026-11-04T10:00:00+00:00')
-    if (order === 'y-into-main') git('merge', '-q', '--no-edit', 'y')
-    else (git('checkout', '-q', 'y'), git('merge', '-q', '--no-edit', 'main'))
+    const id = ['-c', 'user.name=p', '-c', 'user.email=person@acme.example']
+    if (order === 'y-into-main') git(...id, 'merge', '-q', '--no-edit', 'y')
+    else (git('checkout', '-q', 'y'), git(...id, 'merge', '-q', '--no-edit', 'main'))
     expect(git('ls-files').split('\n')).not.toContain(p)
     put()
     const r = 'solutions/2026-11/r.md'
