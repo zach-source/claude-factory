@@ -6048,7 +6048,29 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
   // a refused path that is still staged (an unstage that failed) must never reach a commit
   if (refused.length && wikiGit(dir, ['diff', '--cached', '--quiet', '--', ...refused]).code !== 0)
     return (wikiLog('wiki: unstage failed, nothing committed'), false)
-  const keep = entries.filter(e => !refused.includes(e.path))
+  let keep = entries.filter(e => !refused.includes(e.path))
+  if (refused.length) {
+    // a restore can undo the staged entry of another path (a file over a directory)
+    // keep only the entries that are still staged as listed
+    const again = wikiGit(dir, [
+      'diff',
+      '--cached',
+      '--raw',
+      '--no-renames',
+      '--no-abbrev',
+      '-z',
+      '--',
+      ...(paths ?? []),
+    ])
+    if (again.code !== 0) return (wikiLog('wiki: staged list failed, nothing committed'), false)
+    const f = again.out.toString().split('\0')
+    const now = new Set<string>()
+    for (let k = 0; k + 1 < f.length; k += 2) {
+      const [, mode, , sha, status] = f[k]!.split(' ')
+      now.add(`${mode} ${sha} ${status} ${f[k + 1]}`)
+    }
+    keep = keep.filter(e => now.has(`${e.mode} ${e.sha} ${e.status} ${e.path}`))
+  }
   if (!keep.length) return null
   // the commit is built on a private index with HEAD pinned: a page staged outside `paths` stays out of it
   const head = wikiGit(dir, ['rev-parse', '--verify', '-q', 'HEAD'])

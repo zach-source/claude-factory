@@ -942,6 +942,21 @@ test('cr8o a directory that becomes a page file is committed', () => {
   expect(files).not.toContain('x.md/y.md')
 })
 
+test('cr8o a refused file over a directory does not commit the directory delete', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  mkdirSync(join(wiki(), 'x.md'))
+  writeFileSync(join(wiki(), 'x.md', 'y.md'), page('topic', 'y'))
+  expect(commitPass('x').exitCode).toBe(0)
+  const base = commits()
+  rmSync(join(wiki(), 'x.md'), { recursive: true })
+  writeFileSync(join(wiki(), 'x.md'), `${page('topic', 'x')}${TOKEN}\n`)
+  expect(commitPass('x').exitCode).toBe(1)
+  expect(commits()).toBe(base)
+  expect(git('ls-tree', '-r', '--name-only', 'HEAD').split('\n')).toContain('x.md/y.md')
+  expect(git('diff', '--cached', '--name-only')).toBe('')
+})
+
 test('cr8o init does not commit a page a person staged', () => {
   setup()
   expect(factory(['wiki', 'init']).code).toBe(0)
