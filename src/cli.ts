@@ -13401,7 +13401,7 @@ async function wikiRefresh(dryRun: boolean): Promise<string[]> {
       }))
     files.set(
       `rigs/${rig.name}.md`,
-      renderRigPage(rig.name, mine, waitingIds, queues[rig.name] ?? [], shipped, now),
+      renderRigPage(rig.name, mine, waitingIds, queues[rig.name] ?? [], shipped, now, halted()),
     )
   }
   // an agent pass owns this worktree: a link or a non-regular file at a target would take a write outside it
