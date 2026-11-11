@@ -19,6 +19,7 @@ import {
   backupWanted,
   EXCLUDES,
   restore,
+  SCAN_MS,
   SECRETS,
   secretFile,
   type BackupCfg,
@@ -976,4 +977,33 @@ test('d289.27: a rewritten file (not an append) is scanned whole, and a secret i
   expect(backup(c, true).error).toBeUndefined()
   expect(biggest(g.scanned())).toBeGreaterThan(1_000_000)
   expect(pushedFile(r, 'home/metrics.jsonl')).not.toContain(TOKEN)
+})
+
+test('xpsys: the gitleaks limit is 1800 s by default and cfg.scanMs lowers it', () => {
+  expect(SCAN_MS).toBe(1_800_000)
+  const r = remote()
+  const ws = workspace()
+  const bin = join(tmp(), 'gitleaks')
+  writeFileSync(bin, `#!/bin/sh\nsleep 5\necho '[]'\n`, { mode: 0o755 })
+  const out = backup({ ...cfg(ws, r), gitleaks: bin, scanMs: 300 }, true)
+  expect(out.error).toBe('backup refused: gitleaks exit null')
+})
+
+test('xpsys: a second backup of one workspace skips while the first runs; a dead holder does not block', () => {
+  const r = remote()
+  const ws = workspace()
+  const bin = join(tmp(), 'gitleaks')
+  writeFileSync(bin, `#!/bin/sh\necho '[]'\n`, { mode: 0o755 })
+  const c = { ...cfg(ws, r), gitleaks: bin }
+  let inner: ReturnType<typeof backup> | undefined
+  // while the first backup holds its snapshot lock, a second one runs on the same workspace
+  backup(c, true, () => {
+    inner = backup(c, true)
+    return () => {}
+  })
+  expect(inner).toEqual({ skipped: 'lock' })
+  // a lock of a dead process is taken over
+  writeFileSync(join(ws, 'backup-run.lock'), '2147483646')
+  expect(backup(c, true).error).toBeUndefined()
+  expect(existsSync(join(ws, 'backup-run.lock'))).toBe(false)
 })
