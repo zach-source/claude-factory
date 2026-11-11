@@ -227,11 +227,9 @@ test('remove runs both deletes and returns the failure text, not a not-found', (
   expect(both).toContain('context "x" not found')
   rmSync(join(dir, 'axerr'))
   writeFileSync(join(dir, 'deltask'), NF_DEL_TASK.replaceAll('f-a-1', 'f-other'))
-  rmSync(join(dir, 'delws'))
   expect(ax.remove('f-a-1')).toContain('delete task:')
   rmSync(join(dir, 'deltask'))
   writeFileSync(join(dir, 'deltask'), 'forbidden')
-  rmSync(join(dir, 'delws'))
   expect(ax.remove('f-a-1')).toContain('forbidden')
   expect(logged().at(-1)).toContain('delete workspace f-a-1') // the second delete ran anyway
   writeFileSync(join(dir, 'deltask'), 'x'.repeat(500))
@@ -389,7 +387,7 @@ test('workspaceExists: true when ax has it, false when not found, and any other 
 test('workspaceExists: only the NotFound text for this workspace name is false', () => {
   expect(ax.workspaceExists('f-a-1')).toBe(false)
   const neg = NEG('workspace')
-  for (const e of [neg[0], neg[3], neg[4]]) {
+  for (const e of [neg[0]!, neg[3]!, neg[4]!]) {
     writeFileSync(join(dir, 'axerr'), e)
     expect(() => ax.workspaceExists('f-a-1')).toThrow(/^ax get workspace: /)
   }
@@ -2840,8 +2838,9 @@ test('remoteManager skips AX with no cluster and refuses a running manager', () 
       writeFileSync(join(dir, 'axerr'), 'Error: context "x" not found')
       expect(ax.remoteManager()).toBeUndefined()
       expect(warn).toHaveBeenCalledTimes(1)
-      expect(String(warn.mock.calls[0][0])).toContain('warning: AX unreachable, manager lease not checked:')
-      expect(String(warn.mock.calls[0][0])).toContain('context "x" not found')
+      const msg = String(warn.mock.calls[0]?.[0])
+      expect(msg).toContain('warning: AX unreachable, manager lease not checked:')
+      expect(msg).toContain('context "x" not found')
     } finally {
       warn.mockRestore()
     }
