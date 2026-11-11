@@ -13786,6 +13786,7 @@ export const corePort: Port = {
   abort: abortRun,
   screen: screenRun,
   mail: mailRun,
+  say: ax.say,
   chatModel: runModelAsync,
   chatRun: runApproved,
 }
