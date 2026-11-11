@@ -14,7 +14,7 @@ No repository CLAUDE.md, AGENTS.md, or CONTRIBUTING file exists in this checkout
 
 Extend each existing text-slot check with `some`, equality, and `startsWith`.
 Use `--summary-file=` for report and `--text-file=` for mail.
-Change only `src/cli.ts`, `src/report-summary-file.test.ts`, and `src/text-file-flags.test.ts` during implementation.
+Change only `src/cli.ts`, `src/client.ts`, `src/report-summary-file.test.ts`, `src/text-file-flags.test.ts`, and `src/client.test.ts` during implementation.
 Plan adds only this ADR. Release owns the changelog.
 
 The fail-closed rule applies to each argv token in the text portion of the command.
@@ -27,7 +27,7 @@ The CLI reads argv tokens, not shell syntax or another tool's input. No shell pa
 Text with a prefix before the flag substring remains text, including a single argv token with spaces before the substring.
 File contents retain current behavior, even when they contain flag text.
 
-Out of scope: generic equals-option support, other flags, path policy changes, replayable grammar, and server transport defects.
+Out of scope: generic equals-option support, other flags, path policy changes, replayable grammar, and other server transport defects. Server-mode mail gets the same refusal at `src/client.ts:122`.
 Do not change `memory add` production code. Add only its regression row.
 The related server-mode literal-text bead remains separate; this fix adds no second pass over expanded file contents.
 
