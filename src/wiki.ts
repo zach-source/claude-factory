@@ -174,6 +174,7 @@ export function renderRigPage(
   shipQueue: Bead[],
   merged: Merged[],
   now: number,
+  halt?: { state: 'stopping' | 'paused'; at: number } | null,
 ): string {
   const liveRows = rows.filter(live).sort((a, b) => a.createdAt - b.createdAt || cmp(a.id, b.id))
   const sum = (r: Row) => strip(r.last?.summary ?? '')
@@ -203,6 +204,7 @@ export function renderRigPage(
     '',
     `# ${rig}`,
     '',
+    ...(halt ? [`> The factory is ${halt.state} since ${stamp(halt.at)}.`, ''] : []),
     '> The factory makes this page again every 30 min. Do not edit it: an edit does not stay.',
     '',
     '## Waits on a person',

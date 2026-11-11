@@ -130,10 +130,17 @@ test('every exec and file read of a remote config passes on: machine', () => {
   expect(herdr.onOf({ cli: 'x', home: '/h' })).toBeUndefined()
 })
 
-test('the mod reads one snapshot and never ticks, patrols or takes the lease', () => {
-  expect(herdr.SNAPSHOT_WORDS).toEqual(['snapshot', '--views', 'board,decisions'])
+test('the mod reads snapshots and never ticks, patrols or takes the lease', () => {
+  expect(herdr.snapshotWords('board', 4000)).toEqual(['snapshot', '--views', 'board', '--max-age', '4000'])
+  expect(herdr.snapshotWords('decisions', 60000)).toEqual([
+    'snapshot',
+    '--views',
+    'decisions',
+    '--max-age',
+    '60000',
+  ])
   for (const w of ['tick', 'patrol', 'brief', 'review', 'pm'])
-    expect(herdr.SNAPSHOT_WORDS.includes(w)).toBe(false)
+    expect(herdr.snapshotWords('board', 1).includes(w)).toBe(false)
   expect(herdr.beatJobs).toBeUndefined()
   expect(herdr.STEPS).toBeUndefined()
 })
@@ -389,4 +396,23 @@ test('the board header names a refused manager codex key, and parseTick carries 
   )
   expect(res.managerCodexAuth).toEqual({ at: 1, text: 'x' })
   expect(herdr.parseTick(0, JSON.stringify({ runs: [], manager: [] }), '').managerCodexAuth).toBeNull()
+})
+
+test('the manager model and context use come from one core read and show in the header (claude-factory-62v95)', () => {
+  const c = { model: 'claude-fable-5-2', tokens: 55129, window: 200000, percent: 27.6 }
+  expect(herdr.managerContextText(c)).toBe('manager claude-fable-5-2 · 55.1k tokens · 27.6% of 200.0k')
+  expect(herdr.managerContextText(null)).toBe('')
+  expect(herdr.tokensText(950)).toBe('950')
+  expect(herdr.tokensText(1_200_000)).toBe('1.2M')
+  expect(herdr.snapshotWords('manager', 4000)).toEqual([
+    'snapshot',
+    '--views',
+    'manager',
+    '--max-age',
+    '4000',
+  ])
+  expect(herdr.parseContext(0, JSON.stringify({ views: { manager: c } }))).toEqual(c)
+  expect(herdr.parseContext(0, JSON.stringify({ views: { manager: null } }))).toBeNull()
+  expect(herdr.parseContext(1, '')).toBeNull()
+  expect(herdr.parseContext(0, 'nope')).toBeNull()
 })

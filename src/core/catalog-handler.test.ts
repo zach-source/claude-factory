@@ -55,6 +55,7 @@ const NAMES = [
   'guard.check',
   'lease.show',
   'mail.list',
+  'manager.context',
   'metrics.show',
   'plan.show',
   'prs.show',
