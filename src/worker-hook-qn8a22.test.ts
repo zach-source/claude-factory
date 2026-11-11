@@ -1,3 +1,4 @@
+import { stripLiveRunVars } from './worker-hook-test-env'
 // claude-factory-qn8a.22: the hook checks the paths of a codex apply_patch, and denies a shell apply_patch
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
@@ -13,6 +14,8 @@ import {
   applyPatchReason,
   denyReason,
 } from './worker-hook'
+
+stripLiveRunVars()
 
 let base: string
 let root: string

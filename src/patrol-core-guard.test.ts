@@ -28,5 +28,6 @@ test('the bd shim of a patrol refuses what bdWrite refuses and allows a read', (
   expect(patrolBdRefusal(['update', 'x-1', '--set-metadata', 'a=b'])).toContain('subagent')
   expect(patrolBdRefusal(['update', 'x-1', '--add-label', 'hold:x'])).toContain('subagent')
   expect(patrolBdRefusal(['close', 'x-1'])).toContain('subagent')
+  expect(patrolBdRefusal(['ready', '--claim'])).toContain('subagent')
   expect(patrolBdRefusal(['show', '$(id)'])).toBeUndefined() // quoted as one literal argument
 })

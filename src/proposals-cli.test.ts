@@ -46,6 +46,11 @@ test('factory proposals: list, install core, install a higher rung as a bead, re
   expect(readFileSync(join(mem, 'CORE.md'), 'utf8')).toBe('- an old line\n- Run prettier before a PR.\n')
   expect(Bun.spawnSync(['git', '-C', mem, 'log', '--format=%s']).stdout.toString()).toContain('proposal a')
 
+  const bare = run(['proposals', 'install', 'c', '--rig'])
+  expect(bare.code).not.toBe(0)
+  expect(bare.err).toContain('--rig needs a value')
+  expect(readFileSync(join(mem, 'CORE.md'), 'utf8')).toBe('- an old line\n- Run prettier before a PR.\n')
+
   const noRig = run(['proposals', 'install', 'b'])
   expect(noRig.code).not.toBe(0)
   expect(noRig.err).toContain('--rig')
