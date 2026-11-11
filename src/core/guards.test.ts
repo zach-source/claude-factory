@@ -172,8 +172,10 @@ test('server tools deny secret paths and confine writes to home text', () => {
     for (const [tool, input, cwd, h] of [
       ['Read', {}, home, home],
       ['Read', null, home, home],
+      ['Grep', 1, home, home],
       ['Edit', {}, home, home],
       ['Read', { file_path: 'a' }, undefined, home],
+      ['Read', { file_path: 'a' }, 'relative', home],
       ['Write', { file_path: 'text/a' }, home, undefined],
       ['Write', { file_path: 'text/a' }, home, 'relative'],
       ['Glob', {}, home, home],
