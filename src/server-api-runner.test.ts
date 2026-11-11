@@ -77,8 +77,7 @@ describe('cliRunner', () => {
   }
   const pidOf = (f: string) => (existsSync(f) ? Number(readFileSync(f, 'utf8')) : 0)
   const reap = (...pids: number[]) => {
-    for (const p of pids)
-      if (p && alive(p)) process.kill(p, 'SIGKILL')
+    for (const p of pids) if (p && alive(p)) process.kill(p, 'SIGKILL')
   }
   test('a child that ignores SIGTERM is killed and the call returns', async () => {
     env()

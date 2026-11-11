@@ -111,7 +111,7 @@ const cli = async (url: string, home: string, cmd: string, args: string[] = []) 
  * Bun's own TLS client is not a safe test client. In one process it can send a certificate other than the one named,
  * so a stranger row passes or fails by chance. An openssl child process has no such state.
  */
-const raw = async (port: number, who?: { cert: string; key: string }, headers = '') => {
+const raw = async (port: number, who?: { cert: string; key: string }, headers = '', timeoutMs = 5000) => {
   const p = Bun.spawn(
     [
       ...['openssl', 's_client', '-connect', `localhost:${port}`, '-servername', 'localhost'],
@@ -122,7 +122,7 @@ const raw = async (port: number, who?: { cert: string; key: string }, headers = 
       stdin: new Blob([`GET /v1/status HTTP/1.1\r\nHost: localhost\r\n${headers}Connection: close\r\n\r\n`]),
       stdout: 'pipe',
       stderr: 'ignore',
-      timeout: 5000,
+      timeout: timeoutMs,
     },
   )
   const out = await new Response(p.stdout).text()
@@ -237,6 +237,18 @@ const send = async (port: number, text: string) => {
     ms: performance.now() - start,
   }
 }
+describe('GET cap over mTLS', () => {
+  test('9 slow reads give eight 200 and one 503, then reads work', async () => {
+    const t = start(undefined, undefined, 3000)
+    const who = pair(A)
+    const answers = await Promise.all(Array.from({ length: 9 }, () => raw(t.s.clientPort!, who, '', 15000)))
+    expect(answers.filter(a => a === '200').length).toBe(8)
+    expect(answers.filter(a => a === '503').length).toBe(1)
+    expect(t.calls.length).toBe(8)
+    expect(await raw(t.s.clientPort!, who, '', 15000)).toBe('200')
+  }, 30000)
+})
+
 describe('refused handshakes are logged', () => {
   const plain = async (port: number) => {
     const c = connect(port, '127.0.0.1')

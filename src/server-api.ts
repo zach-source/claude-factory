@@ -175,13 +175,10 @@ export function cliRunner(
       let killTimer: ReturnType<typeof setTimeout> | undefined
       // After SIGKILL the call returns at once. A grandchild (bd, git) can hold the pipes open, so the output is not awaited.
       const killed = new Promise<RunResult>(res => {
-        killTimer = setTimeout(
-          () => {
-            proc.kill('SIGKILL')
-            res({ code: 137, out: '', err: '', timedOut: true })
-          },
-          timeoutMs + killMs,
-        )
+        killTimer = setTimeout(() => {
+          proc.kill('SIGKILL')
+          res({ code: 137, out: '', err: '', timedOut: true })
+        }, timeoutMs + killMs)
       })
       const timer = setTimeout(() => {
         timedOut = true
@@ -206,6 +203,7 @@ export function cliRunner(
 }
 
 const REFUSED_LOG_MS = 10_000
+const GET_MAX = 8
 const KEY = /^[A-Za-z0-9-]{8,128}$/
 const MAX_BODY = 128 * 1024
 const DAY = 24 * 3600_000
@@ -275,6 +273,9 @@ export function clientHandler(o: ClientOpts) {
   const storeFile = join(o.home, 'client-idempotency.json')
   const auditFile = join(o.home, 'client-actions.jsonl')
   let chain: Promise<unknown> = Promise.resolve()
+  // GET operations that wait for call(). The slot is free when call answers, also at its 504.
+  // ponytail: a hung read keeps its work after the 504 (no cancel). So 8 hung reads start in each callTimeoutMs. Upgrade path: an AbortSignal in the port.
+  let gets = 0
   // The ring of board changes. ponytail: volatile, 256 events, the ids restart with the process. Upgrade path: a durable log.
   let lastJson = 'null'
   let lastId = 0n
@@ -383,10 +384,14 @@ export function clientHandler(o: ClientOpts) {
     if (typeof q === 'string') return refuse(400, q)
     // ponytail: op.rights is not enforced. Every caller holds the person certificate, so every caller is the owner. Enforcement needs identity transport (aya5.6).
     if (op.route.method === 'GET') {
+      if (gets >= GET_MAX) return refuse(503, 'too many reads at once; retry')
+      gets++
       try {
         return await call(op, q)
       } catch (e) {
         return refuse(500, `internal error: ${String((e as Error)?.message ?? e).slice(0, 200)}`)
+      } finally {
+        gets--
       }
     }
 
