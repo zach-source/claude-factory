@@ -979,6 +979,66 @@ test('d289.27: a rewritten file (not an append) is scanned whole, and a secret i
   expect(pushedFile(r, 'home/metrics.jsonl')).not.toContain(TOKEN)
 })
 
+const K = 'wJalrXUtnFEMI' + 'K7MDENGbPxRfiCY' + 'EXAMPLEKEY' + 'zq'
+
+test('9u12: secretFile finds the new token shapes', () => {
+  expect(K.length).toBe(40)
+  const hit = [
+    'https://' + 'a'.repeat(24) + '@host/p',
+    'https://' + 'a'.repeat(20) + '@host/p',
+    'aws_secret_access_key = ' + K,
+    'AWS_SECRET_ACCESS_KEY=' + K,
+    'secret_access_key = "' + K + 'x'.repeat(24) + '"',
+    '"SecretAccessKey": "' + K + '"',
+    "aws_secret_access_key: '" + K + "'",
+    ['-----BEGIN PGP', 'PRIVATE KEY BLOCK-----'].join(' '),
+    ['-----END RSA', 'PRIVATE KEY-----'].join(' '),
+    'redis://:' + 'p'.repeat(12) + '@cache:6379',
+    ['gldt', 'a'.repeat(20)].join('-'),
+    ['glrt', 'a'.repeat(20)].join('-'),
+    ['glptt', 'a'.repeat(20)].join('-'),
+  ]
+  for (const s of hit) expect([s, secretFile(wrap(s))]).toEqual([s, true])
+})
+
+test('9u12: secretFile leaves the near misses', () => {
+  const miss = [
+    'ssh://git@host/repo',
+    'hg://hg@host/r',
+    'https://user@host',
+    'https://' + 'a'.repeat(19) + '@host',
+    'http://localhost:8080/a@b',
+    'https://registry.example:443/@scope/pkg',
+    'aws_secret_access_key = ' + K.slice(0, 39) + ' ',
+    'aws_secret_access_key = <your-key>',
+    'AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}',
+    K,
+    '-----BEGIN PUBLIC KEY-----',
+    '-----END CERTIFICATE-----',
+    '-----END PGP PUBLIC KEY BLOCK-----',
+    'http://:8080/x',
+    'http://[::1]:8080/a',
+    'glxx-' + 'a'.repeat(20),
+    'gldt-' + 'a'.repeat(19),
+  ]
+  for (const s of miss) expect([s, secretFile(wrap(s))]).toEqual([s, false])
+})
+
+test('9u12: the new shapes return in under 1 s on 1 MiB', () => {
+  const inputs = [
+    '://'.repeat(349_526),
+    '://a:'.repeat(209_716),
+    'secret_access_key='.repeat(58_255),
+    ('gldt-' + 'a'.repeat(19) + ' ').repeat(41_944),
+    '-----END '.repeat(116_509),
+  ]
+  for (const s of inputs) {
+    const r = timed(Buffer.from(s))
+    expect(r.got).toBe(false)
+    expect(r.ms).toBeLessThan(1000)
+  }
+})
+
 test('xpsys: the gitleaks limit is 1800 s by default and cfg.scanMs lowers it', () => {
   expect(SCAN_MS).toBe(1_800_000)
   const r = remote()
