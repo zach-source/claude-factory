@@ -250,6 +250,8 @@ describe('moved reads run in process (AC1)', () => {
     expect(bridged).toEqual([
       'backlog.queue',
       'factory.halt',
+      'memory.add',
+      'memory.search',
       'rigs.adopt',
       'rigs.set',
       'rigs.unhold',
