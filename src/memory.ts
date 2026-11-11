@@ -74,12 +74,24 @@ const SAME = 0.88
 const FLOOR = 0.6
 const SPREAD = 0.1
 
+/** Note.rig of a note whose rig declaration is ambiguous: no rig equals it, and rank() and snapshot() refuse it. */
+export const INVALID_RIG = '\0invalid-rig'
+const RIG_LIKE = /^[ \t]*rig[ \t]*:/i
+
+/**
+ * Read a short note. The parser input drops one BOM and turns CRLF into LF. A rig declaration must be
+ * unique and canonical (`rig: <value>` at column zero). Without a valid header every rig-like line counts.
+ * Any other case gives INVALID_RIG, so a parse failure never turns a note into a shared note.
+ */
 export const parse = (path: string, text: string): Note => {
-  const m = /^---\n([\s\S]*?)\n---\n?/.exec(text)
+  const src = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
+  const m = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(src)
   const meta: Record<string, string> = Object.fromEntries(
     [...(m?.[1] ?? '').matchAll(/^(\w+):[ \t]*(.*)$/gm)].map(([, k, v]) => [k, v]),
   )
-  const body = text.slice(m?.[0].length ?? 0).trim()
+  const decl = (m?.[1] ?? src).split('\n').filter(l => RIG_LIKE.test(l))
+  if (decl.length > 1 || (decl.length === 1 && !(m && /^rig:[ \t]*\S/.test(decl[0])))) meta.rig = INVALID_RIG
+  const body = src.slice(m?.[0].length ?? 0).trim()
   return {
     path,
     summary: meta.summary ?? body.split('\n')[0] ?? '',
@@ -525,7 +537,7 @@ export const rank = (
   act?: (n: Note) => number,
 ) =>
   notes
-    .filter(n => !n.rig || !rig || n.rig === rig)
+    .filter(n => n.rig !== INVALID_RIG && (!n.rig || !rig || n.rig === rig))
     .map(n => {
       const own = dot(vec(n), query)
       const t = topicVec(topicOf(n))
@@ -586,7 +598,7 @@ export const MEMORY_SNAPSHOT_MAX = 8 * 1024 * 1024
  */
 export function snapshot(dir: string, rig: string | undefined, out: string): { bytes: number } | null {
   if (!existsSync(dir)) return null
-  const keep = (r?: string) => !r || r === rig
+  const keep = (r?: string) => r !== INVALID_RIG && (!r || r === rig)
   const stage = mkdtempSync(`${out}.stage-`)
   try {
     const core = join(dir, 'CORE.md')
