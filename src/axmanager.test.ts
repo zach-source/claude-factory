@@ -106,6 +106,7 @@ test('managerEgress: an https AX server gets the AX_AUTH key, a Dolt remote its 
     ax.OPENAI_RULE,
     ax.CODEX_CHATGPT_RULE,
     ax.BUILDER_RULE,
+    ax.GHCR_TOKEN_RULE,
   ])
 })
 
@@ -369,4 +370,14 @@ test('managerEgress gives the manager the OpenAI and Codex ChatGPT rules, as nam
   expect(rules).toContainEqual(ax.CODEX_CHATGPT_RULE)
   expect(ax.CODEX_CHATGPT_RULE.pathPrefixes).toEqual(['/backend-api/codex/'])
   expect(JSON.stringify(rules)).not.toMatch(/sk-|eyJ/)
+})
+
+test('managerEgress lets the VM fetch a ghcr.io token: the gateway adds Basic, on /token only', () => {
+  expect(ax.managerEgress({})).toContainEqual({
+    hosts: ['ghcr.io'],
+    pathPrefixes: ['/token'],
+    key: 'GITHUB_BASIC_MANAGER',
+    header: 'Authorization',
+    prefix: 'Basic ',
+  })
 })
