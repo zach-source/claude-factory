@@ -1,4 +1,5 @@
-import { expect, mock, test } from 'bun:test'
+import { expect, mock, spyOn, test } from 'bun:test'
+import * as tokenGuard from '../token-guard'
 import { readFileSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
 import { rmQuiet } from '../home-guard'
 import { tmpdir } from 'node:os'
@@ -120,6 +121,16 @@ test('server Bash accepts only literal commands and safe paths', () => {
     expect(serverBashReason('factory status', 'relative', '/cli')).toBe(SECRET_PATH_REASON)
     expect(serverBashReason('factory status', join(cwd, 'loop'), '/cli')).toBe(SECRET_PATH_REASON)
     expect(serverBashReason('factory status', undefined, '/cli')).toBe(SECRET_PATH_REASON)
+    const real = spyOn(tokenGuard, 'realPath').mockReturnValue(cwd)
+    try {
+      run.mockClear()
+      expect(serverBashReason('factory mail r1 build /etc/factory/key', cwd, '/cli', run)).toBe(
+        SECRET_PATH_REASON,
+      )
+      expect(run).toHaveBeenCalledTimes(0)
+    } finally {
+      real.mockRestore()
+    }
   } finally {
     rmQuiet(cwd, { recursive: true, force: true })
   }
