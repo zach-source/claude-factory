@@ -952,6 +952,8 @@ function readTextFile(flag: string, path: string): string {
   return text
 }
 
+const UNSAFE_TEXT_UNICODE = /[\u202a-\u202e\u2066-\u2069\u2028\u2029]/u
+
 /**
  * claude-factory-2z48: untrusted text (a bead, a Linear issue) reaches a verb by file, never in a shell argument.
  * The file must sit inside <FACTORY_HOME>/text/, or inside the real .scratch/ folder (not a symlink) of the git toplevel, and only when the cwd
@@ -959,7 +961,7 @@ function readTextFile(flag: string, path: string): string {
  * ponytail: the verb does not delete the file, so text/ grows by one small file per filing. Upgrade: unlink after
  * success, or a gc pass.
  */
-function textFileArg(flag: string, path: string): string {
+function textFileArg(flag: string, path: string, checkUnsafeUnicode = false): string {
   const dir = join(HOME, 'text')
   mkdirSync(dir, { recursive: true })
   let real: string
@@ -983,12 +985,14 @@ function textFileArg(flag: string, path: string): string {
     return fail(
       `${flag} ${path} is outside ${dir} and the .scratch/ of the git worktree: write the text there first`,
     )
-  return readTextFile(flag, real).trimEnd()
+  const text = readTextFile(flag, real)
+  if (checkUnsafeUnicode && UNSAFE_TEXT_UNICODE.test(text)) refuseControlChar(flag, text)
+  return text.trimEnd()
 }
 
-/** claude-factory-p1j6: fail on a Unicode Cc character (C0, DEL, C1) in untrusted text. A multiline field (a description) may keep newline and tab. The error names the code point, never the raw character. */
+/** Refuse Cc, U+202A-U+202E, U+2066-U+2069, U+2028, and U+2029. Descriptions can keep LF and tab. Errors name the code point. */
 function refuseControlChar(field: string, text: string, multiline = false) {
-  const m = (multiline ? /[^\P{Cc}\n\t]/u : /\p{Cc}/u).exec(text)
+  const m = UNSAFE_TEXT_UNICODE.exec(text) ?? (multiline ? /[^\P{Cc}\n\t]/u : /\p{Cc}/u).exec(text)
   if (m)
     fail(
       `${field} has the control character U+${m[0].charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')} at index ${m.index}: remove it`,
@@ -12345,7 +12349,7 @@ function fileElsewhere(args: string[]) {
   for (const k of ['--title', '--description']) {
     const file = flags.get(`${k}-file`)
     if (file === undefined) continue
-    const text = textFileArg(`${k}-file`, file)
+    const text = textFileArg(`${k}-file`, file, true)
     flags.set(k, text)
   }
   refuseControlChar('title', flags.get('--title')!)
@@ -14050,9 +14054,7 @@ if (queued) {
 if (import.meta.main && !outboxCmd && client.serverMode(process.env)) {
   let sent: number | null
   try {
-    const remoteArgs = cmd === 'mail' ? fileArgs('mail', args) : args
-    if (cmd === 'mail' && args[2] === '--text-file') remoteArgs.splice(2, 0, '--')
-    sent = await client.main(cmd, remoteArgs, process.env)
+    sent = await client.main(cmd, args, process.env, undefined, undefined, a => fileArgs('mail', a))
   } catch (e) {
     console.error((e as Error).message)
     process.exit(1)
@@ -15089,7 +15091,7 @@ if (import.meta.main && !outboxCmd)
           }
           const isOwn = /^own:/.test(key!)
           if (!files.has('--question-file') || (!isOwn && !files.has('--options-file'))) fail(usage)
-          const read = (k: string) => (files.has(k) ? textFileArg(k, files.get(k)!) : undefined)
+          const read = (k: string) => (files.has(k) ? textFileArg(k, files.get(k)!, true) : undefined)
           // an own: key ignores --options-file, as the positional form does: do not read it
           decisionsPropose(
             key!,
