@@ -166,6 +166,59 @@ test('applyRigChange keeps key order and drops unset keys; redactRig hides secre
   })
 })
 
+test('3wjn AC1 secret key class', () => {
+  const keys = ['GITLAB_PAT', 'NPM_AUTH', 'DB_PASS', 'GH_CREDENTIALS', 'PRIVATE', 'CERT', 'pat', 'cErT']
+  keys.push('A_TOKEN', 'N_SECRET', 'api_key', 'DB_PASSWORD', 'PATH', 'COMPAT', 'AUTHOR')
+  const plain = Object.fromEntries(keys.map(k => [k, 'plain-value']))
+  const hidden = Object.fromEntries(keys.map(k => [k, '<hidden>']))
+  const red = redactRig({ env: { ...plain, OK: 'fine' }, params: { ...plain, base_branch: 'main' } })
+  expect(red as unknown).toEqual({
+    env: { ...hidden, OK: 'fine' },
+    params: { ...hidden, base_branch: 'main' },
+  })
+})
+
+test('3wjn AC2 nested secret keys', () => {
+  const sub = {
+    ok: 'fine',
+    s: { INNER_TOKEN: 'plain', ok: 1 },
+    arr: [{ pat: 'plain', ok: 'x' }, 'safe'],
+    PRIVATE: { a: 'b' },
+    CERT: ['x'],
+    N_KEY: 5,
+    NULL_PASS: null,
+    S_AUTH: 'plain',
+  }
+  const want = {
+    ok: 'fine',
+    s: { INNER_TOKEN: '<hidden>', ok: 1 },
+    arr: [{ pat: '<hidden>', ok: 'x' }, 'safe'],
+    PRIVATE: '<hidden>',
+    CERT: '<hidden>',
+    N_KEY: '<hidden>',
+    NULL_PASS: '<hidden>',
+    S_AUTH: '<hidden>',
+  }
+  expect(redactRig({ env: sub, params: sub }) as unknown).toEqual({ env: want, params: want })
+})
+
+test('3wjn AC3 redaction boundaries', () => {
+  const input = {
+    name: 'x',
+    maxRuns: 3,
+    extra: { PRIVATE: 'plain', list: [1, 'a'] },
+    egress: [{ hosts: ['h'], key: 'VAULT_KEY' }],
+    env: { A: 'b' },
+  }
+  const copy = structuredClone(input)
+  expect(redactRig(input) as unknown).toEqual(copy)
+  expect(input).toEqual(copy)
+  const nested = { env: { MY_TOKEN: { deep: 'v' }, A: 'b' } }
+  const nc = structuredClone(nested)
+  redactRig(nested)
+  expect(nested).toEqual(nc)
+})
+
 test('e0qu AC1 stale temp mode: rigs.json ends with mode 0600', () => {
   const tmp = `${file}.tmp`
   writeFileSync(tmp, 'stale')
