@@ -441,3 +441,130 @@ describe('qn8a.21.19 a quoted or escaped brace inside a list', () => {
     `tee .claude/{settings.local.json,{}`,
   ])('allows %s', c => expect(bash(c)).toBeUndefined())
 })
+
+describe('qn8a.122 bounded worker cache copy', () => {
+  const MC = '/node_modules/@huggingface/transformers/.cache'
+  type Fx = { root: string; hd: string }
+  const A: Fx = { root: '/workspace/w/repo', hd: '/opt/factory' }
+  const B: Fx = { root: ROOT, hd: H }
+  const run = (c: string, f = B) => hook.denyReason(c, f.root, undefined, { cwd: f.root, hookDir: f.hd })
+  const cp = (f: Fx) => `cp -R ${f.hd}${MC} ${f.root}${MC}`
+  const S = `${H}${MC}`
+  const D = `${ROOT}${MC}`
+
+  test.each([
+    [cp(A), A],
+    [cp(B), B],
+    [`cp -R '${A.hd}${MC}' '${A.root}${MC}'`, A],
+    [`cp -R "${B.hd}${MC}" "${B.root}${MC}"`, B],
+    [`\\${cp(A)}`, A],
+    [`'cp' -R ${B.hd}${MC} ${B.root}${MC}`, B],
+    [`(${cp(B)})`, B],
+    [`${cp(B)} &`, B],
+  ])('allows the cache copy %s', (c, f) => expect(run(c, f)).toBeUndefined())
+
+  test.each([
+    `cp -R ${D} ${S}`,
+    `cp -R ${H}/src ${D}`,
+    `cp -R ${H}/node_modules ${D}`,
+    `cp -R ${S}`,
+    `cp -R ${S} ${D} x`,
+    `cp ${S} ${D}`,
+    `cp -t ${D} ${S}`,
+    `cp -R -t ${D} ${S}`,
+    `cp -R --target-directory ${D} ${S}`,
+    `cp -R --target-directory=${D} ${S}`,
+    `cp -T ${S} ${D}`,
+    `cp -R -T ${S} ${D}`,
+    `cp -R --backup ${S} ${D}`,
+    `cp -R -- ${S} ${D}`,
+    `cp -RL ${S} ${D}`,
+    `cp -r ${S} ${D}`,
+    `cp -a ${S} ${D}`,
+    `mv ${S} ${D}`,
+    `ln -s ${S} ${D}`,
+    `rsync -a ${S} ${D}`,
+    `gcp -R ${S} ${D}`,
+    `busybox cp -R ${S} ${D}`,
+    `env cp -R ${S} ${D}`,
+    `command cp -R ${S} ${D}`,
+    `/bin/cp -R ${S} ${D}`,
+    `sudo cp -R ${S} ${D}`,
+    `cp -R ${H}/node_modules/{@huggingface/transformers/.cache,x} ${D}`,
+    `cp -R ${H}/node_modules/@huggingface/transformers/.c$X ${D}`,
+    `cp -R $(echo ${S}) ${D}`,
+    `cp -R ${H}/node_modules/@huggingface/../@huggingface/transformers/.cache ${D}`,
+    `cp -R ${S}/ ${D}`,
+    `cp -R ${H}/node_modules/@HuggingFace/transformers/.cache ${D}`,
+    `cp -R ${S} ${D}/`,
+    `cp -R ${S} ${D}*`,
+    `cp -R ${S} ${ROOT}${MC}/../../../.claude`,
+    `cp -R ${S} ${ROOT}${MC}/../../../../.git`,
+    `cp -R ${S} /w/other${MC}`,
+    `cp -R ${S} node_modules/@huggingface/transformers/.cache`,
+    `${cp(B)} && echo hi`,
+    `${cp(B)}; echo hi`,
+    `${cp(B)} | cat`,
+    `${cp(B)} > ${H}/src/cut.ts`,
+    `${cp(B)} 2>&1`,
+    `alias cp='echo'; ${cp(B)}`,
+  ])('denies %s', c => expect(run(c)).toBeDefined())
+
+  test('denies a root with a trailing slash', () =>
+    expect(
+      hook.denyReason(`cp -R ${H}${MC} ${ROOT}/${MC}`, `${ROOT}/`, undefined, { cwd: ROOT, hookDir: H }),
+    ).toBeDefined())
+  test('denies a root with a space', () =>
+    expect(run(`cp -R ${H}${MC} /w/a b${MC}`, { root: '/w/a b', hd: H })).toBeDefined())
+  test('denies a hookDir with a plus', () =>
+    expect(run(`cp -R /f/a+b${MC} ${D}`, { root: ROOT, hd: '/f/a+b' })).toBeDefined())
+  test('keeps allowing the cache copy when root equals hookDir', () =>
+    expect(run(`cp -R ${H}${MC} ${H}${MC}`, { root: H, hd: H })).toBeUndefined())
+  test('keeps allowing ordinary rows', () => {
+    expect(run(`cp -R x .scratch/y`)).toBeUndefined()
+    expect(run(`cat ${H}/src/worker-hook.ts`)).toBeUndefined()
+  })
+
+  test.each(['parent', 'leaf'])('denies a %s symlink from the destination into the hook source', kind => {
+    const d = mkdtempSync(join(tmpdir(), 'qn122-'))
+    try {
+      const hd = join(d, 'fac')
+      const rt = join(d, 'root')
+      mkdirSync(join(hd, 'src'), { recursive: true })
+      mkdirSync(join(hd, 'node_modules', '@huggingface', 'transformers', '.cache'), { recursive: true })
+      const par = join(rt, 'node_modules', '@huggingface')
+      mkdirSync(kind === 'parent' ? join(rt, 'node_modules') : join(par, 'transformers'), { recursive: true })
+      if (kind === 'parent') symlinkSync(join(hd, 'src'), par)
+      else symlinkSync(join(hd, 'src'), join(par, 'transformers', '.cache'))
+      const c = `cp -R ${hd}${MC} ${rt}${MC}`
+      expect(hook.denyReason(c, rt, undefined, { cwd: rt, hookDir: hd })).toBeDefined()
+    } finally {
+      rmSync(d, { recursive: true })
+    }
+  })
+
+  const prot = (f: Fx) => [
+    f.hd,
+    '/opt',
+    `${f.hd}/src`,
+    `${f.hd}/node_modules`,
+    `${f.hd}/node_modules/@huggingface`,
+    `${f.hd}/package.json`,
+    `${f.root}/.claude`,
+    `${f.root}/.claude/settings.json`,
+    `${f.root}/.claude/settings.local.json`,
+    `${f.root}/.cursor`,
+    `${f.root}/.cursor/hooks.json`,
+    `${f.root}/.grok`,
+    `${f.root}/.git`,
+    `${f.root}/.git/config`,
+    `${f.hd}/shell-snapshots`,
+    `${f.hd}/rigs.json`,
+    `${f.hd}/worker-settings.json`,
+    `${f.hd}/inbox.jsonl`,
+    `${f.hd}/state.json`,
+  ]
+  test.each(prot(A))('still denies a cache source copy into %s', p =>
+    expect(run(`cp -R ${A.hd}${MC} ${p}`, A)).toBeDefined(),
+  )
+})
