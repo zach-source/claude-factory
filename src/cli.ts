@@ -13865,10 +13865,12 @@ if (import.meta.main && !outboxCmd)
       }
       case 'beads':
         refuseWorker('beads')
+        lease()
         await beadsPass()
         break
       case 'watch':
         refuseWorker('watch')
+        lease()
         await watchPass()
         break
       case 'sync':
@@ -15449,6 +15451,7 @@ if (import.meta.main && !outboxCmd)
       }
       case 'sweep': {
         refuseWorker('sweep', true)
+        lease()
         const release = hold('sweeps.lock')
         if (!release) {
           console.log('a sweep pass is already running: skipped this one')

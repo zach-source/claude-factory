@@ -296,3 +296,38 @@ test("AC3: a pass keeps a working run's task at its own seq with no pane", () =>
   pass()
   expect(deletes()).toEqual([])
 })
+
+for (const verb of ['beads', 'watch', 'sweep']) {
+  test(`claude-factory-x5ms: factory ${verb} refuses while the AX manager task lives, with no bd or ax write`, () => {
+    const { doneId } = setup()
+    const bdLog = join(dir, 'bd.log')
+    script('bd', [
+      `echo "$*" >> "${bdLog}"`,
+      'case "$1" in',
+      "  config) printf '%s' 'acme';;",
+      "  ready|list|children) printf '%s' '[]';;",
+      '  *) exit 0;;',
+      'esac',
+    ])
+    script('ax', [
+      `echo "$*" >> "${join(dir, 'calls.log')}"`,
+      'case "$*" in',
+      `  *"get task f-manager") printf '  phase: Running\\n';;`,
+      '  *) exit 1;;',
+      'esac',
+    ])
+    writeFileSync(join(dir, 'tasks.txt'), table('NAME ATESPACE PHASE', [taskName(doneId, 16)]))
+    rmSync(join(home(), 'ax-sweep.stamp'), { force: true })
+    const r = factory([verb], { FACTORY_AX_CONTEXT: 'acme' })
+    expect(r.code).not.toBe(0)
+    expect(r.err).toContain('the factory manager runs in AX task f-manager')
+    expect(calls()).toEqual(['--context acme -a factory get task f-manager'])
+    const writes = existsSync(bdLog)
+      ? readFileSync(bdLog, 'utf8')
+          .split('\n')
+          .filter(l => /^(update|close|create|comment|label|dolt push|set-state)/.test(l))
+      : []
+    expect(writes).toEqual([])
+    expect(existsSync(join(home(), 'ax-sweep.stamp'))).toBe(false)
+  })
+}
