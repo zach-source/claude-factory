@@ -100,6 +100,7 @@ export type ServeOpts = {
     key: string
     ca: string
     handle: (req: Request, ip: string) => Promise<Response>
+    log?: (line: string) => void
     /** idle limit while the request is read, in ms; default 30000 */
     idleMs?: number
   }
@@ -110,6 +111,7 @@ export type ServeOpts = {
     key: string
     handle: (req: Request, ip: string) => Promise<Response>
     idleMs?: number
+    log?: (line: string) => void
   }
 }
 
@@ -389,6 +391,7 @@ export function main(
     key: need(f.client.key),
     ca: need(f.client.ca),
     handle,
+    log,
   }
   const worker = f.client &&
     f.worker && {
@@ -402,6 +405,7 @@ export function main(
         held: () => s?.held() ?? false,
         log,
       }),
+      log,
     }
   const b = serverBackupCfg(process.env, home)
   s = serve({

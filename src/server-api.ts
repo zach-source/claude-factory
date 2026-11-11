@@ -191,6 +191,7 @@ export function cliRunner(
   }
 }
 
+const REFUSED_LOG_MS = 10_000
 const KEY = /^[A-Za-z0-9-]{8,128}$/
 const MAX_BODY = 128 * 1024
 const DAY = 24 * 3600_000
@@ -880,10 +881,12 @@ export function clientListener(o: {
   ca: string
   handle: (req: Request, ip: string) => Promise<Response>
   idleMs?: number
+  log?: (line: string) => void
 }) {
   return listen({
     port: o.port,
     label: 'client',
+    log: o.log,
     tls: {
       cert: o.cert,
       key: o.key,
@@ -908,10 +911,12 @@ export function workerListener(o: {
   key: string
   handle: (req: Request, ip: string) => Promise<Response>
   idleMs?: number
+  log?: (line: string) => void
 }) {
   return listen({
     port: o.port,
     label: 'worker',
+    log: o.log,
     tls: { cert: o.cert, key: o.key, minVersion: 'TLSv1.2' },
     authorize: () => true,
     handle: o.handle,
@@ -926,15 +931,35 @@ function listen(o: {
   authorize: (s: TLSSocket) => boolean
   handle: (req: Request, ip: string) => Promise<Response>
   idleMs: number
+  log?: (line: string) => void
 }) {
+  // a fixed window: the first refusal writes at once, later ones in the window only count
+  let last = -Infinity
+  let skipped = 0
+  const refused = (ip: string | undefined, why: string) => {
+    const now = Date.now()
+    if (now - last < REFUSED_LOG_MS) {
+      skipped++
+      return
+    }
+    last = now
+    const more = skipped > 0 ? ` (${skipped} more not logged)` : ''
+    skipped = 0
+    o.log?.(`${o.label} handshake refused from ${ip ?? 'unknown'}: ${why.slice(0, 200)}${more}`)
+  }
   const open = new Set<Socket>()
   const srv = createTlsServer(o.tls, sock => {
-    if (!o.authorize(sock)) return sock.destroy()
+    if (!o.authorize(sock)) {
+      refused(sock.remoteAddress, String(sock.authorizationError ?? 'not authorized'))
+      return sock.destroy()
+    }
     open.add(sock)
     sock.on('close', () => open.delete(sock))
     serveSocket(sock, o.handle, o.idleMs)
   })
-  srv.on('tlsClientError', () => {})
+  srv.on('tlsClientError', (err, s) =>
+    refused(s?.remoteAddress, (err as NodeJS.ErrnoException).code ?? err.message),
+  )
   srv.on('error', () => {})
   srv.listen(o.port)
   const addr = srv.address()

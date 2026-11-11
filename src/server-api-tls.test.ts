@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
+import { connect } from 'node:net'
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -39,6 +40,7 @@ const laptop = (who: string, pin: string) => {
 
 const start = (tick: () => unknown = () => ({ runs: ['r1'] }), idleMs?: number, delayMs = 0) => {
   const calls: string[][] = []
+  const logs: string[] = []
   const run = async (argv: string[]): Promise<RunResult> => {
     calls.push(argv)
     if (delayMs) await Bun.sleep(delayMs)
@@ -85,10 +87,11 @@ const start = (tick: () => unknown = () => ({ runs: ['r1'] }), idleMs?: number, 
       ca: read(A, 'ca.crt'),
       handle,
       idleMs,
+      log: l => logs.push(l),
     },
   })
   stops.push(() => s.stop())
-  return { s, calls, url: `https://localhost:${s.clientPort}` }
+  return { s, calls, logs, url: `https://localhost:${s.clientPort}` }
 }
 
 // Bun pools connections by host: a fresh connection each call keeps one test from riding on the last test's session.
@@ -234,6 +237,93 @@ const send = async (port: number, text: string) => {
     ms: performance.now() - start,
   }
 }
+describe('refused handshakes are logged', () => {
+  const plain = async (port: number) => {
+    const c = connect(port, '127.0.0.1')
+    c.on('error', () => {})
+    try {
+      await new Promise<void>(r => c.once('connect', () => r()))
+      c.write('GET / HTTP/1.1\r\n\r\n')
+      await Bun.sleep(300)
+    } finally {
+      c.destroy()
+    }
+  }
+  const until = async (f: () => boolean) => {
+    for (let i = 0; i < 40 && !f(); i++) await Bun.sleep(50)
+  }
+  test('a cert from the second CA logs one line', async () => {
+    const t = start()
+    await raw(t.s.clientPort!, pair(B))
+    expect(t.logs.length).toBe(1)
+    expect(t.logs[0]).toMatch(/^client handshake refused from \S+: UNABLE_TO_VERIFY_LEAF_SIGNATURE$/)
+    expect(t.calls.length).toBe(0)
+  })
+  test('the server cert as client cert logs INVALID_PURPOSE', async () => {
+    const t = start()
+    await raw(t.s.clientPort!, pair(A, 'server'))
+    expect(t.logs.length).toBe(1)
+    expect(t.logs[0]).toContain('INVALID_PURPOSE')
+    expect(t.calls.length).toBe(0)
+  })
+  test('no client cert logs one line', async () => {
+    const t = start()
+    await raw(t.s.clientPort!)
+    expect(t.logs.length).toBe(1)
+    expect(t.logs[0]).toMatch(/^client handshake refused from \S+: \S+/)
+    expect(t.calls.length).toBe(0)
+  })
+  test('a plain TCP request logs ERR_SSL_HTTP_REQUEST', async () => {
+    const t = start()
+    await plain(t.s.clientPort!)
+    await until(() => t.logs.length > 0)
+    expect(t.logs.length).toBe(1)
+    expect(t.logs[0]).toContain('ERR_SSL_HTTP_REQUEST')
+  })
+  test('the worker listener uses the worker label', async () => {
+    const logs: string[] = []
+    const calls: string[] = []
+    const s = serve({
+      home: tmp(),
+      port: 0,
+      everyMs: 50,
+      leaseMs: 1000,
+      tick: () => ({ runs: [] }),
+      log: () => {},
+      worker: {
+        port: 0,
+        cert: read(A, 'server.crt'),
+        key: read(A, 'server.key'),
+        handle: async () => {
+          calls.push('x')
+          return new Response('ok')
+        },
+        log: l => logs.push(l),
+      },
+    })
+    stops.push(() => s.stop())
+    await plain(s.workerPort!)
+    await until(() => logs.length > 0)
+    expect(logs.length).toBe(1)
+    expect(logs[0]).toMatch(/^worker handshake refused from \S+: ERR_SSL_HTTP_REQUEST$/)
+    expect(calls.length).toBe(0)
+  })
+  test('a person cert logs nothing', async () => {
+    const t = start()
+    expect(await raw(t.s.clientPort!, pair(A))).toBe('200')
+    expect(t.logs.filter(l => l.includes('handshake refused'))).toEqual([])
+  })
+  test('30 immediate refusals write a rate limited log', async () => {
+    const t = start()
+    const t0 = performance.now()
+    await Promise.all(Array.from({ length: 30 }, () => raw(t.s.clientPort!, pair(B))))
+    const ms = performance.now() - t0
+    expect(t.calls.length).toBe(0)
+    expect(t.logs.length).toBeGreaterThanOrEqual(1)
+    expect(t.logs.length).toBeLessThanOrEqual(Math.ceil(ms / 10000) + 1)
+  })
+})
+
 describe('request grammar of the client listener', () => {
   const rows: [string, string, string][] = [
     ['chunked body', 'GET /v1/prs HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n', '400'],
