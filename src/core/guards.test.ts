@@ -17,6 +17,7 @@ test('server Bash accepts only literal commands and safe paths', () => {
     writeFileSync(join(cwd, 'source'), '')
     symlinkSync('/etc', join(cwd, 'link'))
     symlinkSync('loop', join(cwd, 'loop'))
+    symlinkSync('absent', join(cwd, 'dangling'))
     const denied = [
       'printenv AX_AUTH_TOKEN',
       'bun x.ts',
@@ -36,6 +37,12 @@ test('server Bash accepts only literal commands and safe paths', () => {
       'factory start source r g',
       'factory queue repo',
       'factory queue ../x',
+      'factory queue widget extra',
+      'factory queue dangling',
+      'factory start dangling widget',
+      'factory start lifecycle dangling',
+      'factory start lifecycle@ widget',
+      'factory start lifecycle@bad.name widget',
       'factory start',
       'cat status',
       'factory',
