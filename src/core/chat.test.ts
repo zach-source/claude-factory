@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ModelCall, ModelResult } from '../once'
-import { CLI, conversationFile, guardHook, queue, send, show } from './chat'
+import { CLI, conversationFile, guardHook, queue, runApproved, send, show } from './chat'
 import type { Ctx, Env, Port } from './catalog'
 import { check } from './guards'
 
@@ -34,10 +34,14 @@ const fakeModel = (next: (c: ModelCall, n: number) => Promise<ModelResult> | Mod
   return { calls, chatModel }
 }
 
-const ctxOf = (chatModel: Port['chatModel'], env: Env = {}): Ctx => ({
+const ctxOf = (
+  chatModel: Port['chatModel'],
+  env: Env = {},
+  chatRun: Port['chatRun'] = async () => ({ code: 0, out: '' }),
+): Ctx => ({
   home,
   env,
-  port: { chatModel } as Port,
+  port: { chatModel, chatRun } as Port,
   board: () => ({}),
   cli: async () => ({ code: 0, out: '', err: '' }),
 })
@@ -236,21 +240,21 @@ test('the turn runs with the chat guard', async () => {
 
 const hook = (command: unknown) => guardHook(JSON.stringify({ tool_input: { command } }))
 
-test('guardHook allows, asks, denies and fails closed', () => {
-  expect(hook('/repo/bin/factory status')).toEqual({ code: 0, err: '' })
+test('guardHook allows, asks, denies and fails closed', async () => {
+  expect(await hook('/repo/bin/factory status')).toEqual({ code: 0, err: '' })
   const ask = '/repo/bin/factory decide lifecycle-abc ship "looks good"'
   const v = check(ask, 'manager')
   if (v.decision !== 'ask') throw new Error('the fixture must ask')
-  expect(hook(ask)).toEqual({
+  expect(await hook(ask)).toEqual({
     code: 2,
     err: v.question + '\nthe person must approve this command; a chat turn cannot run it: tell the person\n',
   })
   const deny = '/repo/bin/factory mail r1 plan "$(id)"'
   const d = check(deny, 'manager')
   if (d.decision !== 'deny') throw new Error('the fixture must deny')
-  expect(hook(deny)).toEqual({ code: 2, err: d.reason + '\n' })
+  expect(await hook(deny)).toEqual({ code: 2, err: d.reason + '\n' })
   for (const bad of ['{}', 'x', JSON.stringify({ tool_input: { command: 5 } })])
-    expect(guardHook(bad)).toEqual({ code: 2, err: 'the hook input has no Bash command\n' })
+    expect(await guardHook(bad)).toEqual({ code: 2, err: 'the hook input has no Bash command\n' })
 })
 
 test('asks lists the commands that need approval', async () => {
@@ -307,4 +311,336 @@ test('a turn with usage adds a chat row to manager-usage.jsonl', async () => {
     cacheRead: 3,
     output: 2,
   })
+})
+
+const ASK = '/repo/bin/factory decide lifecycle-abc ship "looks good"'
+const DENY = '/repo/bin/factory mail r1 plan "$(id)"'
+const askOf = (c: string) => {
+  const v = check(c, 'manager')
+  if (v.decision !== 'ask') throw new Error('the fixture must ask')
+  return v.question
+}
+const askRow = (id: string, c: string) => ({
+  commands: [{ id, command: c }],
+  asks: [{ id, question: askOf(c) }],
+})
+const raw = (id: string) => readFileSync(conversationFile(home, id), 'utf8')
+const REFUSED = 'factory: the approval is refused: '
+const marker = (id = 'c') => join(home, 'conversations', id + '.approved')
+const fakeRun = (next: Port['chatRun'] = async () => ({ code: 3, out: 'result' }), order: string[] = []) => {
+  const calls: Parameters<Port['chatRun']>[0][] = []
+  const chatRun: Port['chatRun'] = async c => {
+    calls.push(c)
+    order.push('run')
+    return next(c)
+  }
+  return { calls, chatRun }
+}
+
+test('approve: the core runs the exact command before the model, once', async () => {
+  seed('c', [mgr('s-1', askRow('t2', ASK))])
+  const order: string[] = []
+  const r = fakeRun(undefined, order)
+  const m = fakeModel(async c => {
+    order.push('model')
+    expect(c.settings).toEqual({
+      hooks: {
+        PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `'${CLI}' chat-guard` }] }],
+      },
+    })
+    expect((await hook(ASK)).code).toBe(2)
+    return ok()
+  })
+  const ctx = ctxOf(m.chatModel, { PATH: '/bin', FACTORY_MAIN_CHAT: '1', FACTORY_ALLOW: 'x' }, r.chatRun)
+  const sent = await send(ctx, { id: 'c', text: 'yes', front: 'web', approve: 't2', command: ASK })
+  expect(sent.code).toBe(0)
+  expect(order).toEqual(['run', 'model'])
+  expect(r.calls).toEqual([
+    { command: ASK, cwd: home, env: { PATH: '/bin', FACTORY_HOME: home }, timeoutMs: 300000 },
+  ])
+  expect(m.calls[0]!.env).toMatchObject({ FACTORY_MAIN_CHAT: '1' })
+  expect(m.calls[0]!.input).toContain(ASK)
+  expect(m.calls[0]!.input).toContain('exit 3')
+  expect(m.calls[0]!.input).toContain('result')
+  expect(lines('c').at(-2)).toMatchObject({ text: 'yes', approve: 't2' })
+  expect(shown('c').turns.at(-1)!.ran).toEqual({ id: 't2', command: ASK, code: 3, out: 'result' })
+  expect(existsSync(join(marker(), 't2'))).toBe(true)
+  const again = await send(ctx, { id: 'c', text: 'yes', front: 'web', approve: 't2', command: ASK })
+  expect(again.err).toContain(REFUSED + 'the last manager turn has no ask t2')
+  expect(r.calls).toHaveLength(1)
+  await send(ctx, { id: 'c', text: 'next', front: 'web' })
+  expect(m.calls.at(-1)!.input).toBe('next')
+  expect(r.calls).toHaveLength(1)
+})
+
+test('approve: equal questions do not select another command', async () => {
+  const L = '/repo/bin/factory decide lifecycle-abc ship "' + 'a'.repeat(400) + '"'
+  const M = L.slice(0, -2) + 'b"'
+  expect(askOf(L)).toBe(askOf(M))
+  seed('c', [
+    mgr('s-1', {
+      commands: [
+        { id: 't2', command: L },
+        { id: 't3', command: M },
+      ],
+      asks: [
+        { id: 't2', question: askOf(L) },
+        { id: 't3', question: askOf(M) },
+      ],
+    }),
+  ])
+  const r = fakeRun()
+  await send(ctxOf(fakeModel().chatModel, {}, r.chatRun), {
+    id: 'c',
+    text: 'yes',
+    front: 'web',
+    approve: 't3',
+    command: M,
+  })
+  expect(r.calls.map(c => c.command)).toEqual([M])
+})
+
+test('approve: a command that changed after show, or no shown command, is refused', async () => {
+  const L = '/repo/bin/factory decide lifecycle-abc ship "' + 'a'.repeat(400) + '"'
+  const M = L.slice(0, -2) + 'b"'
+  expect(askOf(L)).toBe(askOf(M))
+  for (const shownText of [L, undefined]) {
+    seed('c', [mgr('s-1', askRow('t2', L))])
+    const seen = shownText
+    // a model turn replaces the stored command, with the same id and question
+    seed('c', [
+      mgr('s-1', { commands: [{ id: 't2', command: M }], asks: [{ id: 't2', question: askOf(L) }] }),
+    ])
+    const before = raw('c')
+    const m = fakeModel()
+    const r = fakeRun()
+    const sent = await send(ctxOf(m.chatModel, {}, r.chatRun), {
+      id: 'c',
+      text: 'yes',
+      front: 'web',
+      approve: 't2',
+      command: seen,
+    })
+    expect(sent.err).toContain(REFUSED + 'the command differs from the one shown')
+    expect([m.calls.length, r.calls.length]).toEqual([0, 0])
+    expect(raw('c')).toBe(before)
+    expect(existsSync(marker())).toBe(false)
+  }
+})
+
+test('approve: denied and allowed commands refuse approval', async () => {
+  for (const [command, reason] of [
+    [DENY, 'the command is denied'],
+    ['factory status', 'the command needs no approval'],
+  ]) {
+    seed('c', [mgr('s-1', { commands: [{ id: 't3', command }], asks: [{ id: 't3', question: 'q' }] })])
+    const before = raw('c')
+    const m = fakeModel()
+    const r = fakeRun()
+    const sent = await send(ctxOf(m.chatModel, {}, r.chatRun), {
+      id: 'c',
+      text: 'yes',
+      front: 'web',
+      approve: 't3',
+      command: command,
+    })
+    expect(sent.err).toContain(REFUSED + reason)
+    expect([m.calls.length, r.calls.length]).toEqual([0, 0])
+    expect(raw('c')).toBe(before)
+    expect(existsSync(marker())).toBe(false)
+  }
+  const d = check(DENY, 'manager')
+  if (d.decision !== 'deny') throw new Error('the fixture must deny')
+  expect(await hook(DENY)).toEqual({ code: 2, err: d.reason + '\n' })
+})
+
+test('approve: bad ids are refused with no side effect', async () => {
+  const cases: [string, string[], string][] = [
+    ...['../x', 'a/b', '', 'a'.repeat(129), '.x'].map(
+      id => [id, [mgr('s-1', askRow(id, ASK))], 'bad id'] as [string, string[], string],
+    ),
+    ['unknown', [mgr('s-1', askRow('t2', ASK))], 'no ask unknown'],
+    ['t1', [mgr('s-1', askRow('t1', ASK)), mgr('s-1', askRow('t2', ASK))], 'no ask t1'],
+    ['t1', [mgr('s-1', { commands: [{ id: 't1', command: 'factory status' }], asks: [] })], 'no ask t1'],
+    [
+      't2',
+      [mgr('s-1', { commands: [{ id: 't2', command: ASK }], asks: [{ id: 't2', question: 'forged' }] })],
+      'question does not match',
+    ],
+    ['t2', [JSON.stringify({ who: 'person', text: 'x', front: 'cli', at: 1 })], 'no manager turn'],
+  ]
+  for (const [approve, rows, reason] of cases) {
+    seed('c', rows)
+    const before = raw('c')
+    const m = fakeModel()
+    const r = fakeRun()
+    const sent = await send(ctxOf(m.chatModel, {}, r.chatRun), {
+      id: 'c',
+      text: 'yes',
+      front: 'web',
+      approve,
+      command: ASK,
+    })
+    expect(sent.code).toBe(1)
+    expect(sent.err).toContain(REFUSED)
+    expect(sent.err).toContain(reason)
+    expect([m.calls.length, r.calls.length]).toEqual([0, 0])
+    expect(raw('c')).toBe(before)
+    expect(existsSync(marker())).toBe(false)
+  }
+  rmSync(join(home, 'conversations'), { recursive: true, force: true })
+  const m = fakeModel()
+  const r = fakeRun()
+  expect(
+    (
+      await send(ctxOf(m.chatModel, {}, r.chatRun), {
+        id: 'n',
+        text: 'yes',
+        front: 'web',
+        approve: 't2',
+        command: ASK,
+      })
+    ).code,
+  ).toBe(1)
+  expect([m.calls.length, r.calls.length]).toEqual([0, 0])
+  expect(existsSync(join(home, 'conversations'))).toBe(false)
+})
+
+test('approve: malformed stored entries are refused', async () => {
+  for (const extra of [
+    { asks: 'x', commands: [{ id: 't2', command: ASK }] },
+    { asks: [{ id: 't2', question: 5 }], commands: [{ id: 't2', command: ASK }] },
+    { asks: [{ id: 't2', question: askOf(ASK) }], commands: [{ id: 't2', command: 5 }] },
+  ]) {
+    seed('c', [mgr('s-1', extra)])
+    const before = raw('c')
+    const m = fakeModel()
+    const r = fakeRun()
+    const sent = await send(ctxOf(m.chatModel, {}, r.chatRun), {
+      id: 'c',
+      text: 'yes',
+      front: 'web',
+      approve: 't2',
+      command: ASK,
+    })
+    expect([sent.code, sent.err.startsWith(REFUSED)]).toEqual([1, true])
+    expect([m.calls.length, r.calls.length]).toEqual([0, 0])
+    expect(raw('c')).toBe(before)
+    expect(existsSync(marker())).toBe(false)
+  }
+})
+
+test('approve: a used marker and a failed marker directory refuse before the person turn', async () => {
+  for (const id of ['c', 'd']) seed(id, [mgr('s-1', askRow('t2', ASK))])
+  mkdirSync(marker())
+  writeFileSync(join(marker(), 't2'), '')
+  writeFileSync(marker('d'), '')
+  for (const [id, reason] of [
+    ['c', 'ask t2 already ran'],
+    ['d', 'cannot record the use'],
+  ]) {
+    const before = raw(id!)
+    const m = fakeModel()
+    const r = fakeRun()
+    const sent = await send(ctxOf(m.chatModel, {}, r.chatRun), {
+      id: id!,
+      text: 'yes',
+      front: 'web',
+      approve: 't2',
+      command: ASK,
+    })
+    expect(sent.err).toContain(REFUSED + reason)
+    expect([m.calls.length, r.calls.length]).toEqual([0, 0])
+    expect(raw(id!)).toBe(before)
+  }
+})
+
+test('approve: run and model errors retain the result and marker', async () => {
+  for (const fail of ['run', 'model']) {
+    seed(fail, [mgr('s-1', askRow('t2', ASK))])
+    const r = fakeRun(async () => {
+      if (fail === 'run') throw new Error('boom')
+      return { code: 0, out: 'done' }
+    })
+    const m = fakeModel(() => {
+      if (fail === 'model') throw new Error('model error')
+      return ok()
+    })
+    const ctx = ctxOf(m.chatModel, {}, r.chatRun)
+    await send(ctx, { id: fail, text: 'yes', front: 'web', approve: 't2', command: ASK })
+    const ran = shown(fail).turns.at(-1)!.ran
+    expect(ran?.code).toBe(fail === 'run' ? 127 : 0)
+    expect(ran?.out).toContain(fail === 'run' ? 'boom' : 'done')
+    expect(m.calls).toHaveLength(1)
+    expect(existsSync(join(marker(fail), 't2'))).toBe(true)
+    expect(
+      (await send(ctx, { id: fail, text: 'again', front: 'web', approve: 't2', command: ASK })).code,
+    ).toBe(1)
+    expect(r.calls).toHaveLength(1)
+  }
+})
+
+test('runApproved returns the exit code and both output streams', async () => {
+  const r = await runApproved({
+    command: 'echo out; echo err >&2; echo "[$FACTORY_MAIN_CHAT]"; exit 3',
+    cwd: home,
+    env: { PATH: process.env.PATH },
+    timeoutMs: 2000,
+  })
+  expect(r.code).toBe(3)
+  for (const text of ['out', 'err', '[]']) expect(r.out).toContain(text)
+})
+
+test('runApproved reports a signal exit as code 128', async () => {
+  const r = await runApproved({
+    command: 'kill -TERM $$',
+    cwd: home,
+    env: { PATH: process.env.PATH },
+    timeoutMs: 2000,
+  })
+  expect(r.code).toBe(128)
+})
+
+test('runApproved keeps the last 4000 characters', async () => {
+  const r = await runApproved({
+    command: "printf 'a%.0s' $(seq 2000); printf 'b%.0s' $(seq 4000)",
+    cwd: home,
+    env: { PATH: process.env.PATH },
+    timeoutMs: 2000,
+  })
+  expect(r.out).toBe('b'.repeat(4000))
+})
+
+test('runApproved rejects a bad cwd without a later timer error', async () => {
+  await expect(
+    runApproved({
+      command: 'echo x',
+      cwd: join(home, 'absent'),
+      env: { PATH: process.env.PATH },
+      timeoutMs: 100,
+    }),
+  ).rejects.toThrow()
+  await Bun.sleep(500)
+})
+
+for (const command of ['sleep 5', 'sleep 5; echo x'])
+  test(
+    'runApproved kills the process group: ' + command,
+    async () => {
+      const start = Date.now()
+      const r = await runApproved({ command, cwd: home, env: { PATH: process.env.PATH }, timeoutMs: 200 })
+      expect(r).toEqual({ code: 124, out: '' })
+      expect(Date.now() - start).toBeLessThan(2000)
+    },
+    10000,
+  )
+
+test('a half line at the end of the file does not hide the real manager turn', async () => {
+  mkdirSync(join(home, 'conversations'), { recursive: true })
+  writeFileSync(join(home, 'conversations', 'c.jsonl'), '{"who":"manager"')
+  const m = fakeModel()
+  await send(ctxOf(m.chatModel), { id: 'c', text: 'x', front: 'cli' })
+  const t = shown('c').turns
+  expect(t.at(-1)).toMatchObject({ who: 'manager', text: 'answer' })
+  expect(t.length).toBe(2)
 })

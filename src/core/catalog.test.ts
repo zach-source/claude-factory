@@ -197,7 +197,16 @@ describe('CATALOG', () => {
       ['id', 'id', true, undefined],
       ['text', 'text', true, undefined],
       ['front', 'enum', true, ['cli', 'web', 'claude-mod', 'herdr-mod']],
+      ['approve', 'id', false, undefined],
+      ['command', 'text', false, undefined],
     ])
+    expect(readBody(send, { id: 'c' }, { text: 'x', front: 'web', approve: 'toolu_01A' })).toMatchObject({
+      approve: 'toolu_01A',
+    })
+    expect(readBody(send, { id: 'c' }, { text: 'x', front: 'web', approve: '../x' })).toBe('bad body')
+    expect(send.inputs.find(i => i.name === 'approve')!.help).toBe(
+      'a tool_use id from the asks of the last manager turn: the core runs that command one time before the next turn',
+    )
     expect(show).toMatchObject({
       summary: 'Show a manager conversation: its session and its turns.',
       rights: 'read',
