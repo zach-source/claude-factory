@@ -105,6 +105,7 @@ test('managerEgress: an https AX server gets the AX_AUTH key, a Dolt remote its 
     { hosts: ['api.linear.app'], key: 'LINEAR', header: 'Authorization', prefix: '' },
     ax.OPENAI_RULE,
     ax.CODEX_CHATGPT_RULE,
+    ax.BUILDER_RULE,
   ])
 })
 
