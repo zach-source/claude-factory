@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   add,
+  bareValueFlag,
   applyTiers,
   citesTracker,
   close,
@@ -2395,4 +2396,16 @@ test('gate() refuses an invalid --until value even on a note that cites nothing'
 test('gate() is pure: the same input always returns the same decision', () => {
   const n = { summary: 'claude-factory-3u1.1.1', body: 'b', kind: 'fact' as const }
   expect(gate(n)).toEqual(gate(n))
+})
+
+test('bareValueFlag names the first value flag with no value (claude-factory-svah)', () => {
+  const f = ['--rig', '--kind']
+  expect(bareValueFlag(['--rig', '--kind', 'fact'], f)).toBe('--rig')
+  expect(bareValueFlag(['s', '--rig'], f)).toBe('--rig')
+  expect(bareValueFlag(['--rig', '--'], f)).toBe('--rig')
+  expect(bareValueFlag(['--kind', '--rig', 'acme'], f)).toBe('--kind')
+  expect(bareValueFlag(['--rig', 'acme', '--kind', 'fact'], f)).toBeUndefined()
+  expect(bareValueFlag(['--rig', '-x'], f)).toBeUndefined()
+  expect(bareValueFlag([], f)).toBeUndefined()
+  expect(bareValueFlag(['--other', '--rig', 'a'], f)).toBeUndefined()
 })

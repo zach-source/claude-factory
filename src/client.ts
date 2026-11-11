@@ -56,6 +56,7 @@ export function serverUrl(env: Env): { url: URL } | { error: string } | null {
 export function route(
   cmd: string | undefined,
   args: string[],
+  resolveMail?: (args: string[]) => string[],
   fileText = false,
 ): Req | { local: true } | string {
   if (!cmd || LOCAL.has(cmd)) return { local: true }
@@ -117,9 +118,13 @@ export function route(
           }
         : bad
     case 'mail': {
-      // cli.ts expands --text-file before this call
       const wake = args[2] === '--wake'
       const at = wake ? 3 : 2
+      if (!fileText && args[at] !== '--' && args.slice(at).includes('--text-file')) {
+        if (!seg(a, b) || args[at] !== '--text-file' || n !== at + 2 || !resolveMail) return bad
+        args = resolveMail(args)
+        fileText = true
+      }
       const text = args.slice((fileText || !wake) && args[at] === '--' ? at + 1 : at).join(' ')
       return n >= 3 && seg(a, b) && text
         ? {
@@ -182,6 +187,7 @@ export async function main(
   env: Env,
   fetchFn: typeof fetch = fetch,
   io: Io = stdio,
+  resolveMail?: (args: string[]) => string[],
   fileText = false,
 ): Promise<number | null> {
   if (!env.FACTORY_SERVER) return null
@@ -193,7 +199,7 @@ export async function main(
       return refuse((e as Error).message)
     }
   }
-  const req = route(cmd, args, fileText)
+  const req = route(cmd, args, resolveMail, fileText)
   if (typeof req !== 'string' && 'local' in req) return null
   const found = serverUrl(env)
   if (!found) return null

@@ -2179,6 +2179,35 @@ test('memory add refuses a repeated --rig, a bare -- and a flag after the summar
   expect(inboxFiles(home)).toEqual([])
 }, 60_000)
 
+test('memory add refuses a bare value flag (claude-factory-svah)', () => {
+  const home = freshMemoryAddHome('bare-value-flag')
+  const body = join(home, 'body.txt')
+  writeFileSync(body, 'some text')
+  const rows: [string[], string][] = [
+    [['--rig', '--kind', 'fact', 's', 'b'], '--rig'],
+    [['--kind', 'fact', 's', 'b', '--until'], '--until'],
+    [['--kind', 'fact', 's', 'b', '--rig'], '--rig'],
+    [['--from', '--kind', 'fact', 's', 'b'], '--from'],
+    [['--kind', '--rig', 'acme', 's', 'b'], '--kind'],
+    [['--kind', 'fact', '--supersedes', '--anyway', 's', 'b'], '--supersedes'],
+    [['--kind', 'fact', 's', '--rig', '--body-file', body], '--rig'],
+  ]
+  for (const [row, flag] of rows) {
+    const r = runMemoryAdd(home, row)
+    expect(r.code).toBe(2)
+    expect(r.err).toContain(`factory memory add: ${flag} needs a value`)
+    expect(r.err).toContain('usage: factory memory add')
+  }
+  expect(inboxFiles(home)).toEqual([])
+}, 60_000)
+
+test('memory add takes a one-dash value (claude-factory-svah)', () => {
+  const home = freshMemoryAddHome('one-dash-value')
+  const r = runMemoryAdd(home, ['--rig', '-x', '--kind', 'fact', 's', 'b'])
+  expect(r.code).toBe(0)
+  expect(inboxFiles(home)).toHaveLength(1)
+}, 60_000)
+
 test('memory add still accepts --anyway on either side, a mid-word -- and a single-dash word', () => {
   for (const [tag, row] of [
     ['anyway-before', ['--kind', 'fact', '--anyway', 'a plain summary', 'a body']],
