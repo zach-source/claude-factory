@@ -257,9 +257,7 @@ slow('write AC3 AC4 AC7 a run commits a 7 section page, records it and does not 
   expect(args).toContain(
     '-p --strict-mcp-config --setting-sources user --permission-mode acceptEdits --tools Read,Write,Edit,Glob,Grep,Bash',
   )
-  expect(args).toContain(
-    '--allowedTools Read(./**) Write Edit Glob(./**) Grep(./**) Bash(git mv:*) Bash(git rm:*)',
-  )
+  expect(args).toContain('--allowedTools Read(./**) Glob(./**) Grep(./**) Bash(git mv:*) Bash(git rm:*)')
   expect(prompt()).toContain('acme-1')
   expect(prompt()).toContain(PR5)
   expect(existsSync(join(home, 'wiki-write.stamp'))).toBe(true)
@@ -487,10 +485,8 @@ slow('write AC3 the claude run gets the exact settings and tool list', () => {
   const settings = JSON.parse(argv[argv.indexOf('--settings') + 1]!)
   expect(settings.permissions).toEqual({ deny: ['Edit(./.git/**)'] })
   expect(settings.env.CLAUDE_CODE_PLUGIN_DIRS).toBe('')
-  expect(argv.slice(argv.indexOf('--allowedTools') + 1, argv.indexOf('--allowedTools') + 8)).toEqual([
+  expect(argv.slice(argv.indexOf('--allowedTools') + 1, argv.indexOf('--allowedTools') + 6)).toEqual([
     'Read(./**)',
-    'Write',
-    'Edit',
     'Glob(./**)',
     'Grep(./**)',
     'Bash(git mv:*)',
