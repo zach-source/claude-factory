@@ -107,6 +107,7 @@ test('server Bash accepts only literal commands and safe paths', () => {
       'factory mail r1 build /var/run/secrets/a',
       'factory mail r1 build //etc/factory/worker-key/key',
       'factory mail r1 build /./proc/1/environ',
+      'factory mail r1 build /etc/factory/' + 'x'.repeat(300),
     ]) {
       run.mockClear()
       expect(serverBashReason(command, cwd, '/cli', run), command).toBe(SECRET_PATH_REASON)
