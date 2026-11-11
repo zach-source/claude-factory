@@ -91,15 +91,18 @@ export const parse = (path: string, text: string): Note => {
     [...(m?.[1] ?? '').matchAll(/^(\w+):[ \t]*(.*)$/gm)].map(([, k, v]) => [k, v]),
   )
   // empty header, then a later `---` line: older code read the lines between as the header. Any rig line there fails closed.
-  const gap = m && m[1] === undefined ? src.slice(m[0].length).split(LINE_END) : []
-  const gapRig = gap
+  // The legacy header ends at an LF line that starts with `---`. Inside it, rig lines split at each LINE_END.
+  const rest = m && m[1] === undefined ? src.slice(m[0].length).split('\n') : []
+  const gapRig = rest
     .slice(
       0,
       Math.max(
-        gap.findIndex(l => l.startsWith('---')),
+        rest.findIndex(l => l.startsWith('---')),
         0,
       ),
     )
+    .join('\n')
+    .split(LINE_END)
     .some(l => RIG_LIKE.test(l))
   const decl = (m ? (m[1] ?? '') : src).split(LINE_END).filter(l => RIG_LIKE.test(l))
   if (gapRig || decl.length > 1 || (decl.length === 1 && !(m && /^rig:[ \t]*\S/.test(decl[0] ?? ''))))

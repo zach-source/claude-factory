@@ -2480,6 +2480,16 @@ test('u509 ambiguous scope is closed', () => {
   expect(parse('a.md', '---\nsummary: s\nrig: acme\n---\nrig: other').rig).toBe('acme')
 })
 
+test('u509 legacy delimiter is an LF line, not CR, LS or PS', () => {
+  for (const sep of ['\r', ' ', ' '])
+    for (const d of ['---', '--- ', '---x', '----']) {
+      const text = `---\n---\nx${sep}${d}\nrig: other\n---\nbody`
+      expect(parse('ci/a.md', text).rig, JSON.stringify(text)).toBeTruthy()
+      for (const rig of ['acme', 'other', undefined, parse('ci/a.md', text).rig])
+        expect(u509Ranked(text, rig).found, `${rig}`).toHaveLength(0)
+    }
+})
+
 test('u509 writer compatibility', () => {
   const n = {
     summary: 'sum',
