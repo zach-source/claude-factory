@@ -62,9 +62,14 @@ sh -euc "$PUSH"
 EOF
 `
 
-const run = (cmd: string[], o: { cwd?: string; env?: Record<string, string | undefined> } = {}) => {
-  const p = Bun.spawnSync(cmd, { ...o, stdout: 'pipe', stderr: 'pipe' })
-  return { ok: p.exitCode === 0, out: p.stdout.toString().trim(), err: p.stderr.toString().trim() }
+/** a command that is not on PATH fails like one that exits non-zero: spawnSync throws for it (no docker on the VM) */
+export const run = (cmd: string[], o: { cwd?: string; env?: Record<string, string | undefined> } = {}) => {
+  try {
+    const p = Bun.spawnSync(cmd, { ...o, stdout: 'pipe', stderr: 'pipe' })
+    return { ok: p.exitCode === 0, out: p.stdout.toString().trim(), err: p.stderr.toString().trim() }
+  } catch (e) {
+    return { ok: false, out: '', err: String(e) }
+  }
 }
 
 /** the rig's default branch as the VMs start from it, freshly fetched, with its devenv files' blobs */
