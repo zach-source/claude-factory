@@ -6634,7 +6634,7 @@ function storeDreamUsage(start: number, codexHome?: string) {
 }
 
 const removedLine = (r: { path: string; target: string; skipped?: true }[]) =>
-  `removed symlinks: ${r.map(l => (l.skipped ? l.path + ' (directory changed during the scan, not entered)' : l.path + ' -> ' + l.target)).join(', ')}\n`
+  `removed symlinks: ${r.map(l => (l.skipped ? l.path + ' (skipped: changed or unreadable during the scan)' : l.path + ' -> ' + l.target)).join(', ')}\n`
 
 async function dream() {
   const release = hold('dream.lock')
@@ -6656,7 +6656,7 @@ async function dream() {
     // git tracks .usage.jsonl itself, so counts survive a clone or a lost file (claude-factory-503.3).
     // Only its crash-safe temp file (memory.ts:584-601) and the search index cache stay ignored.
     const pre = memory.dropLinks(MEMORY)
-    memory.writeStore(join(MEMORY, '.gitignore'), '.index.json*\n.usage.jsonl.tmp\n')
+    memory.writeStore(MEMORY, join(MEMORY, '.gitignore'), '.index.json*\n.usage.jsonl.tmp\n')
     const codexLinked = pre.some(l => l.path === '.codex') // a removed .codex link still refuses this dream
     if (pre.length) appendFileSync(join(HOME, 'dream.log'), removedLine(pre))
     if (!commitMemory('notes since the last dream')) return MEMORY_REFUSED
@@ -6716,6 +6716,8 @@ async function dream() {
     }
     const gitPre = gitDirPre(MEMORY)
     if ('why' in gitPre) return refuse(gitPreLine('dream', gitPre.why))
+    // ponytail: spawnSync kills only the direct child, so a codex grandchild can plant a link after the last dropLinks.
+    // The memory readers skip a link and the writers refuse it, and the next dream removes it. Upgrade path: spawn in its own process group and kill the group.
     // claude: edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = codexHome
       ? Bun.spawnSync(
@@ -12708,7 +12710,7 @@ function reviewFacts(key: string | undefined) {
   const installedFile = join(memory.skillsDir(MEMORY), item!.name, 'SKILL.md')
   const installed =
     item!.kind === 'skill' && existsSync(installedFile)
-      ? clip(memory.tryRead(installedFile) ?? '', 16384)
+      ? clip(memory.tryRead(MEMORY, installedFile) ?? '', 16384)
       : undefined
   const { key: k, kind, name, change, text } = item!
   return {
