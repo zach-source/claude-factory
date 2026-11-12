@@ -276,10 +276,7 @@ export function plan(
   const bytes =
     take.reduce((n, f) => n + sizeOf(join(home, f)), 0) +
     claude.reduce((n, f) => n + sizeOf(f), 0) +
-    move.reduce((n, id) => {
-      const t = join(runsDir, id, 'transcripts') // pack() leaves these out
-      return n + sizeOf(join(runsDir, id)) - (existsSync(t) ? sizeOf(t) : 0)
-    }, 0) +
+    move.reduce((n, id) => n + sizeOf(join(runsDir, id)), 0) +
     statSync(rigsFile).size -
     staleBytes
   return {
@@ -303,7 +300,7 @@ export const mb = (n: number) => `${(n / 1024 / 1024).toFixed(1)} MB`
 /** the plan in words, for --dry-run and before an upload */
 export const describe = (p: Plan) =>
   [
-    `moves: ${p.top.join(', ')}, and ${p.runs.length} run dirs (${p.left} finished runs stay behind; runs/*/transcripts stay behind)`,
+    `moves: ${p.top.join(', ')}, and ${p.runs.length} run dirs (${p.left} finished runs stay behind)`,
     `the manager's Claude: ${p.claude.length ? p.claude.map(f => basename(f)).join(', ') : 'nothing found (no memory or transcript)'}`,
     ...(p.skipped.length ? [`left behind (big or laptop-only): ${p.skipped.join(', ')}`] : []),
     ...(p.staleMemory.length
@@ -344,7 +341,6 @@ export function pack(home: string, p: Plan, out: string) {
         'tar',
         '-czf',
         out,
-        '--exclude=./runs/*/transcripts',
         ...p.staleMemory.map(f => `--exclude=./${f}`),
         '-C',
         home,
