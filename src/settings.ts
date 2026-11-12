@@ -25,6 +25,8 @@ export const SETTING_KEYS: readonly SettingKey[] = [
   // a launch uses cursor only while the weekly pool is under this percent (src/cursor-meter.ts); a number from 0 to 100
   { key: 'cursor.cap', env: 'FACTORY_CURSOR_CAP', default: '60', check: /^(100|[1-9]?[0-9])$/ },
   // an optional dollar cap on the Grok spend of the last 7 days (src/grok-meter.ts); unset means no gate
+  // how an AX grok worker signs in: session (the owner's SuperGrok plan, through the gateway) or key (the paid xAI API)
+  { key: 'grok.auth', env: 'FACTORY_GROK_AUTH', default: 'session', check: /^(session|key)$/ },
   { key: 'grok.weeklyBudgetUsd', env: 'FACTORY_GROK_WEEKLY_BUDGET_USD', check: /^\d+(\.\d+)?$/ },
   // the harness order of a station (cli.ts pickAgent). A gate refusal or a usage limit moves it to the next. cursor is in it only when named
   {
