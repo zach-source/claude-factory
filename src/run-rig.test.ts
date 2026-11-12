@@ -65,6 +65,10 @@ test('AC1: a rewritten rigs.json changes nothing for the run: runRig and brief k
   expect(got.brief).not.toContain('new goal')
 })
 
+test('the run repo, not the launch repo, is the repo of runRig (the AX path map)', () => {
+  expect(run({ ...base, repo: '/laptop/acme-widget' }, [base]).rig!.repo).toBe(REPO)
+})
+
 test('AC2: guard lists are the union of snapshot and live', () => {
   const snap = { ...base, personOnlyContexts: ['ctx-a'], protectedBranches: ['rel'], sensitivePaths: ['p1/'] }
   const live = {
