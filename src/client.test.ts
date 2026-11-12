@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFile
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { main, route, serverMode, serverUrl, tlsFor } from './client'
+import { CATALOG, readBody, readQuery } from './core/catalog'
 
 const ROOT = mkdtempSync(join(tmpdir(), 'client-test-'))
 const tmp = (name: string) => {
@@ -243,8 +244,14 @@ test('route: denied forms are a string, and local commands stay local', () => {
     ['show', ['a/b']],
     ['show', ['a%2fb']],
     ['show', ['a'.repeat(129)]],
-    ['plan', ['facts']],
-    ['plan', ['set', 'f']],
+    ['plan', ['facts', 'x']],
+    ['snapshot', ['--views', 'board', '--max-age']],
+    ['snapshot', ['--views', 'board', '--max-age', 'x']],
+    ['rig', ['set', 'acme']],
+    ['rig', ['set', 'acme', '--max', '2', '--max', '3']],
+    ['rig', ['set', 'acme', '--mcp', 'f']],
+    ['memory', ['add', 'summary only']],
+    ['sweep', ['x']],
     ['decisions', ['propose', 'k', 'q', 'o']],
     ['decisions', ['answer', 'a', 'b']],
     ['mail', ['r1', 'manager']],
@@ -253,9 +260,7 @@ test('route: denied forms are a string, and local commands stay local', () => {
     ['start', ['a@b@c', 'acme', 'g']],
     ['rig', ['add', 'n', 'r']],
     ['rig', ['rm', 'n']],
-    ...['beads', 'loop', 'queue', 'rm', 'retry', 'poke', 'gc', 'server', 'home', 'memory'].map(
-      c => [c, ['search', 'q']] as [string, string[]],
-    ),
+    ...['beads', 'loop', 'gc', 'server', 'home'].map(c => [c, ['search', 'q']] as [string, string[]]),
   ]
   for (const [cmd, args] of denied) expect(typeof route(cmd, args)).toBe('string')
   expect(route('beads', [])).toBe(
@@ -330,37 +335,104 @@ test('main: headers, body, response and exit code', async () => {
   expect(d.o.err).toBe(`factory server: 500 ${'x'.repeat(500)}\n`)
 })
 
-test('main: FACTORY_FROM and patrol refuse what local mode refuses', async () => {
+test('main: the manager sends owner forms to the server, which refuses by role; a patrol refuses locally', async () => {
   const calls: Call[] = []
   const S = 'http://127.0.0.1:9'
   const code = async (cmd: string, args: string[], env: Record<string, string>) =>
-    main(cmd, args, { FACTORY_SERVER: S, ...env }, fake(200, '{}', calls), io().io)
-  const forms: [string, string[]][] = [
-    ['decide', ['r1', 'approve']],
-    ['start', ['lifecycle', 'rig', 'goal', '--owned']],
+    main(cmd, args, { FACTORY_SERVER: S, ...env }, fake(403, 'no', calls), io().io)
+  expect(await code('stop', [], { FACTORY_FROM: 'manager' })).toBe(1)
+  expect(calls.length).toBe(1)
+  for (const [c, a] of <[string, string[]][]>[
     ['stop', []],
-    ['resume', []],
-    ['goto', ['r1', 'plan']],
-    ['abort', ['r1']],
+    ['decide', ['r1', 'approve']],
     ['decisions', ['answer', 'rig', 'b1', 'yes']],
     ['tick', []],
-  ]
-  for (const [c, a] of forms) expect(await code(c, a, { FACTORY_FROM: 'manager' })).toBe(1)
-  for (const [c, a] of forms.filter(([c]) => c === 'start' || c === 'decisions'))
-    expect(await code(c, a, { FACTORY_PATROL: '1' })).toBe(1)
-  expect(calls.length).toBe(0)
-  for (const [c, a] of <[string, string[]][]>[
-    ['mail', ['r1', 'plan', 'hi']],
-    ['show', ['r1']],
-    ['status', []],
-    ['prs', []],
-    ['backlog', []],
-    ['decisions', []],
-    ['plan', []],
-    ['metrics', []],
   ])
-    expect(await code(c, a, { FACTORY_FROM: 'manager' })).toBe(0)
-  expect(calls.length).toBe(8)
+    expect(await code(c, a, { FACTORY_PATROL: '1' })).toBe(1)
+  expect(calls.length).toBe(1)
+})
+
+test('main: each new command runs in server mode against a fake server (T013)', async () => {
+  const dir = tmp('files')
+  const file = join(dir, 'text.txt')
+  writeFileSync(file, 'file text')
+  const at = (n: number) => `gate:r1@${n}`
+  const forms: [string, string[], string, string, Record<string, unknown>?][] = [
+    ['snapshot', ['--views', 'board', '--max-age', '4000'], 'GET', '/v1/snapshot?views=board&maxAge=4000'],
+    ['poke', ['r1', 'wake', 'up'], 'POST', '/v1/runs/r1/poke', { text: 'wake up' }],
+    ['retry', ['r1'], 'POST', '/v1/runs/r1/retry', {}],
+    [
+      'fork',
+      ['r1', 'plan', 'try', 'again'],
+      'POST',
+      '/v1/runs/r1/fork',
+      { station: 'plan', note: 'try again' },
+    ],
+    ['rm', ['r1'], 'DELETE', '/v1/runs/r1', {}],
+    ['queue', ['acme', 'b-1', 'plan'], 'POST', '/v1/queue', { rig: 'acme', bead: 'b-1', station: 'plan' }],
+    ['unhold', ['ax', '--codex'], 'POST', '/v1/rigs/ax/unhold', { codex: true }],
+    ['adopt', ['acme', 'lifecycle'], 'POST', '/v1/adopt', { rig: 'acme', template: 'lifecycle' }],
+    ['sweep', [], 'POST', '/v1/sweeps/all', {}],
+    [
+      'rig',
+      ['set', 'acme', '--max', '3', '--param', 'a=1', '--param', 'b=2', '--goal', 'ship', 'it'],
+      'PATCH',
+      '/v1/rigs/acme',
+      { max: '3', param: 'a=1\nb=2', goal: 'ship it' },
+    ],
+    [
+      'memory',
+      ['search', '--rig', 'acme', '--no-core', 'two', 'words'],
+      'GET',
+      '/v1/memory/search?query=two+words&rig=acme&noCore=1',
+    ],
+    [
+      'memory',
+      ['add', '--kind', 'fact', '--rig', 'acme', '--anyway', 'one line', 'the', 'body'],
+      'POST',
+      '/v1/memory',
+      { kind: 'fact', summary: 'one line', body: 'the body', rig: 'acme', anyway: true },
+    ],
+    ['plan', ['facts'], 'GET', '/v1/plan/facts'],
+    ['plan', ['set', file], 'PUT', '/v1/plan', { answer: 'file text' }],
+    ['gate-brief', ['facts', 'r1'], 'GET', '/v1/runs/r1/brief'],
+    [
+      'gate-brief',
+      ['set', at(123), file],
+      'PUT',
+      '/v1/gate-brief/r1',
+      { startedAt: '123', text: 'file text' },
+    ],
+    ['review', ['facts', 'skill:a'], 'GET', '/v1/review?key=skill%3Aa'],
+    ['review', ['set', 'skill:a', file], 'PUT', '/v1/review', { key: 'skill:a', text: 'file text' }],
+    ['say', ['hello', 'manager'], 'POST', '/v1/manager/say', { text: 'hello manager' }],
+    ['manager', ['show'], 'GET', '/v1/manager'],
+    ['manager', ['brief'], 'GET', '/v1/manager/brief'],
+    ['manager', ['log', 'patrol', '{"a":1}'], 'POST', '/v1/manager/log/patrol', { entry: '{"a":1}' }],
+  ]
+  for (const [cmd, args, method, path, body] of forms) {
+    const calls: Call[] = []
+    const { o, io: sink } = io()
+    const env = { FACTORY_SERVER: 'http://127.0.0.1:9', FACTORY_FROM: 'manager' }
+    expect(await main(cmd, args, env, fake(200, '{"ok":1}', calls), sink)).toBe(0)
+    expect(o.out).toBe('{"ok":1}\n')
+    const [call] = calls
+    expect([call!.init.method, call!.url.replace('http://127.0.0.1:9', '')]).toEqual([method, path])
+    expect(call!.init.body === undefined ? undefined : JSON.parse(call!.init.body)).toEqual(body)
+    // the catalog accepts the request: one op for the method and path, and valid fields
+    const [pathname, search = ''] = path.split('?')
+    const op = CATALOG.find(
+      o2 =>
+        o2.route.method === method &&
+        new RegExp(`^${o2.route.path.replace(/:[^/]+/g, '[^/]+')}$`).test(pathname!),
+    )
+    expect(op).toBeDefined()
+    const names = op!.route.path.split('/').flatMap((seg, i) => (seg.startsWith(':') ? [i] : []))
+    const params = names.map(i => pathname!.split('/')[i]!)
+    const q = readQuery(op!, params, search ? `?${search}` : '')
+    expect(typeof q).toBe('object')
+    if (method !== 'GET') expect(typeof readBody(op!, q as never, body ?? {})).toBe('object')
+  }
 })
 
 test('main: refusals make zero requests; local commands return null', async () => {
