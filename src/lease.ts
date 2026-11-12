@@ -28,9 +28,19 @@ const alive = (pid: number) => {
 export const isStale = (l: Lease, now: number, isAlive = alive) =>
   now - l.at > LEASE_STALE_MS || (l.pid !== undefined && !isAlive(l.pid))
 
-/** pure: the lease after `want` asks for it, or the other holder's lease when it is live */
-export function decide(cur: Lease | undefined, want: Lease, now: number, isAlive = alive) {
-  if (!cur || cur.holder === want.holder || isStale(cur, now, isAlive))
+/**
+ * pure: the lease after `want` asks for it, or the other holder's lease when it is live.
+ * In server mode (claude-factory-gogxc.4), a lease of kind `server` is the pod's: only the pod takes it over, even when it is stale.
+ */
+export function decide(
+  cur: Lease | undefined,
+  want: Lease,
+  now: number,
+  isAlive = alive,
+  serverMode = false,
+) {
+  const podOnly = serverMode && cur?.kind === 'server' && want.kind !== 'server'
+  if (!cur || cur.holder === want.holder || (isStale(cur, now, isAlive) && !podOnly))
     return { ok: true as const, lease: want }
   return { ok: false as const, lease: cur }
 }
@@ -47,8 +57,8 @@ export function readLease(home: string): Lease | undefined {
 }
 
 /** takes or renews the lease. The caller must hold a lock around this, so two takes never race. */
-export function take(home: string, want: Lease, now = Date.now()) {
-  const d = decide(readLease(home), want, now)
+export function take(home: string, want: Lease, now = Date.now(), serverMode = false) {
+  const d = decide(readLease(home), want, now, alive, serverMode)
   if (d.ok) {
     const f = leaseFile(home)
     writeFileSync(`${f}.tmp`, JSON.stringify(d.lease))
@@ -73,6 +83,13 @@ export function asker(env: Record<string, string | undefined>, ppid: number, now
   if (env.HERDR_PANE_ID) return { holder: `pane:${env.HERDR_PANE_ID}`, kind, at: now }
   return { holder: `ppid:${ppid}`, kind, pid: ppid, at: now }
 }
+
+/** the server pod asks for the lease under one fixed holder, so a restart of the pod renews its own lease */
+export const podAsker = (host: string, now = Date.now()): Lease => ({
+  holder: `server:${host}`,
+  kind: 'server',
+  at: now,
+})
 
 /** one line for a person: who holds the lease and how fresh it is */
 export const leaseLine = (l: Lease | undefined, now: number) =>

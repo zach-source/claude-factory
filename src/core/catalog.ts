@@ -1,5 +1,6 @@
 /** The operation catalog. It imports node: modules, ./chat, ./guards, the operation files in ./ops, and types from ../metrics and ../once. */
-import { readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { FlowRun } from '../flows'
 import type { Factory } from '../machine'
@@ -70,6 +71,8 @@ export type Port = {
     env: Env
     timeoutMs: number
   }) => Promise<{ code: number; out: string }>
+  /** type text and Enter into the manager pane (ax.say) */
+  say: (text: string) => unknown
   mail: (
     m: { id: string | undefined; to: string | undefined; text: string; wake: boolean },
     who: { env: Env; cwd: string },
@@ -88,7 +91,7 @@ export type Op = {
   rights: 'read' | 'owner' | 'manager'
   mutates: boolean
   long: boolean
-  route: { method: 'GET' | 'POST'; path: string }
+  route: { method: 'GET' | 'POST' | 'DELETE' | 'PATCH' | 'PUT'; path: string }
   since: number
   run: (ctx: Ctx, input: Input) => Promise<RunResult>
 }
@@ -238,6 +241,9 @@ const H: Record<string, string> = {
   owned: 'the person owns the run',
   mode: 'stop or resume',
   bead: 'the bead id',
+  runner: 'the remote runner name, for example ax',
+  codex: 'wake the stations that a Codex limit holds',
+  template: 'the factory template; lifecycle when not set',
 }
 const f = (name: string, kind: Kind, required = true, help = H[name]!, values?: string[]): Field => ({
   name,
@@ -251,7 +257,7 @@ const id = (name: string) => f(name, 'id')
 type Spec = {
   name: string
   summary: string
-  method: 'GET' | 'POST'
+  method: 'GET' | 'POST' | 'DELETE' | 'PATCH' | 'PUT'
   path: string
   inputs?: Field[]
   rights?: Op['rights']
@@ -267,12 +273,26 @@ const bridge = (
   inputs: s.inputs ?? [],
   output,
   rights: s.rights ?? (s.method === 'GET' ? 'read' : 'manager'),
-  mutates: s.method === 'POST',
+  mutates: s.method !== 'GET',
   long: false,
   route: { method: s.method, path: s.path },
   since: CATALOG_VERSION,
   run: (ctx, i) => ctx.cli(argv(i), text?.(i)),
 })
+/** Run a CLI verb that reads its input from a file: write the text to a file in the home, run, then delete the file. */
+const viaFile =
+  (argv: (path: string) => string[], text: (i: Input) => string): Op['run'] =>
+  async (ctx, i) => {
+    const dir = join(ctx.home, 'text')
+    mkdirSync(dir, { recursive: true })
+    const path = join(dir, `put-${randomUUID()}.json`)
+    writeFileSync(path, text(i), { mode: 0o600 })
+    try {
+      return await ctx.cli(argv(path))
+    } finally {
+      rmSync(path, { force: true })
+    }
+  }
 const local = (s: Spec, output: Op['output'], run: Op['run']): Op => ({ ...bridge(s, () => []), output, run })
 
 type Leaf = 'string' | 'number' | 'strings'
@@ -712,6 +732,53 @@ export const CATALOG: Op[] = makeCatalog([
   ),
   local(
     {
+      name: 'manager.show',
+      summary: 'Show the last health report of the manager task.',
+      method: 'GET',
+      path: '/v1/manager',
+    },
+    'json',
+    (c, i) => managerOps.show(c, i),
+  ),
+  local(
+    {
+      name: 'manager.brief',
+      summary:
+        'Show the first brief of a manager session: decisions, mail, plan and the last 20 patrol rows.',
+      method: 'GET',
+      path: '/v1/manager/brief',
+    },
+    'json',
+    (c, i) => managerOps.brief(c, i),
+  ),
+  local(
+    {
+      name: 'manager.log',
+      summary: 'Add one row to a log of the manager: patrol, pm, brief, review, usage or health.',
+      method: 'POST',
+      path: '/v1/manager/log/:kind',
+      inputs: [
+        f('kind', 'id', true, 'the log: patrol, pm, brief, review, usage or health'),
+        f('entry', 'text', true, 'the row, one JSON object'),
+      ],
+    },
+    'text',
+    (c, i) => managerOps.log(c, i),
+  ),
+  local(
+    {
+      name: 'manager.say',
+      summary: 'Type a text into the manager pane.',
+      method: 'POST',
+      path: '/v1/manager/say',
+      rights: 'owner',
+      inputs: [f('text', 'text', true, 'the text for the manager')],
+    },
+    'text',
+    (c, i) => managerOps.say(c, i),
+  ),
+  local(
+    {
       name: 'rigs.list',
       summary: 'List the rigs, their runs and their settings.',
       method: 'GET',
@@ -844,6 +911,281 @@ export const CATALOG: Op[] = makeCatalog([
     },
     i => [i.mode as string],
   ),
+  bridge(
+    {
+      name: 'runs.poke',
+      summary: 'Nudge the worker of a run.',
+      method: 'POST',
+      path: '/v1/runs/:id/poke',
+      inputs: [id('id'), f('text', 'text', false, 'the nudge text; a standard nudge when not set')],
+    },
+    i => ['poke', i.id as string, ...(i.text ? [i.text as string] : [])],
+  ),
+  bridge(
+    {
+      name: 'runs.retry',
+      summary: 'Retry a stuck station of a run.',
+      method: 'POST',
+      path: '/v1/runs/:id/retry',
+      inputs: [id('id')],
+    },
+    i => ['retry', i.id as string],
+  ),
+  bridge(
+    {
+      name: 'runs.fork',
+      summary: 'Start a new run from the branch and state of a run.',
+      method: 'POST',
+      path: '/v1/runs/:id/fork',
+      inputs: [id('id'), id('station'), f('note', 'note', false, 'a note for the new run')],
+    },
+    i => ['fork', i.id as string, i.station as string, ...(i.note ? [i.note as string] : [])],
+  ),
+  bridge(
+    {
+      name: 'runs.remove',
+      summary: 'Remove a finished run. The branch stays.',
+      method: 'DELETE',
+      path: '/v1/runs/:id',
+      inputs: [id('id')],
+    },
+    i => ['rm', i.id as string],
+  ),
+  bridge(
+    {
+      name: 'backlog.queue',
+      summary: 'Hand a bead to the factory.',
+      method: 'POST',
+      path: '/v1/queue',
+      inputs: [id('rig'), id('bead'), f('station', 'id', false)],
+    },
+    i => ['queue', i.rig as string, i.bead as string, ...(i.station ? [i.station as string] : [])],
+  ),
+  bridge(
+    {
+      name: 'rigs.unhold',
+      summary: 'Wake the stations that a usage limit of a runner holds.',
+      method: 'POST',
+      // ponytail: the CLI form takes a runner; the contract names the path param :rig. The value is the runner name.
+      path: '/v1/rigs/:rig/unhold',
+      inputs: [{ ...id('rig'), help: H.runner! }, f('codex', 'flag', false)],
+    },
+    i => ['unhold', i.rig as string, ...(i.codex ? ['--codex'] : [])],
+  ),
+  bridge(
+    {
+      name: 'rigs.adopt',
+      summary: 'Copy a factory into the repo of a rig for the repo to own.',
+      method: 'POST',
+      path: '/v1/adopt',
+      inputs: [id('rig'), f('template', 'id', false)],
+    },
+    i => ['adopt', i.rig as string, ...(i.template ? [i.template as string] : [])],
+  ),
+  bridge(
+    {
+      name: 'rigs.set',
+      summary: 'Change the settings of a rig. The CLI checks each value.',
+      method: 'PATCH',
+      path: '/v1/rigs/:rig',
+      inputs: [
+        id('rig'),
+        ...(
+          [
+            ['max', 'the most busy runs of the rig'],
+            ['sweeps', 'the sweeps of the rig, a,b or none'],
+            ['runner', 'the runner of the rig'],
+            ['agent', 'the agent command'],
+            ['clusterRuns', 'the most cluster runs'],
+            ['autoQueue', 'the auto-queue rule, p,n or off'],
+            ['skills', 'the skills, a,b or none'],
+            ['otelContent', 'on or off'],
+            ['sandboxClass', 'gvisor or microvm'],
+            ['param', 'name=value; one for each line'],
+            ['pushRule', 'a push rule, or none; one for each line'],
+            ['sensitivePath', 'a sensitive path, or none; one for each line'],
+            ['goal', 'the goal of the rig'],
+          ] as const
+        ).map(([n, help]) => f(n, 'text', false, help)),
+      ],
+    },
+    i => {
+      const flag = (k: string, v: unknown) => (typeof v === 'string' ? [`--${k}`, v] : [])
+      const lines = (k: string, v: unknown) =>
+        typeof v === 'string' ? v.split('\n').flatMap(x => [`--${k}`, x]) : []
+      return [
+        'rig',
+        'set',
+        i.rig as string,
+        ...flag('max', i.max),
+        ...flag('sweeps', i.sweeps),
+        ...flag('runner', i.runner),
+        ...flag('agent', i.agent),
+        ...flag('cluster-runs', i.clusterRuns),
+        ...flag('auto-queue', i.autoQueue),
+        ...flag('skills', i.skills),
+        ...flag('otel-content', i.otelContent),
+        ...flag('sandbox-class', i.sandboxClass),
+        ...lines('param', i.param),
+        ...lines('push-rule', i.pushRule),
+        ...lines('sensitive-path', i.sensitivePath),
+        ...flag('goal', i.goal), // the goal is the rest of the line: it goes last
+      ]
+    },
+  ),
+  {
+    // ponytail: the CLI sweep runs the pass for every rig and takes no name. Only "all" is allowed until it does.
+    ...bridge(
+      {
+        name: 'sweeps.run',
+        summary: 'Run the sweep pass for every rig. The name must be all.',
+        method: 'POST',
+        path: '/v1/sweeps/:name',
+        inputs: [{ ...id('name'), help: 'the sweep name; only all' }],
+      },
+      () => ['sweep'],
+    ),
+    run: (ctx, i) =>
+      i.name === 'all'
+        ? ctx.cli(['sweep'])
+        : Promise.reject(
+            new OpError(422, 'the sweep name must be all: the pass runs the sweeps of every rig'),
+          ),
+  } as Op,
+  bridge(
+    {
+      name: 'memory.search',
+      summary: 'Search the memory notes.',
+      method: 'GET',
+      path: '/v1/memory/search',
+      inputs: [
+        f('query', 'text', true, 'the words to search for'),
+        f('rig', 'id', false),
+        f('from', 'text', false, 'the run and station that search, run/station'),
+        f('noCore', 'flag', false, 'leave out CORE.md'),
+      ],
+    },
+    i => [
+      'memory',
+      'search',
+      ...(i.rig ? ['--rig', i.rig as string] : []),
+      ...(i.from ? ['--from', i.from as string] : []),
+      ...(i.noCore ? ['--no-core'] : []),
+      i.query as string,
+    ],
+  ),
+  bridge(
+    {
+      name: 'memory.add',
+      summary: 'Add a note to the memory. The CLI checks the note.',
+      method: 'POST',
+      path: '/v1/memory',
+      inputs: [
+        // ponytail: the kinds repeat memory.NOTE_KINDS; the CLI gate is the check that counts
+        f('kind', 'enum', true, 'the note kind', ['fact', 'rule', 'recipe']),
+        f('summary', 'text', true, 'the one line summary'),
+        f('body', 'note', false, 'the note body'),
+        f('rig', 'id', false),
+        f('from', 'text', false, 'the run and station that add, run/station'),
+        f('until', 'text', false, 'a bead, owner/repo#N or YYYY-MM-DD'),
+        f('supersedes', 'text', false, 'the path of the older note that this note replaces'),
+        f('anyway', 'flag', false, 'add it even when a like note exists'),
+      ],
+    },
+    i => [
+      'memory',
+      'add',
+      '--kind',
+      i.kind as string,
+      ...(i.rig ? ['--rig', i.rig as string] : []),
+      ...(i.from ? ['--from', i.from as string] : []),
+      ...(i.until ? ['--until', i.until as string] : []),
+      ...(i.supersedes ? ['--supersedes', i.supersedes as string] : []),
+      ...(i.anyway ? ['--anyway'] : []),
+      i.summary as string,
+      ...(i.body ? [i.body as string] : []),
+    ],
+  ),
+  bridge(
+    {
+      name: 'plan.facts',
+      summary: 'Gather the plan facts for the pm step. The CLI saves them for plan.set.',
+      method: 'GET',
+      path: '/v1/plan/facts',
+    },
+    () => ['plan', 'facts'],
+    'json',
+  ),
+  {
+    // the pm answer is JSON text; the CLI parses it and checks it against the saved facts
+    ...bridge(
+      {
+        name: 'plan.set',
+        summary: 'Set the plan from the answer of the pm step.',
+        method: 'PUT',
+        path: '/v1/plan',
+        inputs: [f('answer', 'text', true, 'the pm answer, JSON text')],
+      },
+      () => [],
+    ),
+    run: viaFile(
+      p => ['plan', 'set', p],
+      i => i.answer as string,
+    ),
+  } as Op,
+  {
+    ...bridge(
+      {
+        name: 'gates.setbrief',
+        summary: 'Set the brief of a live gate visit of a run.',
+        method: 'PUT',
+        path: '/v1/gate-brief/:run',
+        inputs: [
+          id('run'),
+          f('startedAt', 'id', true, 'the start time of the gate visit, from the facts'),
+          f('text', 'text', true, 'the brief'),
+        ],
+      },
+      () => [],
+    ),
+    run: (ctx, i) =>
+      viaFile(
+        p => ['gate-brief', 'set', `gate:${i.run}@${i.startedAt}`, p],
+        j => j.text as string,
+      )(ctx, i),
+  } as Op,
+  // ponytail: a review id holds ":". It cannot be a path segment, so it is a query or body field.
+  bridge(
+    {
+      name: 'review.facts',
+      summary: 'Show the facts of one pending skill or proposal for the reviewer.',
+      method: 'GET',
+      path: '/v1/review',
+      inputs: [f('key', 'text', true, 'the review id from the pending list')],
+    },
+    i => ['review', 'facts', i.key as string],
+    'json',
+  ),
+  {
+    ...bridge(
+      {
+        name: 'review.set',
+        summary: 'Set the recommendation of the reviewer for one pending item.',
+        method: 'PUT',
+        path: '/v1/review',
+        inputs: [
+          f('key', 'text', true, 'the review id from the pending list'),
+          f('text', 'text', true, 'the reviewer answer'),
+        ],
+      },
+      () => [],
+    ),
+    run: (ctx, i) =>
+      viaFile(
+        p => ['review', 'set', i.key as string, p],
+        j => j.text as string,
+      )(ctx, i),
+  } as Op,
   local(
     {
       name: 'decisions.answer',

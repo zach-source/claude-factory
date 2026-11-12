@@ -39,6 +39,7 @@ const post = (h: H, path: string, body: unknown) =>
   )
 
 const NAMES = [
+  'backlog.queue',
   'backlog.show',
   'board.show',
   'catalog.echo',
@@ -51,25 +52,44 @@ const NAMES = [
   'flows.show',
   'gates.brief',
   'gates.decide',
+  'gates.setbrief',
   'gc.run',
   'guard.check',
   'lease.show',
   'mail.list',
+  'manager.brief',
   'manager.context',
+  'manager.log',
+  'manager.say',
+  'manager.show',
+  'memory.add',
+  'memory.search',
   'metrics.show',
+  'plan.facts',
+  'plan.set',
   'plan.show',
   'prs.show',
+  'review.facts',
+  'review.set',
+  'rigs.adopt',
   'rigs.list',
+  'rigs.set',
+  'rigs.unhold',
   'runners.show',
   'runs.abort',
+  'runs.fork',
   'runs.goto',
   'runs.mail',
+  'runs.poke',
+  'runs.remove',
+  'runs.retry',
   'runs.screen',
   'runs.show',
   'runs.start',
   'runs.status',
   'snapshot.show',
   'steps.reports',
+  'sweeps.run',
 ]
 
 test('n69b2 AC1 gc route has no GET mutation or CLI bridge', async () => {
@@ -176,7 +196,7 @@ test('n69b2 AC2 gc transport and invalid input refuse before every port effect',
 })
 
 describe('GET /v1/catalog', () => {
-  test('serves the envelope with the 30 operations', async () => {
+  test('serves the envelope with all the operations', async () => {
     const { h, calls } = setup()
     const r = await get(h, '/v1/catalog')
     expect(r.status).toBe(200)
