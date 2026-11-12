@@ -12253,21 +12253,42 @@ export function validateRig(rig: Rig, env: NodeJS.ProcessEnv = process.env): str
   return warnings
 }
 
-/** Check `--param name=value` pairs against the factory's params. Return them merged over `base`, or `base`. */
+/** The value of a `KEY=-` or `--param name=-` pair: stdin, minus one trailing newline. It never goes in a message. */
+function stdinValue(what: string): string {
+  let raw: string
+  try {
+    raw = readFileSync(0, 'utf8')
+  } catch {
+    return fail(`${what}=- could not read stdin`)
+  }
+  const v = raw.replace(/\r?\n$/, '')
+  if (!v) fail(`${what}=- read no value from stdin`)
+  return v
+}
+
+/** Check `--param name=value` pairs against the factory's params. A value `-` is read from stdin. Return them merged over `base`, or `base`. */
 function checkParams(
   def: Awaited<ReturnType<typeof loadFactory>>,
   pairs: string[],
   base?: Record<string, string>,
 ) {
-  let out = base
   for (const p of pairs) {
-    const [k, v] = [p.slice(0, p.indexOf('=')), p.slice(p.indexOf('=') + 1)]
+    const k = p.slice(0, p.indexOf('='))
     if (!p.includes('=') || !(k in (def.params ?? {})))
       fail(
         `--param is name=value, its name one of ${def.name}'s params: ${Object.keys(def.params ?? {}).join(', ') || 'none'} (not "${p}")`,
       )
+  }
+  if (pairs.filter(p => p.slice(p.indexOf('=') + 1) === '-').length > 1)
+    fail('only one value can come from stdin (-)')
+  let out = base
+  for (const p of pairs) {
+    const [k, raw] = [p.slice(0, p.indexOf('=')), p.slice(p.indexOf('=') + 1)]
+    const v = raw === '-' ? stdinValue(`--param ${k}`) : raw
     if (k === 'base_branch' && v && !branchOk(v))
-      fail(`--param base_branch is a plain branch name such as main or acme/deploy (not "${v}")`)
+      fail(
+        `--param base_branch is a plain branch name such as main or acme/deploy (not ${raw === '-' ? 'the stdin value' : `"${v}"`})`,
+      )
     out = { ...out, [k]: v }
   }
   return out
@@ -12357,8 +12378,6 @@ async function defineRig(
       fail(`--mcp ${mcp}: ${(err as Error).message}`)
     }
   }
-  const merged = checkParams(def, params ?? [], rig.params)
-  if (merged) rig.params = merged
   if (sweeps !== undefined) await checkSweeps(rig.sweeps ?? [], rig.sweepsFactory, repo)
   if (personOnlyContext?.length) {
     const bad = personOnlyContext.filter(c => !/^[A-Za-z0-9._@:/-]+$/.test(c))
@@ -12384,6 +12403,8 @@ async function defineRig(
   } else if (linearProjects !== undefined || linearLabels !== undefined) {
     fail('--linear-projects and --linear-labels need --linear <team_id[,team_id]> too')
   }
+  const merged = checkParams(def, params ?? [], rig.params)
+  if (merged) rig.params = merged
   return rig
 }
 
@@ -13606,7 +13627,7 @@ const usage = `factory — herdr software factories on xstate
                                      FACTORY_HOME, else the platform data dir: XDG_DATA_HOME/claude-factory,
                                      else ~/Library/Application Support/claude-factory on macOS, else
                                      ~/.local/share/claude-factory)
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--sensitive-path path|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm] | env set|unset <name|repo> KEY[=VALUE] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] [--path-prefix /path/]... | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value|name=-]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value|name=-]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--sensitive-path path|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm] | env set|unset <name|repo> KEY[=VALUE|=-] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] [--path-prefix /path/]... | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex, cursor, grok or pi), --mcp gives its workers
@@ -15252,7 +15273,7 @@ if (import.meta.main && !outboxCmd)
         if (sub === 'add') {
           if (!name || !repo)
             fail(
-              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--slo cmd] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--person-only-context ctx]... [--protected-branch b]... [--merge-authority] [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>']`,
+              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--slo cmd] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value|name=-]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--person-only-context ctx]... [--protected-branch b]... [--merge-authority] [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>']`,
             )
           const rig = await defineRig(name!, repo!, factory, {
             max,
@@ -15301,7 +15322,7 @@ if (import.meta.main && !outboxCmd)
           console.log(JSON.stringify(redactRig(found!), null, 2))
         } else if (sub === 'set') {
           const usage =
-            "usage: factory rig set <rig|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner name] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--sensitive-path path|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm]"
+            "usage: factory rig set <rig|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner name] [--agent cmd] [--mcp file] [--param name=value|name=-]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--sensitive-path path|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm]"
           const val = (f: string) => (args.includes(f) ? (opt(f) ?? '') : undefined)
           const clusterRuns = val('--cluster-runs')
           const autoQueue = val('--auto-queue')
@@ -15423,7 +15444,7 @@ if (import.meta.main && !outboxCmd)
           console.log(`rig ${target!.name}: set ${[...Object.keys(set), ...unset].join(',')}`)
         } else if (sub === 'env' || sub === 'egress' || sub === 'beads-remote') {
           const usages: Record<string, string> = {
-            'env set': 'factory rig env set <rig|repo> KEY=VALUE',
+            'env set': 'factory rig env set <rig|repo> KEY=VALUE|KEY=- (value on stdin)',
             'env unset': 'factory rig env unset <rig|repo> KEY',
             'egress add':
               'factory rig egress add <rig|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] [--path-prefix /path/]...',
@@ -15489,7 +15510,8 @@ if (import.meta.main && !outboxCmd)
           if (key === 'env set') {
             const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(arg!)
             if (!m) fail(`env KEY is [A-Za-z_][A-Za-z0-9_]* and the pair is KEY=VALUE: usage: ${usage}`)
-            change(r => without(r, 'env', { ...r.env, [m![1]!]: m![2]! }), `set env ${m![1]}`)
+            const v = m![2] === '-' ? stdinValue(`env ${m![1]}`) : m![2]!
+            change(r => without(r, 'env', { ...r.env, [m![1]!]: v }), `set env ${m![1]}`)
           } else if (key === 'env unset') {
             change(r => {
               if (!Object.hasOwn(r.env ?? {}, arg!)) throw new Error(`env ${arg} is not set`)
