@@ -223,6 +223,17 @@ describe('read routes', () => {
     expect((await get(t.h, '/v1/metrics?rig=acme&since=7d&json=1&tokens=1')).status).toBe(200)
     expect(t.calls).toEqual([p('records'), p('refreshMerges', []), p('managerUsage', 'number')])
   })
+  test('GET /v1/decisions and /v1/plan wait for a Promise from the port', async () => {
+    const t = setup()
+    const h = t.make({
+      decisionsList: () => Promise.resolve({ ok: 1 }),
+      planShowText: () => Promise.resolve('p'),
+    })
+    const d = await get(h, '/v1/decisions')
+    expect(d.status).toBe(200)
+    expect(await d.text()).toBe('{"ok":1}\n')
+    expect(await (await get(h, '/v1/plan')).text()).toBe('p\n')
+  })
   test('GET /v1/lease calls no port function and answers the lease line', async () => {
     const t = setup()
     const r = await get(t.h, '/v1/lease')

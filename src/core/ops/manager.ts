@@ -108,13 +108,13 @@ export async function show(ctx: Ctx, _i: Input): Promise<RunResult> {
 
 /** `manager.brief`: what a new manager session reads first (the contract says: replaces the transcript resume) */
 export async function brief(ctx: Ctx, _i: Input): Promise<RunResult> {
-  return inProc(print => {
+  return inProc(async print => {
     const board = ctx.board() as { manager?: unknown } | null | undefined
     print(
       JSON.stringify({
-        decisions: ctx.port.decisionsList(),
+        decisions: await ctx.port.decisionsList(),
         mail: Array.isArray(board?.manager) ? board.manager : [],
-        plan: ctx.port.planShowText(),
+        plan: await ctx.port.planShowText(),
         patrol: readLog(ctx.home, LOGS.patrol![0]).slice(-20),
       }),
     )
