@@ -71,6 +71,7 @@ const configPath = () => `${appHome()}/mods/factory/config.json`
 export default class Factory extends View {
   init(_props, cx) {
     this.cfg = null
+    this.cx = cx
     this.getCache = {} // GET path -> { at, r }
     this.jobs = {} // name -> { at, result? }
     this.selected = null
@@ -125,6 +126,24 @@ export default class Factory extends View {
     )
       .then(r => (mine.result = { code: r.code, out: r.stdout, err: r.stderr }))
       .catch(e => (mine.result = { code: 1, out: '', err: String(e) }))
+      .then(() => this.apply(name)) // draw when the call ends, not at the next beat
+  }
+
+  /** shares the result of a finished call with the tabs */
+  apply(name) {
+    const r = this.finished(name)
+    if (!r) return
+    if (name === 'snapshot' || name === 'decisions') {
+      const s = parseSnapshot(r.code, r.out, r.err)
+      if (name === 'snapshot') this.onTick(s.tick)
+      if (name === 'snapshot' && s.decisions) setShared('factory.decisions', s.decisions) // server mode: one call holds both views
+      if (name === 'decisions' && s.interview) setShared('factory.interview', s.interview)
+    } else if (name === 'context') setShared('factory.context', parseContext(r.code, r.out))
+    else if (name === 'flows') {
+      this.flow = parseFlows(r.code, r.out, r.err)
+      if (this.flow.graph) this.flowCache[this.flowKey()] = this.flow
+    }
+    this.cx.notify()
   }
 
   /** the result of a finished call, or null while it runs */
@@ -137,27 +156,9 @@ export default class Factory extends View {
 
   beat(cx) {
     cx.spawn(async cx => {
-      const r = this.finished('snapshot')
-      if (r) {
-        const s = parseSnapshot(r.code, r.out, r.err)
-        this.onTick(s.tick)
-        if (s.decisions) setShared('factory.decisions', s.decisions) // server mode: one call holds both views
-      }
-      const d = this.finished('decisions')
-      if (d) {
-        const s = parseSnapshot(d.code, d.out, d.err)
-        if (s.interview) setShared('factory.interview', s.interview)
-      }
-      const ctxJob = this.finished('context')
-      if (ctxJob) setShared('factory.context', parseContext(ctxJob.code, ctxJob.out))
-      const fl = this.finished('flows')
-      if (fl) {
-        this.flow = parseFlows(fl.code, fl.out, fl.err)
-        if (this.flow.graph) this.flowCache[this.flowKey()] = this.flow
-      }
       // the Flow tab asks for the graph while it is shown
       if (this.tab === 'flow') this.start('flows', flowJobWords(this.flowFactory, this.flowWindow))
-      // the first beat takes any cached board; later beats take one at most BOARD_MAX_AGE old
+      // the first beat takes any cached board; later beats take one at most BOARD_MAX_AGE old (over the beat)
       // the manager's model and context use: one read of its transcript, so each turn shows by the next beat
       const age = this.beats++ ? BOARD_MAX_AGE : FIRST_MAX_AGE
       if (this.cfg.server) {

@@ -489,3 +489,12 @@ test('after factory stop the snapshot board has halt and the header says so (cla
   expect(Bun.spawnSync([cli, 'resume'], { env }).exitCode).toBe(0)
   expect(board().halt).toBeUndefined()
 })
+
+// claude-factory-hpmc.33: a board cache older than one beat hits at the next beat; a result draws when the call ends
+test('the board max age is over the beat, and a result is applied when its call ends (claude-factory-hpmc.33)', () => {
+  const main = readFileSync(join(import.meta.dir, '..', 'herdr', 'mods', 'factory', 'main.js'), 'utf8')
+  const beat = Number(/const TICK_MS = ([\d_]+)/.exec(main)![1]!.replaceAll('_', ''))
+  expect(herdr.BOARD_MAX_AGE).toBeGreaterThan(beat)
+  expect(main).toMatch(/\.then\(\(\) => this\.apply\(name\)\)/)
+  expect(main.slice(main.indexOf('  beat(cx)'), main.indexOf('  flowKey()'))).not.toContain('this.finished(')
+})
