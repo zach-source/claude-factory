@@ -6,6 +6,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   statSync,
   symlinkSync,
@@ -21,16 +22,21 @@ let seq = 0
 const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
   const home = mkdtempSync(join(tmpdir(), 'sapi-h-'))
   const calls: Call[] = []
+  const files: string[] = []
   let lastEnv: Record<string, string | undefined> = {}
   const logs: string[] = []
   let boardCalls = 0
   const run = async (argv: string[], text?: string): Promise<RunResult> => {
     calls.push({ argv, text })
+    // a verb that reads a file: keep the text it would read, as the file is gone after the call
+    const last = argv[argv.length - 1]!
+    if (last.startsWith(join(home, 'text'))) files.push(readFileSync(last, 'utf8'))
     return { code: 0, out: '{"ok":1}\n', err: '', ...o.result }
   }
   // each port function logs into the same array as the runner, so a "zero calls" check counts both
   const log = (port: string, args: unknown[]) => calls.push({ port, args })
   const port: Port = {
+    say: () => {},
     gcPass: () => {},
     gcWorktreesPass: () => {},
     gcRigs: () => [],
@@ -83,7 +89,7 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
       board: () => (boardCalls++, o.board === undefined ? null : o.board),
       log: l => logs.push(l),
     })
-  return { home, calls, logs, h: make(), make, env: () => lastEnv, boards: () => boardCalls }
+  return { home, calls, files, logs, h: make(), make, env: () => lastEnv, boards: () => boardCalls }
 }
 type H = ReturnType<typeof setup>['h']
 
@@ -321,6 +327,17 @@ describe('action routes', () => {
       { factory: 'lifecycle', station: 'plan', rig: 'acme', goal: 'g', owned: true },
       [{ argv: ['start', 'lifecycle@plan', 'acme', 'g', '--owned'] }],
     ],
+    ['/v1/runs/r1/poke', {}, [{ argv: ['poke', 'r1'] }]],
+    ['/v1/runs/r1/poke', { text: 'hurry' }, [{ argv: ['poke', 'r1', 'hurry'] }]],
+    ['/v1/runs/r1/retry', {}, [{ argv: ['retry', 'r1'] }]],
+    ['/v1/runs/r1/fork', { station: 'plan' }, [{ argv: ['fork', 'r1', 'plan'] }]],
+    ['/v1/runs/r1/fork', { station: 'plan', note: 'n' }, [{ argv: ['fork', 'r1', 'plan', 'n'] }]],
+    ['/v1/queue', { rig: 'acme', bead: 'b1' }, [{ argv: ['queue', 'acme', 'b1'] }]],
+    ['/v1/queue', { rig: 'acme', bead: 'b1', station: 'plan' }, [{ argv: ['queue', 'acme', 'b1', 'plan'] }]],
+    ['/v1/rigs/ax/unhold', {}, [{ argv: ['unhold', 'ax'] }]],
+    ['/v1/rigs/ax/unhold', { codex: true }, [{ argv: ['unhold', 'ax', '--codex'] }]],
+    ['/v1/adopt', { rig: 'acme' }, [{ argv: ['adopt', 'acme'] }]],
+    ['/v1/adopt', { rig: 'acme', template: 'lifecycle' }, [{ argv: ['adopt', 'acme', 'lifecycle'] }]],
     ['/v1/halt', { mode: 'stop' }, [{ argv: ['stop'] }]],
     ['/v1/halt', { mode: 'resume' }, [{ argv: ['resume'] }]],
     ['/v1/decisions/acme/b1/answer', { text: 'yes' }, [p('decisionsAnswer', 'acme', 'b1', 'yes')]],
@@ -332,6 +349,86 @@ describe('action routes', () => {
       expect(r.status).toBe(200)
       expect(t.calls).toEqual(calls)
     })
+})
+
+describe('DELETE and PATCH routes', () => {
+  const del = (h: H, path: string, key: string, method = 'DELETE', body = '{}') =>
+    h(
+      new Request(`http://x${path}`, {
+        method,
+        headers: { 'content-type': 'application/json', 'idempotency-key': key },
+        body,
+      }),
+      '127.0.0.1',
+    )
+  test('DELETE /v1/runs/:id runs rm; a repeat with the same key does not run it again', async () => {
+    const t = setup()
+    expect((await del(t.h, '/v1/runs/r1', 'key-del-00001')).status).toBe(200)
+    expect((await del(t.h, '/v1/runs/r1', 'key-del-00001')).status).toBe(200)
+    expect(t.calls).toEqual([{ argv: ['rm', 'r1'] }])
+  })
+  test('PATCH /v1/rigs/:rig gives the flags to rig set, the goal last', async () => {
+    const t = setup()
+    const body = JSON.stringify({ goal: 'ship it', max: '3', param: 'a=1\nb=2' })
+    expect((await del(t.h, '/v1/rigs/acme', 'key-patch-001', 'PATCH', body)).status).toBe(200)
+    expect(t.calls).toEqual([
+      { argv: ['rig', 'set', 'acme', '--max', '3', '--param', 'a=1', '--param', 'b=2', '--goal', 'ship it'] },
+    ])
+  })
+  test('POST /v1/sweeps/all runs sweep; another name gives 422 and no call', async () => {
+    const t = setup()
+    expect((await post(t.h, '/v1/sweeps/all', {})).status).toBe(200)
+    expect((await post(t.h, '/v1/sweeps/x', {})).status).toBe(422)
+    expect(t.calls).toEqual([{ argv: ['sweep'] }])
+  })
+  test('GET /v1/memory/search runs memory search with the query as one word', async () => {
+    const t = setup()
+    const q = 'query=how%20to%20merge&rig=acme&from=r1%2Fplan&noCore=1'
+    expect((await get(t.h, `/v1/memory/search?${q}`)).status).toBe(200)
+    expect(t.calls).toEqual([
+      { argv: ['memory', 'search', '--rig', 'acme', '--from', 'r1/plan', '--no-core', 'how to merge'] },
+    ])
+  })
+  test('POST /v1/memory runs memory add; a kind that is not a kind gives 400 and no call', async () => {
+    const t = setup()
+    const r = await post(t.h, '/v1/memory', {
+      kind: 'rule',
+      summary: 'use bun',
+      body: 'not npm',
+      anyway: true,
+    })
+    expect(r.status).toBe(200)
+    expect((await post(t.h, '/v1/memory', { kind: 'joke', summary: 's' })).status).toBe(400)
+    expect(t.calls).toEqual([{ argv: ['memory', 'add', '--kind', 'rule', '--anyway', 'use bun', 'not npm'] }])
+  })
+  const put = (h: H, path: string, body: unknown) =>
+    del(h, path, `key-put-${++seq}-xx`, 'PUT', JSON.stringify(body))
+  const withFile = (...argv: string[]) => ({
+    argv: [...argv.slice(0, -1), expect.stringContaining('/text/put-')],
+  })
+  test('PUT /v1/plan, PUT /v1/gate-brief/:run and PUT /v1/review give the text by file, then delete it', async () => {
+    const t = setup()
+    expect((await put(t.h, '/v1/plan', { answer: '{"rigs":{}}' })).status).toBe(200)
+    const gate = { startedAt: '1700', text: 'brief' }
+    expect((await put(t.h, '/v1/gate-brief/r1', gate)).status).toBe(200)
+    expect((await put(t.h, '/v1/review', { key: 'skill:a:0123abcd', text: 'keep' })).status).toBe(200)
+    expect(t.calls).toEqual([
+      withFile('plan', 'set', ''),
+      withFile('gate-brief', 'set', 'gate:r1@1700', ''),
+      withFile('review', 'set', 'skill:a:0123abcd', ''),
+    ])
+    expect(t.files).toEqual(['{"rigs":{}}', 'brief', 'keep'])
+    expect(readdirSync(join(t.home, 'text'))).toEqual([])
+  })
+  test('GET /v1/plan/facts and GET /v1/review run the facts verbs', async () => {
+    const t = setup()
+    expect((await get(t.h, '/v1/plan/facts')).status).toBe(200)
+    expect((await get(t.h, '/v1/review?key=skill%3Aa%3A0123abcd')).status).toBe(200)
+    expect(t.calls).toEqual([{ argv: ['plan', 'facts'] }, { argv: ['review', 'facts', 'skill:a:0123abcd'] }])
+  })
+  test('POST on the DELETE path gives 404', async () => {
+    expect((await post(setup().h, '/v1/runs/r1', {})).status).toBe(404)
+  })
 })
 
 describe('refusals make zero calls', () => {
@@ -1080,5 +1177,82 @@ describe('web page', () => {
     expect(paths.length).toBeGreaterThan(5)
     for (const p of paths)
       expect(CATALOG.some(o => o.route.method === 'GET' && o.route.path === p)).toBe(true)
+  })
+})
+
+describe('GET cap of 8 reads', () => {
+  const waiting = () => {
+    let release!: () => void
+    const gate = new Promise<void>(r => (release = r))
+    let started = 0
+    const status = (async (_id: unknown, print: (l: string) => void) => {
+      started++
+      await gate
+      print('{"ok":1}')
+    }) as Port['status']
+    return { release, status, started: () => started }
+  }
+  test('the 9th read gets 503 while 8 wait, then reads work again', async () => {
+    const t = setup()
+    const w = waiting()
+    const h = t.make({ status: w.status })
+    const eight = Array.from({ length: 8 }, () => get(h, '/v1/status'))
+    await Bun.sleep(50)
+    const ninth = await get(h, '/v1/status')
+    expect(ninth.status).toBe(503)
+    expect(w.started()).toBe(8)
+    // a POST that does not mutate is not counted
+    const g = await post(h, '/v1/guard/check', { command: 'factory status', role: 'manager' })
+    expect(g.status).toBe(200)
+    w.release()
+    for (const r of await Promise.all(eight)) expect(r.status).toBe(200)
+    expect((await get(h, '/v1/status')).status).toBe(200)
+  })
+  test('a read that throws frees its slot', async () => {
+    const t = setup()
+    let boom = true
+    const h = t.make({
+      status: (async (_id: unknown, print: (l: string) => void) => {
+        if (boom) throw 'x'
+        print('{"ok":1}')
+      }) as Port['status'],
+    })
+    for (let i = 0; i < 9; i++) expect((await get(h, '/v1/status')).status).toBe(500)
+    boom = false
+    expect((await get(h, '/v1/status')).status).toBe(200)
+  })
+  test('a read that returns early frees its slot', async () => {
+    const t = setup()
+    for (let i = 0; i < 9; i++) expect((await get(t.h, '/v1/metrics?since=0d')).status).toBe(422)
+    expect((await get(t.h, '/v1/status')).status).toBe(200)
+  })
+})
+
+describe('serveSocket idle timer after the reply', () => {
+  test('a client that never closes is destroyed after the reply', async () => {
+    const { createServer, connect } = await import('node:net')
+    let closed: Promise<void> | undefined
+    const srv = createServer(s => {
+      closed = new Promise<void>(r => s.once('close', () => r()))
+      serveSocket(s as never, async () => new Response('ok'), 200)
+    })
+    await new Promise<void>(r => srv.listen(0, '127.0.0.1', () => r()))
+    const c = connect({
+      port: (srv.address() as { port: number }).port,
+      host: '127.0.0.1',
+      allowHalfOpen: true,
+    })
+    try {
+      let got = ''
+      c.on('data', d => (got += d))
+      c.write('GET /x HTTP/1.1\r\nhost: x\r\n\r\n')
+      for (let i = 0; i < 20 && !got.startsWith('HTTP/1.1 200'); i++) await Bun.sleep(50)
+      expect(got.startsWith('HTTP/1.1 200')).toBe(true)
+      const res = await Promise.race([closed!.then(() => 'closed'), Bun.sleep(1500).then(() => 'open')])
+      expect(res).toBe('closed')
+    } finally {
+      c.destroy()
+      srv.close()
+    }
   })
 })

@@ -231,6 +231,7 @@ import { REASON, boundedRun } from './screen'
 import * as client from './client'
 import { backupAge, backupError, backupWanted } from './homebackup'
 import * as managerhost from './managerhost'
+import { drainHaltQueue, haltLine, runHaltCmd } from './halt-order'
 import * as leases from './lease'
 import * as herdrApp from './herdr-install'
 import * as migrate from './migrate'
@@ -241,6 +242,7 @@ import {
   httpsRemote,
   inAx,
   isLaptopPane,
+  inServer,
   mapRigs,
   mapRunRepo,
   mapRunWorktree,
@@ -252,7 +254,7 @@ import {
 } from './axrepos'
 import * as broker from './broker'
 import * as server from './server'
-import { personCerts } from './server-api'
+import { managerCert, personCerts } from './server-api'
 import { AUTO_LABEL, autoPick, autoQueueOf, recentPicks, type AutoQueue } from './autoqueue'
 import * as pkggate from './pkggate'
 import { startUi, withBeads } from './ui'
@@ -443,11 +445,27 @@ const halted = (): Halt | null => (existsSync(haltFile()) ? readJson(haltFile())
 /**
  * a tick writes its halt copy back only while halt.json is still the one it read: a `factory resume` that
  * removed it, or a new stop that replaced it, must win over the stale copy (claude-factory-sg4s3).
- * ponytail: a check and a write, not a lock; the gap is microseconds. Upgrade path: take the tick lock in stop and resume.
+ * stop and resume now take tick.lock (halt-order.ts), so this check is a second guard, for a lock taken over from a dead holder.
  */
 export function writeHaltIfSame(halt: Halt, next: Halt = halt, file = haltFile()) {
   const now = existsSync(file) ? readJson<Halt>(file) : null
   if (now?.at === halt.at) writeJson(file, next)
+}
+
+/** stop or resume, with the caller holding tick.lock. Throws when the command does not fit the state. */
+function applyHalt(cmd: 'stop' | 'resume') {
+  if (cmd === 'stop') {
+    if (halted()) throw new Error(`already ${halted()!.state}`)
+    writeJson(haltFile(), { state: 'stopping', at: Date.now(), told: {}, closed: {} })
+    return `stopping: each working worker is told to commit and wait; its pane closes once it is quiet, at most ${HALT_GRACE_MS / 60_000} min. Ticks carry it out; factory status shows it. factory resume brings them back.`
+  }
+  const halt = halted()
+  if (!halt) throw new Error('the factory is not stopped')
+  // the runs whose workers stop closed, at the station they were at: the next tick resumes each
+  const back = existsSync(resumeFile_()) ? readJson<Record<string, number>>(resumeFile_()) : {}
+  writeJson(resumeFile_(), { ...back, ...halt.closed })
+  rmSync(haltFile())
+  return `resuming ${Object.keys(halt.closed).length} worker(s) in their own conversations at the next tick`
 }
 
 /** what a stop does next to one working worker */
@@ -606,7 +624,8 @@ async function launchAxManager(args: string[]) {
 }
 /** refuse to run a manager or a tick here while the AX manager task lives (claude-factory-192.6) */
 const lease = () => {
-  const m = ax.remoteManager()
+  // in the server pod the manager lease is the guard, not the AX task name (claude-factory-gogxc.4)
+  const m = inServer() ? undefined : ax.remoteManager()
   if (m) fail(m)
 }
 /**
@@ -622,7 +641,7 @@ function localLease(want = leases.asker(process.env, process.ppid)): leases.Leas
     return cur ?? { holder: 'unknown', kind: 'cli', at: Date.now() }
   }
   try {
-    const d = leases.take(HOME, want)
+    const d = leases.take(HOME, want, Date.now(), inServer())
     return d.ok ? undefined : d.lease
   } finally {
     release()
@@ -3666,6 +3685,10 @@ const workerPluginNames = (skills: string[] = ['asd-ste100']) => [
     .filter(Boolean),
 ]
 
+/** workerPluginNames for a codex or pi worker: Claude-only names drop out, also from FACTORY_WORKER_PLUGINS */
+export const harnessPluginNames = (h: Harness | null, skills: string[]) =>
+  skillsFor(h, workerPluginNames(skills))
+
 /**
  * the dirs of the person's worker plugins that are on, so a codex or pi worker gets the skills a Claude worker
  * gets from enabledPlugins (constitution I). Claude Code keeps a plugin at its installPath, or, from a directory
@@ -4134,9 +4157,12 @@ export function launch(
   warnSkillsForHarness(h, skills, node, process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'))
   const setup =
     h === 'codex'
-      ? codexWorker(run, def, node, agent, rig, { plugins: userPluginDirs(workerPluginNames(skills)), otel })
+      ? codexWorker(run, def, node, agent, rig, {
+          plugins: userPluginDirs(harnessPluginNames(h, skills)),
+          otel,
+        })
       : h === 'pi'
-        ? piWorker(HOME, userPluginDirs(workerPluginNames(skills)))
+        ? piWorker(HOME, userPluginDirs(harnessPluginNames(h, skills)))
         : h === 'cursor'
           ? cursorWorker(run, rig)
           : h === 'grok'
@@ -5980,7 +6006,9 @@ export function keepPersonLines(
  * Stage the wiki, put every staged page that fails a check back at its last version, and commit the rest
  * as the factory identity. A page passes when its path, size (65,536 bytes) and scanPages() are clean.
  * A journal line names the path and a fixed reason, never page text. `paths` limits the staging to those pages
- * (none: the whole tree). True when it made a commit, null when nothing was staged, false on a failure.
+ * (none: the whole tree), and so do the checks and the commit. The commit is built on a private index, so a page a
+ * person staged outside `paths` stays staged and out of it. True when it made a commit, null when nothing was
+ * committed, false on a failure.
  */
 export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki'), paths?: string[]) {
   const clean = (s: string) =>
@@ -5989,33 +6017,58 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
       .replace(/\p{Cc}/gu, ' ')
       .slice(0, 200)
   if (!repoConfigOk(dir)) return (wikiLog('wiki: repo config not allowed, nothing committed'), false)
+  // the commit is built on a private index with HEAD pinned before the staging:
+  // a page staged outside `paths` stays out of it, and a person commit after the pin makes update-ref fail
+  const head = wikiGit(dir, ['rev-parse', '--verify', '-q', 'HEAD'])
+  const old = head.code === 0 ? head.out.toString().trim() : ''
   if (wikiGit(dir, ['add', '-A', '--', ...(paths ?? [])]).code !== 0)
     return (wikiLog('wiki: stage failed, nothing committed'), false)
-  const list = wikiGit(dir, ['diff', '--cached', '--raw', '--no-renames', '-z', '--diff-filter=d'])
+  const list = wikiGit(dir, [
+    'diff',
+    '--cached',
+    '--raw',
+    '--no-renames',
+    '--no-abbrev',
+    '-z',
+    '--',
+    ...(paths ?? []),
+  ])
   if (list.code !== 0) return (wikiLog('wiki: staged list failed, nothing committed'), false)
   // raw -z: ":<old mode> <new mode> <old sha> <new sha> <status>\0<path>\0"
   const fields = list.out.toString().split('\0')
   const refused: string[] = []
+  const entries: { mode: string; sha: string; status: string; path: string }[] = []
   const tombs = new Set(wikiTombstones(dir).map(t => t.path))
   // a refused rename target puts its source back too, or the commit would delete the old page
   // ponytail: git pairs a rename only above 50% similarity; a rewrite below that still commits the old path's delete
   const moved = new Map<string, string>()
-  const ren = wikiGit(dir, ['diff', '--cached', '--raw', '-M', '-z', '--diff-filter=R'])
+  const ren = wikiGit(dir, [
+    'diff',
+    '--cached',
+    '--raw',
+    '-M',
+    '-z',
+    '--diff-filter=R',
+    '--',
+    ...(paths ?? []),
+  ])
   if (ren.code === 0) {
     const f = ren.out.toString().split('\0')
     for (let k = 0; k + 2 < f.length; k += 3) moved.set(f[k + 2]!, f[k + 1]!)
   }
   for (let k = 0; k + 1 < fields.length; k += 2) {
-    const [, mode, , , status] = fields[k]!.split(' ')
+    const [, mode, , sha, status] = fields[k]!.split(' ')
     const path = fields[k + 1]!
+    entries.push({ mode: mode!, sha: sha!, status: status!, path })
     let why: string | undefined
+    if (status === 'D') continue
     if (!WIKI_PAGE_PATH.test(path) || path.split('/').includes('..'))
       why = 'wiki: bad page path, page kept at last version'
     else if (status === 'A' && tombs.has(path)) why = `wiki: tombstoned path ${path}, page not made again`
     else if (mode !== '100644' && mode !== '100755')
       why = `wiki: bad file mode in ${path}, page kept at last version`
     else {
-      const blob = wikiGit(dir, ['show', `:${path}`]).out
+      const blob = wikiGit(dir, ['show', sha!]).out
       const reasons =
         blob.length > WIKI_PAGE_MAX
           ? ['page too large']
@@ -6029,40 +6082,86 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
     if (wikiGit(dir, ['cat-file', '-e', `HEAD:${path}`]).code === 0)
       wikiGit(dir, ['restore', '--staged', '--worktree', '--source=HEAD', '--', path])
     else wikiGit(dir, ['rm', '--cached', '-f', '-q', '--', path])
-    const old = moved.get(path)
-    if (old !== undefined) {
-      refused.push(old)
-      wikiGit(dir, ['restore', '--staged', '--worktree', '--source=HEAD', '--', old])
+    const src = moved.get(path)
+    if (src !== undefined) {
+      refused.push(src)
+      wikiGit(dir, ['restore', '--staged', '--worktree', '--source=HEAD', '--', src])
     }
   }
   // a refused path that is still staged (an unstage that failed) must never reach a commit
   if (refused.length && wikiGit(dir, ['diff', '--cached', '--quiet', '--', ...refused]).code !== 0)
     return (wikiLog('wiki: unstage failed, nothing committed'), false)
-  if (wikiGit(dir, ['diff', '--cached', '--quiet']).code !== 1) return null
-  const c = wikiGit(
-    dir,
-    [
-      '-c',
-      'user.name=factory',
-      '-c',
-      `user.email=${WIKI_EMAIL}`,
-      '-c',
-      'commit.gpgsign=false',
-      'commit',
-      '-q',
-      '-m',
-      `wiki ${clean(pass)}: ${clean(summary)}`,
-    ],
-    false,
-    {
-      GIT_AUTHOR_NAME: 'factory',
-      GIT_AUTHOR_EMAIL: WIKI_EMAIL,
-      GIT_COMMITTER_NAME: 'factory',
-      GIT_COMMITTER_EMAIL: WIKI_EMAIL,
-    },
-  )
-  if (c.code !== 0) wikiLog(`wiki: commit failed (exit ${c.code})`)
-  return c.code === 0
+  let keep = entries.filter(e => !refused.includes(e.path))
+  if (refused.length) {
+    // a restore can undo the staged entry of another path (a file over a directory)
+    // keep only the entries that are still staged as listed
+    const again = wikiGit(dir, [
+      'diff',
+      '--cached',
+      '--raw',
+      '--no-renames',
+      '--no-abbrev',
+      '-z',
+      '--',
+      ...(paths ?? []),
+    ])
+    if (again.code !== 0) return (wikiLog('wiki: staged list failed, nothing committed'), false)
+    const f = again.out.toString().split('\0')
+    const now = new Set<string>()
+    for (let k = 0; k + 1 < f.length; k += 2) {
+      const [, mode, , sha, status] = f[k]!.split(' ')
+      now.add(`${mode} ${sha} ${status} ${f[k + 1]}`)
+    }
+    keep = keep.filter(e => now.has(`${e.mode} ${e.sha} ${e.status} ${e.path}`))
+  }
+  if (!keep.length) return null
+  const tmp = mkdtempSync(join(tmpdir(), 'factory-wiki-index-'))
+  const idx = { GIT_INDEX_FILE: join(tmp, 'index') }
+  try {
+    const steps = [old ? ['read-tree', old] : ['read-tree', '--empty']]
+    // --replace: git removes a file or directory entry that conflicts with the add, as git commit does
+    for (const e of keep)
+      steps.push(
+        e.status === 'D'
+          ? ['update-index', '--force-remove', '--', e.path]
+          : ['update-index', '--add', '--replace', '--cacheinfo', `${e.mode},${e.sha},${e.path}`],
+      )
+    for (const a of steps)
+      if (wikiGit(dir, a, false, idx).code !== 0)
+        return (wikiLog('wiki: commit index failed, nothing committed'), false)
+    const tree = wikiGit(dir, ['write-tree'], false, idx)
+    if (tree.code !== 0) return (wikiLog('wiki: commit index failed, nothing committed'), false)
+    const c = wikiGit(
+      dir,
+      [
+        '-c',
+        'user.name=factory',
+        '-c',
+        `user.email=${WIKI_EMAIL}`,
+        '-c',
+        'commit.gpgsign=false',
+        'commit-tree',
+        tree.out.toString().trim(),
+        ...(old ? ['-p', old] : []),
+        '-m',
+        `wiki ${clean(pass)}: ${clean(summary)}`,
+      ],
+      false,
+      {
+        GIT_AUTHOR_NAME: 'factory',
+        GIT_AUTHOR_EMAIL: WIKI_EMAIL,
+        GIT_COMMITTER_NAME: 'factory',
+        GIT_COMMITTER_EMAIL: WIKI_EMAIL,
+      },
+    )
+    if (c.code !== 0) return (wikiLog(`wiki: commit failed (exit ${c.code})`), false)
+    // compare-and-swap: refuses when a person committed after the rev-parse
+    const u = wikiGit(dir, ['update-ref', '-m', `wiki ${clean(pass)}`, 'HEAD', c.out.toString().trim(), old])
+    if (u.code !== 0) return (wikiLog('wiki: HEAD moved, nothing committed'), false)
+    return true
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
 }
 
 /** PUBLIC, PRIVATE or INTERNAL from `gh repo view`; read at most once in 24 h per remote unless `fresh`. Else undefined. */
@@ -8118,6 +8217,7 @@ async function tick(isPatrol = false) {
   const release = hold('tick.lock')
   if (!release) return { busy: true }
   try {
+    drainHaltQueue(HOME, applyHalt) // commands that found the lock busy come first, in seq order
     const now = Date.now()
     await refreshCursorMeter(HOME, process.env, now)
     const linearState = existsSync(linearSyncFile())
@@ -8179,7 +8279,8 @@ async function tick(isPatrol = false) {
     const now_ = halted()
     if (halt?.state === 'stopping' && now_?.at === halt.at && !out.runs.some(r => r.agent === 'stopping'))
       writeHaltIfSame(now_, { ...now_, state: 'paused' })
-    return { ...out, halt: halted()?.state }
+    // halt and its age come first, so every view of the board shows a pause at the top
+    return { halt: halted()?.state, haltAt: halted()?.at, ...out }
   } finally {
     release()
     // FACTORY_NO_KICK=1 (tests): a detached pass would recreate a removed home
@@ -12159,21 +12260,42 @@ export function validateRig(rig: Rig, env: NodeJS.ProcessEnv = process.env): str
   return warnings
 }
 
-/** Check `--param name=value` pairs against the factory's params. Return them merged over `base`, or `base`. */
+/** The value of a `KEY=-` or `--param name=-` pair: stdin, minus one trailing newline. It never goes in a message. */
+function stdinValue(what: string): string {
+  let raw: string
+  try {
+    raw = readFileSync(0, 'utf8')
+  } catch {
+    return fail(`${what}=- could not read stdin`)
+  }
+  const v = raw.replace(/\r?\n$/, '')
+  if (!v) fail(`${what}=- read no value from stdin`)
+  return v
+}
+
+/** Check `--param name=value` pairs against the factory's params. A value `-` is read from stdin. Return them merged over `base`, or `base`. */
 function checkParams(
   def: Awaited<ReturnType<typeof loadFactory>>,
   pairs: string[],
   base?: Record<string, string>,
 ) {
-  let out = base
   for (const p of pairs) {
-    const [k, v] = [p.slice(0, p.indexOf('=')), p.slice(p.indexOf('=') + 1)]
+    const k = p.slice(0, p.indexOf('='))
     if (!p.includes('=') || !(k in (def.params ?? {})))
       fail(
         `--param is name=value, its name one of ${def.name}'s params: ${Object.keys(def.params ?? {}).join(', ') || 'none'} (not "${p}")`,
       )
+  }
+  if (pairs.filter(p => p.slice(p.indexOf('=') + 1) === '-').length > 1)
+    fail('only one value can come from stdin (-)')
+  let out = base
+  for (const p of pairs) {
+    const [k, raw] = [p.slice(0, p.indexOf('=')), p.slice(p.indexOf('=') + 1)]
+    const v = raw === '-' ? stdinValue(`--param ${k}`) : raw
     if (k === 'base_branch' && v && !branchOk(v))
-      fail(`--param base_branch is a plain branch name such as main or acme/deploy (not "${v}")`)
+      fail(
+        `--param base_branch is a plain branch name such as main or acme/deploy (not ${raw === '-' ? 'the stdin value' : `"${v}"`})`,
+      )
     out = { ...out, [k]: v }
   }
   return out
@@ -12263,8 +12385,6 @@ async function defineRig(
       fail(`--mcp ${mcp}: ${(err as Error).message}`)
     }
   }
-  const merged = checkParams(def, params ?? [], rig.params)
-  if (merged) rig.params = merged
   if (sweeps !== undefined) await checkSweeps(rig.sweeps ?? [], rig.sweepsFactory, repo)
   if (personOnlyContext?.length) {
     const bad = personOnlyContext.filter(c => !/^[A-Za-z0-9._@:/-]+$/.test(c))
@@ -12290,6 +12410,8 @@ async function defineRig(
   } else if (linearProjects !== undefined || linearLabels !== undefined) {
     fail('--linear-projects and --linear-labels need --linear <team_id[,team_id]> too')
   }
+  const merged = checkParams(def, params ?? [], rig.params)
+  if (merged) rig.params = merged
   return rig
 }
 
@@ -13291,12 +13413,7 @@ async function flowData(name: string | undefined): Promise<{ def: Factory; runs:
 
 async function status(id: string | undefined, print: Print = l => console.log(l)) {
   const halt = halted()
-  if (halt && !id)
-    print(
-      halt.state === 'paused'
-        ? `PAUSED since ${clock(halt.at)}: ${Object.keys(halt.closed).length} worker(s) wait for factory resume`
-        : `STOPPING since ${clock(halt.at)}: workers are committing and going quiet`,
-    )
+  if (halt && !id) print(haltLine(halt, Date.now()))
   const stale = !id && managerStale(HOME, managerCommand([], ''))
   if (stale) print(stale)
   if (!id && process.env.FACTORY_IN_AX === '1' && process.env.FACTORY_AX_BACKUP_REMOTE) {
@@ -13517,7 +13634,7 @@ const usage = `factory — herdr software factories on xstate
                                      FACTORY_HOME, else the platform data dir: XDG_DATA_HOME/claude-factory,
                                      else ~/Library/Application Support/claude-factory on macOS, else
                                      ~/.local/share/claude-factory)
-  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--sensitive-path path|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm] | env set|unset <name|repo> KEY[=VALUE] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] [--path-prefix /path/]... | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
+  rig [add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value|name=-]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>'] | set <name|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner r] [--agent cmd] [--mcp file] [--param name=value|name=-]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--sensitive-path path|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm] | env set|unset <name|repo> KEY[=VALUE|=-] | egress add|rm <name|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] [--path-prefix /path/]... | beads-remote set <name|repo> --name n --url u --user user|clear <name|repo> | show <name|repo> | rm <name> | history | undo [n]]   the factory's
                                      rigs: repos whose ready beads labeled factory start as runs, each with its
                                      own cap, sweeps, runner (where workers run) and a goal the manager works toward; --agent runs every
                                      station as that command (claude, codex, cursor, grok or pi), --mcp gives its workers
@@ -13766,6 +13883,7 @@ export const corePort: Port = {
   abort: abortRun,
   screen: screenRun,
   mail: mailRun,
+  say: ax.say,
   chatModel: runModelAsync,
   chatRun: runApproved,
 }
@@ -13949,15 +14067,22 @@ if (import.meta.main && !outboxCmd)
             if (c !== 0) throw new Error(`exit ${c}`)
           })
         }
-        server.main(args, HOME, () => tick(), corePort, backup)
+        // the pod's tick takes the manager lease like `factory tick`; a busy lease means no tick (claude-factory-gogxc.4)
+        const podTick = async () => {
+          const other = localLease(leases.podAsker(hostname()))
+          if (other) throw new Error(`no tick: ${leases.leaseLine(other, Date.now())}`)
+          return tick()
+        }
+        server.main(args, HOME, podTick, corePort, backup)
         break
       case 'cert': {
         refuseWorker('cert', true)
         const [what, dir, name, ...more] = args
-        if (what !== 'person' || !dir || !name || more.length)
-          fail('usage: factory cert person <dir> <server-name>')
+        const manager = what === 'manager' && dir && !name
+        if (!manager && (what !== 'person' || !dir || !name || more.length))
+          fail('usage: factory cert person <dir> <server-name> | factory cert manager <dir>')
         try {
-          const out = personCerts(resolve(dir!), name!)
+          const out = manager ? managerCert(resolve(dir!)) : personCerts(resolve(dir!), name!)
           console.log(out)
         } catch (e) {
           fail((e as Error).message)
@@ -14066,25 +14191,17 @@ if (import.meta.main && !outboxCmd)
         if (!args.length) fail("usage: factory say '<text...>'")
         ax.say(args.join(' '))
         break
-      case 'stop': {
-        refuseWorker('stop', true)
-        if (halted()) fail(`already ${halted()!.state}`)
-        writeJson(haltFile(), { state: 'stopping', at: Date.now(), told: {}, closed: {} })
-        console.log(
-          `stopping: each working worker is told to commit and wait; its pane closes once it is quiet, at most ${HALT_GRACE_MS / 60_000} min. Ticks carry it out; factory status shows it. factory resume brings them back.`,
-        )
-        break
-      }
+      case 'stop':
       case 'resume': {
-        refuseWorker('resume', true)
-        const halt = halted() ?? fail('the factory is not stopped')
-        // the runs whose workers stop closed, at the station they were at: the next tick resumes each
-        const back = existsSync(resumeFile_()) ? readJson<Record<string, number>>(resumeFile_()) : {}
-        writeJson(resumeFile_(), { ...back, ...halt.closed })
-        rmSync(haltFile())
-        console.log(
-          `resuming ${Object.keys(halt.closed).length} worker(s) in their own conversations at the next tick`,
-        )
+        refuseWorker(cmd, true)
+        try {
+          const r = await runHaltCmd(HOME, () => hold('tick.lock'), cmd, applyHalt)
+          console.log(
+            'queued' in r ? `queued as ${r.queued}: a tick is running; the next tick applies it` : r.out,
+          )
+        } catch (e) {
+          fail((e as Error).message)
+        }
         break
       }
       case 'memory': {
@@ -15163,7 +15280,7 @@ if (import.meta.main && !outboxCmd)
         if (sub === 'add') {
           if (!name || !repo)
             fail(
-              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--slo cmd] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--person-only-context ctx]... [--protected-branch b]... [--merge-authority] [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>']`,
+              `usage: factory rig add <name> <repo> [factory] [--max n] [--sweeps a,b|none] [--slo cmd] [--runner ${Object.keys(runners).join('|')}] [--agent cmd] [--mcp file] [--param name=value|name=-]... [--egress host[,host]...[=KEY[:Header:Prefix]]]... [--person-only-context ctx]... [--protected-branch b]... [--merge-authority] [--linear team_id[,team_id] [--linear-projects name[,name]] [--linear-labels name[,name]]] [--goal '<text...>']`,
             )
           const rig = await defineRig(name!, repo!, factory, {
             max,
@@ -15212,7 +15329,7 @@ if (import.meta.main && !outboxCmd)
           console.log(JSON.stringify(redactRig(found!), null, 2))
         } else if (sub === 'set') {
           const usage =
-            "usage: factory rig set <rig|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner name] [--agent cmd] [--mcp file] [--param name=value]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--sensitive-path path|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm]"
+            "usage: factory rig set <rig|repo> [--goal '<text...>'] [--max n] [--sweeps a,b|none] [--runner name] [--agent cmd] [--mcp file] [--param name=value|name=-]... [--cluster-runs n] [--auto-queue p,n|off] [--push-rule text|none]... [--sensitive-path path|none]... [--skills a,b|none] [--otel-content on|off] [--sandbox-class gvisor|microvm]"
           const val = (f: string) => (args.includes(f) ? (opt(f) ?? '') : undefined)
           const clusterRuns = val('--cluster-runs')
           const autoQueue = val('--auto-queue')
@@ -15334,7 +15451,7 @@ if (import.meta.main && !outboxCmd)
           console.log(`rig ${target!.name}: set ${[...Object.keys(set), ...unset].join(',')}`)
         } else if (sub === 'env' || sub === 'egress' || sub === 'beads-remote') {
           const usages: Record<string, string> = {
-            'env set': 'factory rig env set <rig|repo> KEY=VALUE',
+            'env set': 'factory rig env set <rig|repo> KEY=VALUE|KEY=- (value on stdin)',
             'env unset': 'factory rig env unset <rig|repo> KEY',
             'egress add':
               'factory rig egress add <rig|repo> host[,host]...[=KEY[:Header:Prefix]] [--port n] [--path-prefix /path/]...',
@@ -15400,7 +15517,8 @@ if (import.meta.main && !outboxCmd)
           if (key === 'env set') {
             const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(arg!)
             if (!m) fail(`env KEY is [A-Za-z_][A-Za-z0-9_]* and the pair is KEY=VALUE: usage: ${usage}`)
-            change(r => without(r, 'env', { ...r.env, [m![1]!]: m![2]! }), `set env ${m![1]}`)
+            const v = m![2] === '-' ? stdinValue(`env ${m![1]}`) : m![2]!
+            change(r => without(r, 'env', { ...r.env, [m![1]!]: v }), `set env ${m![1]}`)
           } else if (key === 'env unset') {
             change(r => {
               if (!Object.hasOwn(r.env ?? {}, arg!)) throw new Error(`env ${arg} is not set`)

@@ -101,3 +101,21 @@ test('a busy lease lock passes the live holder and refuses another one', () => {
     'no patrol: herdr:one',
   )
 })
+
+test('server mode: only the pod takes over a stale pod lease', () => {
+  const pod = { holder: 'server:pod-1', kind: 'server', at: 1_000 }
+  const late = pod.at + LEASE_STALE_MS + 1
+  expect(decide(pod, b, late).ok).toBe(true) // outside server mode a stale lease goes to any asker
+  expect(decide(pod, b, late, undefined, true)).toEqual({ ok: false, lease: pod })
+  expect(decide(pod, { ...pod, at: late }, late, undefined, true).ok).toBe(true)
+  mkdirSync(home, { recursive: true })
+  expect(take(home, pod, 1_000, true).ok).toBe(true)
+  expect(take(home, b, 1_500, true).ok).toBe(false) // a live pod lease refuses and names the pod
+})
+
+test('server mode: a tick with a stale pod lease stays read-only and names the pod', () => {
+  mkdirSync(home, { recursive: true })
+  take(home, { holder: 'server:pod-1', kind: 'server', at: Date.now() - LEASE_STALE_MS - 1 })
+  const r = factory(['tick'], { FACTORY_SERVER_MODE: '1', FACTORY_LEASE_HOLDER: 'pane:p9' })
+  expect(JSON.parse(r.out).readOnly).toContain('server:pod-1 (server) holds the manager lease')
+})

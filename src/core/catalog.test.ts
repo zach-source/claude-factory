@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   allowed,
+  boardView,
   CATALOG,
   CATALOG_VERSION,
   fieldOk,
@@ -170,10 +171,17 @@ describe('CATALOG', () => {
     ])
     expect(CATALOG.filter(o => o.route.path === '/v1/gc')).toHaveLength(1)
   })
-  test('has 31 operations: 21 GET and 10 POST', () => {
-    expect(CATALOG.length).toBe(31)
-    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(21)
-    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(10)
+  test('has 51 operations: 26 GET, 20 POST, 1 DELETE, 1 PATCH and 3 PUT', () => {
+    expect(CATALOG.length).toBe(51)
+    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(26)
+    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(20)
+    expect(CATALOG.filter(o => o.route.method === 'DELETE').map(o => o.name)).toEqual(['runs.remove'])
+    expect(CATALOG.filter(o => o.route.method === 'PATCH').map(o => o.name)).toEqual(['rigs.set'])
+    expect(CATALOG.filter(o => o.route.method === 'PUT').map(o => o.name)).toEqual([
+      'gates.setbrief',
+      'plan.set',
+      'review.set',
+    ])
     expect(CATALOG.filter(o => o.route.method === 'POST' && !o.mutates).map(o => o.name)).toEqual([
       'guard.check',
     ])
@@ -182,7 +190,11 @@ describe('CATALOG', () => {
     for (const o of CATALOG) {
       const get = o.route.method === 'GET' || o.name === 'guard.check'
       expect(o.rights).toBe(
-        get ? 'read' : ['factory.halt', 'gc.run', 'chat.send'].includes(o.name) ? 'owner' : 'manager',
+        get
+          ? 'read'
+          : ['factory.halt', 'gc.run', 'chat.send', 'manager.say'].includes(o.name)
+            ? 'owner'
+            : 'manager',
       )
       expect(o.mutates).toBe(!get)
       expect(o.long).toBe(o.name === 'chat.send')
@@ -239,6 +251,7 @@ describe('CATALOG', () => {
   })
   test('names and routes', () => {
     expect(CATALOG.map(o => `${o.name} ${o.route.method} ${o.route.path}`)).toEqual([
+      'backlog.queue POST /v1/queue',
       'backlog.show GET /v1/backlog',
       'board.show GET /v1/board',
       'catalog.echo GET /v1/catalog/echo',
@@ -251,25 +264,44 @@ describe('CATALOG', () => {
       'flows.show GET /v1/flows',
       'gates.brief GET /v1/runs/:id/brief',
       'gates.decide POST /v1/runs/:id/decide',
+      'gates.setbrief PUT /v1/gate-brief/:run',
       'gc.run POST /v1/gc',
       'guard.check POST /v1/guard/check',
       'lease.show GET /v1/lease',
       'mail.list GET /v1/mail',
+      'manager.brief GET /v1/manager/brief',
       'manager.context GET /v1/manager/context',
+      'manager.log POST /v1/manager/log/:kind',
+      'manager.say POST /v1/manager/say',
+      'manager.show GET /v1/manager',
+      'memory.add POST /v1/memory',
+      'memory.search GET /v1/memory/search',
       'metrics.show GET /v1/metrics',
+      'plan.facts GET /v1/plan/facts',
+      'plan.set PUT /v1/plan',
       'plan.show GET /v1/plan',
       'prs.show GET /v1/prs',
+      'review.facts GET /v1/review',
+      'review.set PUT /v1/review',
+      'rigs.adopt POST /v1/adopt',
       'rigs.list GET /v1/rigs',
+      'rigs.set PATCH /v1/rigs/:rig',
+      'rigs.unhold POST /v1/rigs/:rig/unhold',
       'runners.show GET /v1/runners',
       'runs.abort POST /v1/runs/:id/abort',
+      'runs.fork POST /v1/runs/:id/fork',
       'runs.goto POST /v1/runs/:id/goto',
       'runs.mail POST /v1/runs/:id/mail',
+      'runs.poke POST /v1/runs/:id/poke',
+      'runs.remove DELETE /v1/runs/:id',
+      'runs.retry POST /v1/runs/:id/retry',
       'runs.screen GET /v1/runs/:id/screen',
       'runs.show GET /v1/runs/:id',
       'runs.start POST /v1/start',
       'runs.status GET /v1/status',
       'snapshot.show GET /v1/snapshot',
       'steps.reports GET /v1/steps',
+      'sweeps.run POST /v1/sweeps/:name',
     ])
   })
 })
@@ -304,6 +336,11 @@ describe('slimBoard and snapshot (claude-factory-hpmc.23)', () => {
     expect(s.rigs as unknown[]).toEqual([{ name: 'a', factory: 'lifecycle', maxRuns: 3 }])
     expect(s.lease).toEqual({ holder: 'h' })
     expect(JSON.stringify(s).length).toBeLessThan(JSON.stringify(board).length)
+  })
+  test('the board view and the slim board keep the halt state and its age first', () => {
+    const paused = { halt: 'paused', haltAt: 1, ...board }
+    for (const v of [boardView(paused), slimBoard(paused)])
+      expect(Object.keys(v as object).slice(0, 2)).toEqual(['halt', 'haltAt'])
   })
   test('slimBoard returns a value that is not a board unchanged', () => {
     expect(slimBoard(null)).toBeNull()
