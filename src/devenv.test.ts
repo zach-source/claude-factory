@@ -60,6 +60,7 @@ test('the build mounts the source context, drops the gh secret, and uses a GitHu
   expect(DOCKERFILE).toContain('id=github,required=false')
   expect(DOCKERFILE).not.toContain('id=gh,')
   expect(DOCKERFILE).not.toContain('fetch')
+  expect(DOCKERFILE).not.toContain('syntax=')
   expect(DOCKERFILE).toContain('if [ -s /run/secrets/github ]')
   expect(DOCKERFILE).toContain('git add -f -A')
 })

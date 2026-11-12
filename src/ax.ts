@@ -1209,11 +1209,12 @@ export const OPENAI_RULE: Egress = {
 /**
  * The devenv build in the VM (buildctl) fetches its own ghcr.io registry token: the VM sends a placeholder Basic login
  * to ghcr.io/token and the gateway puts the real login there (claude-factory-kraoa). Only /token gets the key.
+ * GHCR_PULL holds base64(username:credential) of a classic token: an App installation token cannot pull from ghcr.
  */
 export const GHCR_TOKEN_RULE: Egress = {
   hosts: ['ghcr.io'],
   pathPrefixes: ['/token'],
-  key: 'GITHUB_BASIC_MANAGER',
+  key: 'GHCR_PULL',
   header: 'Authorization',
   prefix: 'Basic ',
 }

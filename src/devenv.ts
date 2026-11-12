@@ -40,9 +40,8 @@ export const isDue = (stamp: Stamp | undefined, key: string, force = false) =>
 
 // at REPO, the path the VM clones to: a devenv's derivations depend on its root. The source is a named build
 // context mounted from `src`, so the rig's .dockerignore does not apply. REPO gets a fresh git commit of it,
-// the same checkout devenv sees in a clone. A GitHub token (optional) goes to Nix only.
-export const DOCKERFILE = `# syntax=docker/dockerfile:1
-ARG IMAGE
+// the same checkout devenv sees in a clone. No `# syntax=` line: it makes the client fetch a docker.io token. A GitHub token (optional) goes to Nix only.
+export const DOCKERFILE = `ARG IMAGE
 FROM \${IMAGE}
 ARG REV
 ARG PUSH
