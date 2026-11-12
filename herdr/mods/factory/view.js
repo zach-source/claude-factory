@@ -119,23 +119,20 @@ export function interviewItems(runs, decisions) {
 export const answerArgs = (item, option) =>
   item.kind === 'gate' ? ['decide', item.run, option] : ['decisions', 'answer', item.rig, item.bead, option]
 
-/** the result of `factory tick`, or why it failed. A read-only tick names the lease holder. */
+/** the board of a snapshot as the state the tabs share, or why it failed */
 export function parseTick(code, out, err) {
-  if (code !== 0) return { error: line(err || out || `factory tick exited ${code}`, 300) }
+  if (code !== 0) return { error: line(err || out || `factory board exited ${code}`, 300) }
   try {
     const res = JSON.parse(out)
-    if (res.busy) return { busy: true }
     return {
       runs: res.runs ?? [],
-      manager: res.manager ?? [],
-      rigs: res.rigs ?? [],
       halt: res.halt,
       lease: res.lease ?? null,
       managerLimited: res.managerLimited ?? null,
       managerCodexAuth: res.managerCodexAuth ?? null,
     }
   } catch {
-    return { error: line(`factory tick printed no JSON: ${out || err}`, 300) }
+    return { error: line(`factory board printed no JSON: ${out || err}`, 300) }
   }
 }
 
@@ -148,7 +145,7 @@ export const leaseText = lease =>
  * The mod never ticks, so it is always a reader: no part of the line says "read-only".
  */
 export function headerText(state, context) {
-  if (state.error) return `tick failed: ${state.error}`
+  if (state.error) return `board failed: ${state.error}`
   return [
     statusText(state.runs ?? []) || 'no live runs',
     managerLimitText(state.managerLimited),

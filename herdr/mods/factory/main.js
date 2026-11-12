@@ -76,7 +76,6 @@ export default class Factory extends View {
     this.selected = null
     this.screen = ''
     this.before = {}
-    this.mailSeen = 0
     this.tab = 'board' // 'board' | 'flow'
     this.lens = 'live'
     this.flowWindow = '24h'
@@ -89,11 +88,7 @@ export default class Factory extends View {
     if (p.band || p.dialog) return // only the panel copy polls
     cx.spawn(async cx => {
       const text = await readTextFile(configPath()) // the config is on this machine
-      try {
-        this.cfg = parseConfig(text)
-      } catch {
-        this.cfg = null
-      }
+      this.cfg = parseConfig(text) // null for a missing or bad file
       cx.notify()
       if (!this.cfg) return
       cx.timer.every(TICK_MS, cx => this.beat(cx))
@@ -185,7 +180,6 @@ export default class Factory extends View {
   }
 
   onTick(res) {
-    if (res.busy) return
     const prev = shared('factory') ?? {}
     if (res.error) {
       setShared('factory', { ...prev, error: res.error, staleSince: prev.staleSince ?? Date.now() })
@@ -198,8 +192,6 @@ export default class Factory extends View {
         level: 'warning',
       })
     this.before = agentsOf(res.runs)
-    if (res.manager.length)
-      notify({ title: 'factory', body: `${res.manager.length} message(s) for the manager`, level: 'info' })
     setShared('factory', {
       runs: res.runs,
       halt: res.halt,
@@ -207,7 +199,6 @@ export default class Factory extends View {
       managerLimited: res.managerLimited ?? null,
       managerCodexAuth: res.managerCodexAuth ?? null,
       at: Date.now(),
-      mail: [...(prev.mail ?? []), ...res.manager].slice(-50),
     })
   }
 

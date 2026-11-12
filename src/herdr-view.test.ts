@@ -83,12 +83,11 @@ test('the Interview lists gates first, then beads; each answer is the right fact
   expect(herdr.answerArgs(items[1], 'postgres')).toEqual(['decisions', 'answer', 'api', 'api-1', 'postgres'])
 })
 
-test('parseTick reads a board, a read-only board, a busy tick and a failure', () => {
+test('parseTick reads a board, its lease and a failure', () => {
   expect(herdr.parseTick(0, JSON.stringify({ runs, manager: [] }), '').runs).toHaveLength(5)
   expect(herdr.parseTick(0, JSON.stringify({ lease: { holder: 'x' }, runs: [] }), '').lease).toEqual({
     holder: 'x',
   })
-  expect(herdr.parseTick(0, '{"busy":true}', '')).toEqual({ busy: true })
   expect(herdr.parseTick(1, '', 'boom').error).toBe('boom')
   expect(herdr.parseTick(0, 'not json', '').error).toContain('printed no JSON')
 })
@@ -243,8 +242,6 @@ test('parseSnapshot splits one snapshot into the board result and the decisions 
   expect(herdr.parseSnapshot(0, out, '')).toEqual({
     tick: {
       runs: [],
-      manager: [],
-      rigs: [],
       halt: undefined,
       lease: null,
       managerLimited: null,
