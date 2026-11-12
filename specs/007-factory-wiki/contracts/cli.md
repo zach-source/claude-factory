@@ -30,7 +30,7 @@ All commands use `FACTORY_HOME`. All commands except `find` and `status` take `w
 | `FACTORY_WIKI_REMOTE` | (none) | The private git remote. If it is not set, the factory commits but does not push. |
 | `FACTORY_WIKI_GROOM_CAP` | 15 | The maximum number of page actions in one groom plan |
 | `FACTORY_WIKI_WRITE_CAP` | 20 | The maximum number of input groups in one write pass |
-| `FACTORY_DREAM_CODEX` | (unset) | When it is set, write and groom run codex in place of `claude -p`, as the dream does. Groom runs `codex exec -s read-only` for the plan call and `codex exec -s workspace-write` for the apply call, with the private home `HOME/codex-groom` |
+| `FACTORY_DREAM_CODEX` | (unset) | When it is set, groom runs codex in place of `claude -p`, as the dream does. Groom runs `codex exec` for the plan call and for the apply call, with no `-s`, and with the private home `HOME/codex-groom`. That home holds a filesystem profile. The plan call reads only the wiki and the rig repos. The apply call writes only the wiki, and `.git` stays read-only. Neither call reads a credential file. It needs codex 0.160.1 or later |
 
 ## Journal lines
 
@@ -44,6 +44,8 @@ All commands use `FACTORY_HOME`. All commands except `find` and `status` take `w
 - `wiki groom: FACTORY_DREAM_CODEX is not a model name, skipped`
 - `wiki groom: the wiki holds .codex, codex refused`
 - `wiki groom: secret shape in the plan, skipped`
+- `wiki groom: codex read scope holds a secret path, codex refused`
+- `wiki groom: codex has no permission profiles, codex refused`
 - `wiki: secret shape in <path>, page kept at last version`
 - `wiki: person's line in <path>, page kept, flagged`
 - `wiki: remote is public, push refused`

@@ -1005,8 +1005,12 @@ memory/
   (old path to new path). compact() writes both files before the commit. The repo stays clean right after.
   To run the dream on codex, set `FACTORY_DREAM_CODEX=<model>` (for example `gpt-6-astra`) in the
   environment of the process that runs `factory tick`. Unset, the dream runs on Claude. On codex, the
-  dream runs `codex exec -s workspace-write` in the memory with no network and no `/tmp`. It uses a
-  private `CODEX_HOME` at `<factory>/codex-dream`: a trust line for the memory and a link to your
+  dream runs `codex exec` in the memory with no network and no `/tmp`, under a filesystem profile. It needs codex
+  0.160.1 or later. The shell of the dream reads and writes only the memory, so it cannot read your
+  credential files. The wiki groom passes (plan and apply) run the same way: each reads only its pass
+  directories. A pass refuses to start when a pass directory holds a credential path (for example
+  your home directory). It uses a
+  private `CODEX_HOME` at `<factory>/codex-dream`: a trust line for the memory, the profile and a link to your
   `auth.json`, and nothing else. The sandbox keeps `.git` read-only, so the dream uses plain `mv`
   and `rm`, and the factory stages the changes with `git add -A`. If the memory holds a `.codex`
   entry, the codex dream refuses to start. Its usage rows in `manager-usage.jsonl` come from the
