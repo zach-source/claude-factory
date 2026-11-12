@@ -22,8 +22,10 @@ rules: |-
 nodes:
   resolve:
     split:
-      agent: "{codex} -m '{codex_exec_model}'"
-      share: codex_share
+      - agent: "{grok} -m '{grok_resolve_model}'"
+        share: grok_resolve_share
+      - agent: "{codex} -m '{codex_exec_model}'"
+        share: codex_share
     prompt: |-
       Your goal names a stuck pull request and what its labels ask. First triage it: `gh pr view <number> --comments`, its reviews (`gh api repos/{owner}/{repo}/pulls/<number>/reviews`) and `gh pr checks <number>`.
       - If it is no longer wanted (its change is already on the base, another PR supersedes it, or its reviews reject the idea), `gh pr comment <number>` saying why, `gh pr edit <number> --add-label close` so the factory closes it, and report obsolete.
