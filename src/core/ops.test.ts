@@ -14,6 +14,7 @@ const fake = () => {
     gcRigs: () => [],
     gcHold: () => () => {},
     gcStamp: () => {},
+    imageBuild: async target => (calls.push(['imageBuild', target]), 'ref'),
     show: async id => (calls.push(['show', id]), { ok: 1 }),
     status: async (id, print) => (calls.push(['status', id]), print('line')),
     backlog: async () => (calls.push(['backlog']), []),

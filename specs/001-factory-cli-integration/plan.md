@@ -81,7 +81,7 @@ README.md, docs/         # change (FR-016, FR-018)
 
 - Load order: `loadIntoEnv` runs before the line that reads `FACTORY_MAX_RUNS` (research F2). It runs as the first statement of `cli.ts` or in a tiny module that `cli.ts` imports first.
 - Every rig command goes through `editRigs` ([research D4](research.md)). `rig add` and `rig rm` move to it too, so no writer skips the lock.
-- A live run keeps the settings it launched with, because the runner copies `process.env` values at launch. No code is needed for that edge case. A test confirms it.
+- A live run keeps the rig settings it launched with. `createRun` stores the rig entry in `runs/<id>/rig.json`. Stations read it through `runRig`. A live edit can only take access away. Stored settings (`settings.json`) still reach a live run. claude-factory-oqucu tracks that.
 - `rig` write subcommands call `refuseWorker`, as `rig add` does. The spec says the manager can call them, so `refuseWorker` must keep allowing the manager. A task checks the existing rule.
 
 ## Delivery order

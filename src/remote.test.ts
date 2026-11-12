@@ -4751,6 +4751,13 @@ describe('a bd skew hold on the rig starts (claude-factory-lahb)', () => {
     start(s)
     expect(applies()).toBe(0)
     rmSync(markerOf('acme'))
+    // a run from before claude-factory-06xp: it reads the live rig, which the next setup rewrites
+    for (const id of readdirSync(join(home, 'runs')))
+      if (
+        existsSync(join(home, 'runs', id, 'rig.json')) &&
+        readFileSync(join(home, 'runs', id, 'rig.json'), 'utf8').includes(s.repo)
+      )
+        rmSync(join(home, 'runs', id, 'rig.json'))
     const t = rigSetup('skew-legacy2', 'acme', 'ax')
     mark('acme', 181)
     const before = readFileSync(markerOf('acme'), 'utf8')
