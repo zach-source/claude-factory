@@ -822,3 +822,52 @@ test('axo88 AC3: default and zero servers tick without patrol or mail effects', 
     expect(readFileSync(join(off.home, 'patrol-state.json'), 'utf8')).toBe(before)
   }
 }, 30_000)
+
+test('mail keeps the last 50 manager mails across ticks and ignores other ticks', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'server-mail-'))
+  dirs.push(home)
+  const script: unknown[] = []
+  let n = 0
+  const mails = (a: number, b: number) => Array.from({ length: b - a }, (_, i) => ({ text: `m${a + i}` }))
+  const s = serve({
+    home,
+    port: 0,
+    everyMs: 5,
+    leaseMs: 1000,
+    holder: 'a',
+    log: () => {},
+    tick: async () => {
+      n++
+      const next = script.shift()
+      if (next instanceof Error) throw next
+      return next ?? { busy: true }
+    },
+  })
+  const after = async (t: number) => {
+    const until = Date.now() + 5000
+    while (n < t && Date.now() < until) await Bun.sleep(5)
+    await Bun.sleep(30)
+  }
+  try {
+    script.push({ manager: mails(0, 3) })
+    await after(1)
+    expect(s.mail()).toEqual(mails(0, 3))
+    const m0 = n
+    script.push(
+      {},
+      { manager: null },
+      { manager: 'x' },
+      { manager: [] },
+      { busy: true, manager: [{ text: 'b' }] },
+      new Error('boom'),
+    )
+    await after(m0 + 6)
+    expect(s.mail()).toEqual(mails(0, 3))
+    script.push({ manager: mails(3, 63) })
+    await after(n + 1)
+    expect(s.mail()).toEqual(mails(13, 63))
+    expect(s.board()).toEqual({ manager: mails(3, 63) })
+  } finally {
+    await s.stop()
+  }
+}, 30_000)

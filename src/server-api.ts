@@ -146,6 +146,8 @@ export type ClientOpts = {
   port: Port
   /** the last tick result, null before the first tick */
   board: () => unknown
+  /** the last 50 manager mails of all ticks, oldest first; mail.list reads the board without it */
+  mail?: () => unknown[]
   log?: (line: string) => void
   /** the limit of one call, 60 s by default */
   callTimeoutMs?: number
@@ -372,6 +374,7 @@ export function clientHandler(o: ClientOpts) {
       home: o.home,
       cli: o.run,
       board: o.board,
+      mail: o.mail,
       env: personEnv(process.env, o.home),
       port: o.port,
     }

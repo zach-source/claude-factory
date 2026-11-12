@@ -362,6 +362,14 @@ describe('runners.show and mail.list read the board', () => {
     expect((await run('mail.list', withBoard({}), {})).out).toBe('[]\n')
     expect((await run('mail.list', withBoard({ manager: 'x' }), {})).out).toBe('[]\n')
   })
+  test('mail.list uses the mail callback, even when empty, and still needs a tick', async () => {
+    const withMail = (b: unknown, m: unknown[]): Ctx => ({ ...withBoard(b), mail: () => m })
+    const m = [{ text: 'old' }]
+    const nb = { manager: [{ text: 'new' }] }
+    expect((await run('mail.list', withMail(nb, m), {})).out).toBe(JSON.stringify(m) + '\n')
+    expect((await run('mail.list', withMail(nb, []), {})).out).toBe('[]\n')
+    expect(((await run('mail.list', withMail(null, m), {}).catch(x => x)) as OpError).status).toBe(503)
+  })
 })
 
 describe('steps.reports reads the last entry of each step log', () => {

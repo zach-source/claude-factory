@@ -70,7 +70,7 @@ const start = (tick: () => unknown = () => ({ runs: ['r1'] }), idleMs?: number, 
   ) as unknown as Port
   const home = tmp()
   let s: ReturnType<typeof serve>
-  const handle = clientHandler({ home, run, port, board: () => s.board() })
+  const handle = clientHandler({ home, run, port, board: () => s.board(), mail: () => s.mail() })
   const onBoard = handle.publish
   s = serve({
     home,
@@ -217,6 +217,28 @@ describe('mTLS on the client port', () => {
     const r = await cli(t.url, laptop(A, A), 'tick')
     expect(r.code).toBe(0)
     expect(JSON.parse(r.out)).toEqual({ runs: ['r1'] })
+    expect(t.calls.length).toBe(0)
+  })
+  test('mail history spans ticks and board keeps the last tick', async () => {
+    let n = 0
+    const t = start(() => ({ manager: [{ text: `m${++n}` }] }))
+    const who = pair(A)
+    const get = async (path: string) => {
+      const p = Bun.spawn(
+        [
+          ...['curl', '-s', '--max-time', '10', '--cacert', join(A, 'ca.crt')],
+          ...['--cert', who.cert, '--key', who.key],
+          ...['--resolve', `localhost:${t.s.clientPort}:127.0.0.1`, `${t.url}${path}`],
+        ],
+        { stdout: 'pipe', stderr: 'ignore' },
+      )
+      return await new Response(p.stdout).text()
+    }
+    const until = Date.now() + 5000
+    while (n < 3 && Date.now() < until) await Bun.sleep(10)
+    const mail = JSON.parse(await get('/v1/mail')) as { text: string }[]
+    expect(mail.slice(0, 3)).toEqual([{ text: 'm1' }, { text: 'm2' }, { text: 'm3' }])
+    expect(JSON.parse(await get('/v1/board')).manager.length).toBe(1)
     expect(t.calls.length).toBe(0)
   })
   test('decide is not served on the health listener (FR-009)', async () => {

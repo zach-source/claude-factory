@@ -80,7 +80,14 @@ export type Port = {
   ) => Promise<void>
 }
 /** `env` is the environment of the caller: the CLI gives process.env, the server gives personEnv */
-export type Ctx = { home: string; cli: Runner; board: () => unknown; env: Env; port: Port }
+export type Ctx = {
+  home: string
+  cli: Runner
+  board: () => unknown
+  mail?: () => unknown[]
+  env: Env
+  port: Port
+}
 export type Input = Record<string, string | boolean>
 export type Op = {
   name: string

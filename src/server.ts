@@ -121,6 +121,7 @@ export type ServeOpts = {
  */
 export function serve(o: ServeOpts) {
   let last: unknown = null
+  let mail: unknown[] = []
   const file = leaseFile(o.home)
   const holder = o.holder ?? newHolder()
   const log = o.log ?? ((l: string) => console.log(l))
@@ -158,6 +159,8 @@ export function serve(o: ServeOpts) {
       // a tick that found the lock busy has no rows: keep the last full result
       if (!(r as { busy?: boolean } | undefined)?.busy) {
         last = r ?? null
+        const m = (r as { manager?: unknown } | null | undefined)?.manager
+        if (Array.isArray(m)) mail = [...mail, ...m].slice(-50)
         o.onBoard?.(last)
       }
       h.tickOk = true
@@ -241,6 +244,7 @@ export function serve(o: ServeOpts) {
     workerPort: worker?.port,
     held: () => held,
     board: () => last,
+    mail: () => mail,
     holder,
     async stop() {
       stopping = true
@@ -384,7 +388,14 @@ export function main(
   const f = parseFlags(args)
   let s: ReturnType<typeof serve> | undefined
   const log = (l: string) => console.log(l)
-  const handle = clientHandler({ home, run: cliRunner(home), port, board: () => s?.board() ?? null, log })
+  const handle = clientHandler({
+    home,
+    run: cliRunner(home),
+    port,
+    board: () => s?.board() ?? null,
+    mail: () => s?.mail() ?? [],
+    log,
+  })
   const client = f.client && {
     port: f.client.port,
     cert: need(f.client.cert),
