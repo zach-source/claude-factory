@@ -91,6 +91,8 @@ export type ServeOpts = {
   backup?: { everyMs: number; run: () => Promise<unknown> }
   /** the manager patrol (claude-factory-akiq.15): the same rules as `backup`, with its own pending flag */
   patrol?: { everyMs: number; run: () => Promise<unknown>; kill?: () => void }
+  /** the pod's check of the manager task (gogxc.19): the same rules as `backup`; it never blocks a tick */
+  supervise?: { everyMs: number; run: () => Promise<unknown> }
   holder?: string
   log?: (line: string) => void
   /** the client API on its own mTLS listener; `ca` is the person CA text; `handle` gets the request and the peer address and the role */
@@ -196,6 +198,7 @@ export function serve(o: ServeOpts) {
   }
   const backupTimer = job('backup', o.backup)
   const patrolTimer = job('patrol', o.patrol)
+  const superviseTimer = job('manager task', o.supervise)
   let timer: ReturnType<typeof setTimeout>
   const next = () => {
     if (stopping) return
@@ -246,6 +249,7 @@ export function serve(o: ServeOpts) {
       stopping = true
       clearTimeout(timer)
       clearInterval(backupTimer)
+      clearInterval(superviseTimer)
       clearInterval(patrolTimer)
       o.patrol?.kill?.()
       await running
@@ -380,6 +384,7 @@ export function main(
   tick: () => unknown,
   port: Port,
   backup?: () => Promise<unknown>,
+  supervise?: () => Promise<unknown>,
 ) {
   const f = parseFlags(args)
   let s: ReturnType<typeof serve> | undefined
@@ -418,6 +423,7 @@ export function main(
     client,
     worker,
     backup: b && 'cfg' in b && backup ? { everyMs: b.everyMs, run: backup } : undefined,
+    supervise: supervise && { everyMs: 30_000, run: supervise },
   })
   console.log(
     `factory server on :${s.port}${s.clientPort ? ` and client API on :${s.clientPort}` : ''}${s.workerPort ? ` and worker API on :${s.workerPort}` : ''} as ${s.holder}`,

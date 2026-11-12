@@ -76,6 +76,9 @@ export type Port = {
   }) => Promise<{ code: number; out: string }>
   /** type text and Enter into the manager pane (ax.say) */
   say: (text: string) => unknown
+  /** the pod's manager task: a new image (delete and apply), and suspend or resume (managersup) */
+  managerImage: (image: string) => Promise<void>
+  managerSuspend: (on: boolean) => Promise<void>
   mail: (
     m: { id: string | undefined; to: string | undefined; text: string; wake: boolean },
     who: { env: Env; cwd: string },
@@ -798,6 +801,31 @@ export const CATALOG: Op[] = makeCatalog([
     },
     'text',
     (c, i) => managerOps.log(c, i),
+  ),
+  local(
+    {
+      name: 'manager.image',
+      summary:
+        'Set the image of the manager task. The pod deletes the task and its workspace, then applies it.',
+      method: 'POST',
+      path: '/v1/manager/image',
+      rights: 'owner',
+      inputs: [f('image', 'text', true, 'the image reference')],
+    },
+    'text',
+    (c, i) => managerOps.image(c, i),
+  ),
+  local(
+    {
+      name: 'manager.suspend',
+      summary: 'Suspend the manager task, or resume it. The pod keeps ticking.',
+      method: 'POST',
+      path: '/v1/manager/suspend',
+      rights: 'owner',
+      inputs: [f('resume', 'flag', false, 'resume the task instead')],
+    },
+    'text',
+    (c, i) => managerOps.suspend(c, i),
   ),
   local(
     {

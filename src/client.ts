@@ -211,6 +211,9 @@ export function route(
     case 'manager':
       if (n === 1 && (a === 'show' || a === 'brief' || a === 'context'))
         return { method: 'GET', path: a === 'show' ? '/v1/manager' : `/v1/manager/${a}` }
+      if (a === 'image' && n === 2) return { method: 'POST', path: '/v1/manager/image', body: { image: b! } }
+      if (a === 'suspend' && (n === 1 || (n === 2 && b === '--resume')))
+        return { method: 'POST', path: '/v1/manager/suspend', body: n === 2 ? { resume: true } : {} }
       return a === 'log' && n >= 3 && seg(b)
         ? { method: 'POST', path: `/v1/manager/log/${b}`, body: { entry: args.slice(2).join(' ') } }
         : bad
