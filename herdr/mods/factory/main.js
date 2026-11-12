@@ -548,8 +548,10 @@ export default class Factory extends View {
             ),
           ]
         : []),
-      button('stop', 'Stop', () => this.act('stop')),
-      button('resume', 'Resume', () => this.act('resume')),
+      // a halted factory offers Resume only; a running one offers Stop only
+      shared('factory')?.halt
+        ? button('resume', 'Resume', () => this.act('resume'))
+        : button('stop', 'Stop', () => this.act('stop')),
       button('unhold', 'Unhold ax', () => this.act('unhold', 'ax')),
       ...(this.selected ? [button('abort', 'Abort run', () => this.act('abort', this.selected))] : []),
     ]

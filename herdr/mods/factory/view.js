@@ -110,6 +110,9 @@ export function parseTick(code, out, err) {
   }
 }
 
+/** the halt state as the first part of the header: 'paused' or 'stopping', else '' */
+export const haltText = halt => (halt === 'paused' || halt === 'stopping' ? halt : '')
+
 /** the lease as one part of the header: 'lease: holder (kind)', or '' when no lease is on the board */
 export const leaseText = lease =>
   lease?.holder ? `lease: ${lease.holder}${lease.kind ? ` (${lease.kind})` : ''}` : ''
@@ -121,6 +124,7 @@ export const leaseText = lease =>
 export function headerText(state, context) {
   if (state.error) return `board failed: ${state.error}`
   return [
+    haltText(state.halt),
     statusText(state.runs ?? []) || 'no live runs',
     managerLimitText(state.managerLimited),
     managerContextText(context),

@@ -664,6 +664,8 @@ async function readOnlyBoard(holder: leases.Lease) {
     }
   }
   return {
+    halt: halted()?.state,
+    haltAt: halted()?.at,
     readOnly: leases.leaseLine(holder, Date.now()),
     lease: holder,
     runs,
