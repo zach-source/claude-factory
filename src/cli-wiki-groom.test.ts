@@ -1,7 +1,17 @@
 // `factory wiki groom` end to end (claude-factory-tx6c.9). Every test spawns bin/factory with a new temp
 // FACTORY_HOME, a fake `gh` first on PATH and a fake claude (FACTORY_CLAUDE), so nothing reaches the live home or GitHub.
 import { afterEach, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -45,6 +55,17 @@ const ghCalls = () =>
     .split('\x1e')
     .filter(Boolean)
     .map(r => r.split('\x1f').slice(0, -1))
+const codexCalls = () =>
+  existsSync(join(fake, 'codex-calls.log'))
+    ? readFileSync(join(fake, 'codex-calls.log'), 'utf8')
+        .trim()
+        .split('\n')
+        .map(l => {
+          const [cwd, head, argv] = l.split('|') as [string, string, string]
+          return { cwd, head, argv: argv.split('\x1f') }
+        })
+    : []
+const cfile = (name: string) => readFileSync(join(fake, name), 'utf8')
 const plan = (text: string) => writeFileSync(join(fake, 'plan'), text)
 const apply = (sh: string) => writeFileSync(join(fake, 'apply.sh'), sh)
 
@@ -92,8 +113,22 @@ case "$tools" in
 esac
 `,
   )
-  chmodSync(join(dir, 'bin', 'gh'), 0o755)
-  chmodSync(join(dir, 'bin', 'claude'), 0o755)
+  // the codex env is an allowlist, so the fake dir is literal text here, not $FAKE_DIR
+  writeFileSync(
+    join(dir, 'bin', 'codex'),
+    `#!/bin/sh
+F='${fake}'
+n=$(( $(cat "$F/cn" 2>/dev/null || echo 0) + 1 )); echo $n > "$F/cn"
+{ printf '%s|%s|' "$(pwd)" "$(git symbolic-ref HEAD)"; sep=; for a in "$@"; do printf '%s%s' "$sep" "$a"; sep=$(printf '\\037'); done; printf '\\n'; } >> "$F/codex-calls.log"
+cat > "$F/cstdin$n"
+env > "$F/cenv$n"
+case "$*" in
+*workspace-write*) sh "$F/apply.sh"; rc=$?; [ -f "$F/apply.exit" ] && exit "$(cat "$F/apply.exit")"; exit $rc ;;
+*) [ -f "$F/plan.mkcodex" ] && mkdir -p .codex; [ -f "$F/plan.exit" ] && exit "$(cat "$F/plan.exit")"; cat "$F/plan" ;;
+esac
+`,
+  )
+  for (const b of ['gh', 'claude', 'codex']) chmodSync(join(dir, 'bin', b), 0o755)
   expect(factory(['wiki', 'init', '--remote', URL_]).code).toBe(0)
   for (const [p, t] of [
     ['topics/a.md', page('A')],
@@ -111,7 +146,15 @@ esac
 }
 
 const factory = (args: string[], env: Record<string, string> = {}) => {
-  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_WIKI_REMOTE, ...laptop } = process.env
+  const {
+    FACTORY_OUTBOX,
+    FACTORY_FROM,
+    FACTORY_RUN,
+    FACTORY_WIKI_REMOTE,
+    FACTORY_DREAM_CODEX,
+    FACTORY_CODEX,
+    ...laptop
+  } = process.env
   return run([CLI, ...args], {
     ...laptop,
     FACTORY_HOME: home,
@@ -120,6 +163,7 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
     FACTORY_NO_KICK: '1',
     FAKE_DIR: fake,
     FACTORY_CLAUDE: join(dir, 'bin', 'claude'),
+    FACTORY_CODEX: join(dir, 'bin', 'codex'),
     ...env,
   })
 }
@@ -139,7 +183,15 @@ test('ot1ew pass overlap groom', async () => {
   apply(
     `printf '[core]\\n\\tfsmonitor = ${script}\\n' >> .git/config\ntouch '${ready}'\nn=0; while [ ! -f '${release}' ] && [ "$n" -lt 400 ]; do sleep 0.05; n=$((n + 1)); done\n`,
   )
-  const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_WIKI_REMOTE, ...env } = process.env
+  const {
+    FACTORY_OUTBOX,
+    FACTORY_FROM,
+    FACTORY_RUN,
+    FACTORY_WIKI_REMOTE,
+    FACTORY_DREAM_CODEX,
+    FACTORY_CODEX,
+    ...env
+  } = process.env
   const pass = Bun.spawn([CLI, 'wiki', 'groom'], {
     env: {
       ...env,
@@ -340,14 +392,15 @@ test(
   SLOW,
 )
 
-test(
-  'AC3 a path outside the plan is reverted',
-  () => {
-    setup()
-    factory(['wiki', 'refresh'])
-    git('push', '-q', URL_, 'HEAD:main')
-    plan('rewrite topics/a.md — x\n')
-    apply(`echo more >> topics/a.md
+for (const harness of ['claude', 'codex'] as const)
+  test(
+    `AC3 a path outside the plan is reverted (${harness})`,
+    () => {
+      setup()
+      factory(['wiki', 'refresh'])
+      git('push', '-q', URL_, 'HEAD:main')
+      plan('rewrite topics/a.md — x\n')
+      apply(`echo more >> topics/a.md
 echo more >> topics/b.md
 printf '%s\\n' '---' 'kind: "topic"' 'title: "N"' '---' x > topics/new.md
 echo more >> rigs/acme.md
@@ -357,23 +410,27 @@ echo '*' > topics/.gitignore
 cp topics/new.md topics/hidden.md
 printf x > "topics/bad
 name.md"
-`)
-    const r = groom()
-    expect(r.code).toBe(0)
-    const br = `groom/${today()}`
-    expect(bareGit('diff', '--name-only', `main..${br}`)).toBe('topics/a.md')
-    const log = wikiLog()
-    for (const p of ['topics/b.md', 'topics/new.md', 'topics/hidden.md', 'rigs/acme.md', 'needs-person.md'])
-      expect(log).toContain(`wiki groom: ${p} is not in the plan, reverted`)
-    expect(log.split('wiki groom: a path not in the plan, reverted').length - 1).toBe(3)
-    expect(log).not.toContain('.claude/settings.json')
-    expect(log).not.toContain('bad\nname')
-    expect(git('status', '--porcelain', '--ignored')).toBe('')
-    for (const p of ['topics/new.md', 'topics/hidden.md', 'topics/.gitignore', '.claude'])
-      expect(existsSync(join(wiki(), p))).toBe(false)
-  },
-  SLOW,
-)
+${harness === 'codex' ? 'mkdir -p .codex && echo x > .codex/config.toml\n' : ''}`)
+      const r = harness === 'codex' ? groom([], { FACTORY_DREAM_CODEX: 'gpt-6-astra' }) : groom()
+      expect(codexCalls()).toHaveLength(harness === 'codex' ? 2 : 0)
+      expect(r.code).toBe(0)
+      const br = `groom/${today()}`
+      expect(bareGit('diff', '--name-only', `main..${br}`)).toBe('topics/a.md')
+      const log = wikiLog()
+      for (const p of ['topics/b.md', 'topics/new.md', 'topics/hidden.md', 'rigs/acme.md', 'needs-person.md'])
+        expect(log).toContain(`wiki groom: ${p} is not in the plan, reverted`)
+      expect(log.split('wiki groom: a path not in the plan, reverted').length - 1).toBe(
+        harness === 'codex' ? 4 : 3,
+      )
+      expect(log).not.toContain('.claude/settings.json')
+      expect(log).not.toContain('.codex')
+      expect(log).not.toContain('bad\nname')
+      expect(git('status', '--porcelain', '--ignored')).toBe('')
+      for (const p of ['topics/new.md', 'topics/hidden.md', 'topics/.gitignore', '.claude', '.codex'])
+        expect(existsSync(join(wiki(), p))).toBe(false)
+    },
+    SLOW,
+  )
 
 test(
   'AC4 a dry run prints the plan and changes nothing',
@@ -799,3 +856,242 @@ test(
   },
   SLOW,
 )
+
+// claude-factory-jbfv: FACTORY_DREAM_CODEX runs groom on codex
+const MODEL = 'gpt-6-astra'
+const cgroom = (args: string[] = [], model = MODEL) => groom(args, { FACTORY_DREAM_CODEX: model })
+const mainClean = () => {
+  expect(git('symbolic-ref', 'HEAD')).toBe('refs/heads/main')
+  expect(git('status', '--porcelain')).toBe('')
+  expect(branches()).toBe('')
+}
+
+test(
+  'jbfv AC1 a groom pass on codex opens the same PR as claude',
+  () => {
+    setup()
+    const mainBefore = git('rev-parse', 'main')
+    apply(
+      `grep -q 'wiki groom: plan merge topics/a.md topics/b.md' '${home}/wiki.log' && grep -q 'wiki groom: plan stale topics/c.md' '${home}/wiki.log' && touch '${fake}/fr010'\n${EDIT3}`,
+    )
+    const r = groom([], { FACTORY_DREAM_CODEX: MODEL, FACTORY_GROOM_PROBE: 'zqsecret' })
+    expect(r.code).toBe(0)
+    expect(r.out).toContain(`wiki groom: PR ${PR} with 2 actions`)
+    expect(wikiLog()).toContain(`wiki groom: PR ${PR} with 2 actions`)
+    expect(codexCalls()).toHaveLength(2)
+    expect(claudeCalls()).toHaveLength(0)
+    const br = `groom/${today()}`
+    expect(bareGit('rev-parse', 'main')).toBe(mainBefore)
+    expect(git('rev-parse', 'main')).toBe(mainBefore)
+    expect(bareGit('log', '-1', '--format=%ae|%s', br)).toStartWith(
+      `factory@${hostname()}|wiki groom: 2 actions`,
+    )
+    expect(bareGit('rev-list', '--count', `main..${br}`)).toBe('1')
+    expect(bareGit('diff', '--name-only', `main..${br}`).split('\n').sort()).toEqual([
+      'topics/a.md',
+      'topics/b.md',
+      'topics/c.md',
+    ])
+    mainClean()
+    const c = creates()
+    expect(c).toHaveLength(1)
+    const a = c[0]!
+    expect(a[a.indexOf('--repo') + 1]).toBe('github.com/acme/widget-wiki')
+    expect(a[a.indexOf('--base') + 1]).toBe('main')
+    expect(a[a.indexOf('--head') + 1]).toBe(br)
+    expect(a[a.indexOf('--body') + 1]).toBe(
+      PLAN2.trim()
+        .split('\n')
+        .map(l => `    ${l}`)
+        .join('\n'),
+    )
+    expect(state().groomPr.url).toBe(PR)
+    expect(state().groomPr.branch).toBe(br)
+    expect(ghCalls().some(c => c.includes('merge'))).toBe(false)
+    expect(existsSync(join(fake, 'fr010'))).toBe(true)
+    // AC2: argv, cwd, env, stdin and the private home
+    const [planCall, applyCall] = codexCalls() as [
+      ReturnType<typeof codexCalls>[0],
+      ReturnType<typeof codexCalls>[0],
+    ]
+    for (const [i, call] of [planCall, applyCall].entries()) {
+      expect(call.cwd).toBe(wiki())
+      expect(call.head).toBe(`refs/heads/${br}`)
+      expect(call.argv.slice(0, 5)).toEqual([
+        'exec',
+        '-s',
+        i ? 'workspace-write' : 'read-only',
+        '-c',
+        'approval_policy="never"',
+      ])
+      expect(call.argv.slice(-5)).toEqual(['-C', wiki(), '-m', MODEL, '-'])
+      const env = cfile(`cenv${i + 1}`)
+      expect(env).toContain(`CODEX_HOME=${join(home, 'codex-groom')}\n`)
+      for (const l of env.trim().split('\n')) {
+        const k = l.slice(0, l.indexOf('='))
+        expect(['PATH', 'HOME', 'TERM', 'LANG', 'CODEX_HOME', 'PWD', 'OLDPWD', 'SHLVL', '_']).toContain(k)
+      }
+      expect(env).not.toContain('zqsecret')
+      expect(env).not.toContain('FAKE_DIR')
+    }
+    expect(planCall.argv.join(' ')).not.toContain('sandbox_workspace_write')
+    for (const k of ['network_access=false', 'exclude_slash_tmp=true', 'exclude_tmpdir_env_var=true'])
+      expect(applyCall.argv).toContain(`sandbox_workspace_write.${k}`)
+    const pin = cfile('cstdin1')
+    expect(pin).toContain(JSON.stringify(repo))
+    expect(pin.endsWith('Do only step 1 now. Print the plan and change no file.\n')).toBe(true)
+    const ain = cfile('cstdin2')
+    expect(ain.trimEnd().endsWith(PLAN2.trim())).toBe(true)
+    expect(ain).not.toContain(repo)
+    const ch = join(home, 'codex-groom')
+    expect(statSync(ch).mode & 0o777).toBe(0o700)
+    expect(readFileSync(join(ch, 'config.toml'), 'utf8')).toBe(
+      `[projects.${JSON.stringify(wiki())}]\ntrust_level = "trusted"\n`,
+    )
+    expect(wikiLog()).not.toContain('FOO_BAR')
+  },
+  SLOW,
+)
+
+test(
+  'jbfv AC4 FACTORY_DREAM_CODEX unset or empty runs claude',
+  () => {
+    setup()
+    expect(groom().code).toBe(0)
+    expect(claudeCalls()).toHaveLength(2)
+    expect(codexCalls()).toHaveLength(0)
+    setup()
+    expect(groom([], { FACTORY_DREAM_CODEX: '' }).code).toBe(0)
+    expect(claudeCalls()).toHaveLength(2)
+    expect(codexCalls()).toHaveLength(0)
+  },
+  SLOW,
+)
+
+test(
+  'jbfv AC5 a bad model name stops groom before any agent call',
+  () => {
+    setup()
+    const refusal = 'wiki groom: FACTORY_DREAM_CODEX is not a model name, skipped'
+    for (const m of ['gpt 6', '-m', 'a;b', '$(x)', 'a'.repeat(65)])
+      for (const args of [[], ['--dry-run']]) {
+        const r = cgroom(args, m)
+        expect(r.code).toBe(0)
+        expect(r.out).toBe('')
+        expect(wikiLog()).toContain(refusal)
+        expect(codexCalls()).toHaveLength(0)
+        expect(claudeCalls()).toHaveLength(0)
+        expect(creates()).toHaveLength(0)
+        mainClean()
+      }
+    for (const [i, m] of ['o3', 'a.b:c_d-1'].entries()) {
+      expect(cgroom(['--dry-run'], m).out).toBe(PLAN2)
+      expect(codexCalls()).toHaveLength(i + 1)
+      expect(codexCalls()[i]!.argv).toContain(m)
+    }
+    expect(wikiLog().split(refusal).length - 1).toBe(10)
+  },
+  SLOW,
+)
+
+test(
+  'jbfv AC6 a .codex in the wiki stops groom before codex',
+  () => {
+    const refusal = 'wiki groom: the wiki holds .codex, codex refused'
+    const none = () => {
+      expect(wikiLog()).toContain(refusal)
+      expect(wikiLog()).not.toContain('apply call failed')
+      expect(claudeCalls()).toHaveLength(0)
+      expect(creates()).toHaveLength(0)
+    }
+    setup()
+    mkdirSync(join(wiki(), '.codex'))
+    writeFileSync(join(wiki(), '.codex', 'config.toml'), 'x = 1\n')
+    git('add', '-A')
+    commit('codex dir')
+    git('push', '-q', URL_, 'HEAD:main')
+    expect(cgroom().code).toBe(0)
+    expect(codexCalls()).toHaveLength(0)
+    none()
+    mainClean()
+    setup()
+    mkdirSync(join(wiki(), '.codex'))
+    writeFileSync(join(wiki(), '.codex', 'config.toml'), 'x = 1\n')
+    const d = cgroom(['--dry-run'])
+    expect([d.code, d.out]).toEqual([0, ''])
+    expect(codexCalls()).toHaveLength(0)
+    none()
+    setup()
+    symlinkSync('nowhere', join(wiki(), '.codex'))
+    expect(cgroom(['--dry-run']).out).toBe('')
+    expect(codexCalls()).toHaveLength(0)
+    none()
+    // the plan call makes .codex: the apply call must not start
+    setup()
+    writeFileSync(join(fake, 'plan.mkcodex'), '')
+    expect(cgroom().code).toBe(0)
+    expect(codexCalls()).toHaveLength(1)
+    none()
+    mainClean()
+  },
+  SLOW,
+)
+
+test(
+  'jbfv AC7 a failed codex call or a HEAD move commits nothing',
+  () => {
+    setup()
+    writeFileSync(join(fake, 'plan.exit'), '3')
+    expect(cgroom().code).toBe(0)
+    expect(wikiLog()).toContain('wiki groom: plan call failed (exit 3)')
+    expect(codexCalls()).toHaveLength(1)
+    expect(creates()).toHaveLength(0)
+    setup()
+    writeFileSync(join(fake, 'apply.exit'), '3')
+    apply(EDIT3)
+    expect(cgroom().code).toBe(0)
+    expect(wikiLog()).toContain('wiki groom: apply call failed (exit 3), nothing committed')
+    expect(creates()).toHaveLength(0)
+    mainClean()
+    setup()
+    const mainBefore = git('rev-parse', 'main')
+    apply(
+      `echo more >> topics/a.md\nGIT_CONFIG_GLOBAL='${cfg}' git update-ref "$(git symbolic-ref HEAD)" "$(git -c user.name=x -c user.email=x@acme.example commit-tree -m evil 'HEAD^{tree}' -p HEAD)"\n`,
+    )
+    expect(cgroom().code).toBe(0)
+    expect(wikiLog()).toContain('wiki groom: HEAD moved in the pass, nothing committed')
+    expect(creates()).toHaveLength(0)
+    expect(bareGit('branch', '--list', 'groom/*')).toBe('')
+    expect(git('rev-parse', 'main')).toBe(mainBefore)
+  },
+  SLOW,
+)
+
+for (const harness of ['claude', 'codex'] as const)
+  test(
+    `jbfv AC8 a secret shape in the plan output stops groom (${harness})`,
+    () => {
+      const rows = [
+        'stale topics/c.md — see https://u:zqsecret@acme.example/x\n',
+        `rewrite topics/${'xo' + 'xb-' + 'zqsecret'.repeat(2)}.md — x\n`,
+      ]
+      for (const text of rows)
+        for (const args of [[], ['--dry-run']]) {
+          setup()
+          plan(text)
+          const r = harness === 'codex' ? cgroom(args) : groom(args)
+          expect(r.code).toBe(0)
+          expect(r.out).toBe('')
+          expect(wikiLog()).toContain('wiki groom: secret shape in the plan, skipped')
+          expect(wikiLog()).not.toContain('zqsecret')
+          expect(r.out + r.err).not.toContain('zqsecret')
+          expect(claudeCalls()).toHaveLength(harness === 'claude' ? 1 : 0)
+          expect(codexCalls()).toHaveLength(harness === 'codex' ? 1 : 0)
+          expect(creates()).toHaveLength(0)
+          mainClean()
+        }
+      setup()
+      expect((harness === 'codex' ? cgroom() : groom()).out).toContain(`wiki groom: PR ${PR}`)
+    },
+    SLOW,
+  )
