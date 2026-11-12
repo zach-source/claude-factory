@@ -14370,6 +14370,16 @@ if (import.meta.main && !outboxCmd)
           await managerhost.host(args.slice(1), { prepare: reposSync, lock: () => hold('tick.lock') })
           break
         }
+        if (args[0] === 'session') {
+          await managerhost.session(args.slice(1), {
+            post: row =>
+              void Bun.spawnSync([CLI, 'manager', 'log', 'health', JSON.stringify(row)], {
+                stdin: 'ignore',
+                timeout: 20_000,
+              }),
+          })
+          break
+        }
         if (args[0] === '--ax') {
           await launchAxManager(args.slice(1))
           break
@@ -14389,15 +14399,29 @@ if (import.meta.main && !outboxCmd)
       case 'herdr': {
         refuseWorker('herdr', true)
         const opt = (k: string) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined)
-        const flags = ['--app-home', '--machine', '--home']
+        const flags = ['--app-home', '--machine', '--home', '--server']
         const bad =
           args[0] !== 'install' ||
+          (!!opt('--server') && (!!opt('--machine') || !!opt('--home'))) ||
           args.length !== 1 + 2 * flags.filter(k => args.includes(k)).length ||
           flags.some(k => args.includes(k) && !opt(k)) ||
           (!!opt('--machine') && !/^[A-Za-z0-9._-]+$/.test(opt('--machine')!))
-        if (bad) fail('usage: factory herdr install [--app-home <dir>] [--machine <name> [--home <path>]]')
+        if (bad)
+          fail(
+            'usage: factory herdr install [--app-home <dir>] [--machine <name> [--home <path>] | --server <https-url>]',
+          )
         const repo = resolve(import.meta.dir, '..')
         const app = opt('--app-home') ? resolve(opt('--app-home')!) : herdrApp.appHomeOf(process.env)
+        const server = opt('--server')
+        if (server) {
+          if (!URL.canParse(server) || new URL(server).protocol !== 'https:')
+            fail('--server must be an https URL')
+          const o = herdrApp.install(repo, app, herdrApp.serverConfig(server.replace(/\/+$/, '')))
+          console.log(
+            `installed the factory mod in ${o.mod} for the server ${server} (it calls /v1 with the person certificate)`,
+          )
+          break
+        }
         const machine = opt('--machine')
         // a remote home is a path on the machine: do not resolve it here
         const home = machine

@@ -208,5 +208,35 @@
     "frontEnd": "claude-mod",
     "bead": "claude-factory-57d9j",
     "reason": "the Claude mod does not show the manager model and context use yet"
+  },
+  {
+    "op": "manager.show",
+    "frontEnd": "claude-mod",
+    "bead": "claude-factory-gogxc.30",
+    "reason": "the Claude mod has no manager task view"
+  },
+  {
+    "op": "manager.show",
+    "frontEnd": "herdr-mod",
+    "bead": "claude-factory-gogxc.31",
+    "reason": "the Herdr app mod has no manager task view"
+  },
+  {
+    "op": "memory.search",
+    "frontEnd": "claude-mod",
+    "bead": "claude-factory-gogxc.30",
+    "reason": "the Claude mod has no memory search"
+  },
+  {
+    "op": "memory.search",
+    "frontEnd": "herdr-mod",
+    "bead": "claude-factory-gogxc.31",
+    "reason": "the Herdr app mod has no memory search"
+  },
+  {
+    "op": "memory.search",
+    "frontEnd": "web",
+    "bead": "claude-factory-gogxc.32",
+    "reason": "the web UI has no memory search"
   }
 ]
