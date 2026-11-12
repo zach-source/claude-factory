@@ -1,3 +1,6 @@
 0a80dacf12b971cbd76c0790419ea156ca669f11:src/homebackup.test.ts:generic-api-key:654
 # This historical idempotency fixture is not a credential. Keep the rule active for all other matches.
 5f5a65a7eb2558ffbe1f993a7eed9dfb3b892877:src/core/catalog-handler.test.ts:generic-api-key:117
+# A fake opaque value in a test fixture, renamed in the next commit. Not a credential.
+cc2fa19ff18a4517e585aebaca00cc3633a2b5d0:src/memory-dream-codex.test.ts:generic-api-key:332
+cc2fa19ff18a4517e585aebaca00cc3633a2b5d0:src/cli-wiki-groom.test.ts:generic-api-key:1142

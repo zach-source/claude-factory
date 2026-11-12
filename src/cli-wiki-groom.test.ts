@@ -1141,7 +1141,7 @@ test(
     setup()
     const secret = 'zqopaque-jbfv4'
     mkdirSync(join(dir, 'user-codex'), { recursive: true })
-    writeFileSync(join(dir, 'user-codex', 'auth.json'), `{"tokens":{"refresh_token":"${secret}"}}`)
+    writeFileSync(join(dir, 'user-codex', 'auth.json'), `{"tokens":{"note":"${secret}"}}`)
     writeFileSync(join(wiki(), 'topics', 'a.md'), page('A', 'zqcontrol-jbfv4'))
     git('add', '-A')
     commit('control')

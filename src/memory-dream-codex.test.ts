@@ -329,7 +329,7 @@ test(
   'jbfv.4 AC5: an adversary dream cannot copy an opaque credential into the memory or the log',
   () => {
     seed()
-    writeFileSync(join(userCodex, 'auth.json'), '{"tokens":{"refresh_token":"zqopaque-jbfv4"}}')
+    writeFileSync(join(userCodex, 'auth.json'), '{"tokens":{"note":"zqopaque-jbfv4"}}')
     writeFileSync(join(memory, 'inbox', 'x.md'), '---\nsummary: a fixture note\n---\nzqcontrol-jbfv4\n')
     const r = run(bothFakes({ FACTORY_DREAM_CODEX: 'gpt-6-astra', FAKE_ADVERSARY: '1' }))
     expect(r.out + r.err).not.toContain('zqopaque-jbfv4')
