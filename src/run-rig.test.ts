@@ -247,9 +247,18 @@ test('AC4: factory start writes the rig entry, or null when the repo is no rig',
 test('a malformed sensitivePaths stays malformed, so the security route stays required', () => {
   const bad = ['p1/', 5]
   const rows: [unknown, unknown][] = [
-    [{ ...base, sensitivePaths: bad }, { ...base, sensitivePaths: ['p2/'] }],
-    [{ ...base, sensitivePaths: ['p1/'] }, { ...base, sensitivePaths: 'p2/' }],
-    [{ ...base, sensitivePaths: bad }, { ...base, sensitivePaths: bad }],
+    [
+      { ...base, sensitivePaths: bad },
+      { ...base, sensitivePaths: ['p2/'] },
+    ],
+    [
+      { ...base, sensitivePaths: ['p1/'] },
+      { ...base, sensitivePaths: 'p2/' },
+    ],
+    [
+      { ...base, sensitivePaths: bad },
+      { ...base, sensitivePaths: bad },
+    ],
   ]
   for (const [snap, live] of rows) expect(rigPaths(run(snap, [live]).rig!.sensitivePaths)).toBeNull()
   const ok = run({ ...base, sensitivePaths: ['p1/'] }, [{ ...base, sensitivePaths: ['p2/'] }])
