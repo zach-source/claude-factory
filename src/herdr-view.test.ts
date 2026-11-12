@@ -85,9 +85,9 @@ test('the Interview lists gates first, then beads; each answer is the right fact
 
 test('parseTick reads a board, a read-only board, a busy tick and a failure', () => {
   expect(herdr.parseTick(0, JSON.stringify({ runs, manager: [] }), '').runs).toHaveLength(5)
-  expect(herdr.parseTick(0, JSON.stringify({ readOnly: 'x holds it', runs: [] }), '').readOnly).toBe(
-    'x holds it',
-  )
+  expect(herdr.parseTick(0, JSON.stringify({ lease: { holder: 'x' }, runs: [] }), '').lease).toEqual({
+    holder: 'x',
+  })
   expect(herdr.parseTick(0, '{"busy":true}', '')).toEqual({ busy: true })
   expect(herdr.parseTick(1, '', 'boom').error).toBe('boom')
   expect(herdr.parseTick(0, 'not json', '').error).toContain('printed no JSON')
@@ -246,7 +246,7 @@ test('parseSnapshot splits one snapshot into the board result and the decisions 
       manager: [],
       rigs: [],
       halt: undefined,
-      readOnly: undefined,
+      lease: null,
       managerLimited: null,
       managerCodexAuth: null,
     },
@@ -458,4 +458,28 @@ test('factory herdr install --server writes a server config, and refuses a mix o
   expect(c.cert.endsWith('person.crt')).toBe(true)
   expect(run('--server', 'http://pod.example').exitCode).not.toBe(0)
   expect(run('--server', 'https://pod.example', '--machine', 'm').exitCode).not.toBe(0)
+})
+
+// claude-factory-hpmc.31: the header reads the real `factory snapshot` output, with a live lease
+test('the header shows run counts and the lease, never read-only (claude-factory-hpmc.31)', () => {
+  const home = join(dir, 'snap-home')
+  const env = {
+    ...process.env,
+    FACTORY_HOME: home,
+    FACTORY_SELF_UPDATE: '0',
+    FACTORY_GC: '0',
+    FACTORY_NO_KICK: '1',
+  }
+  const cli = join(import.meta.dir, '..', 'bin', 'factory')
+  Bun.spawnSync([cli, 'tick'], {
+    env: { ...env, FACTORY_LEASE_HOLDER: 'herdr:one', FACTORY_LEASE_KIND: 'herdr' },
+  })
+  const p = Bun.spawnSync([cli, 'snapshot', '--views', 'board'], { env })
+  const { tick } = herdr.parseSnapshot(p.exitCode, p.stdout.toString(), p.stderr.toString())
+  expect(tick.error).toBeUndefined()
+  expect(tick.lease?.holder).toBe('herdr:one')
+  const head = herdr.headerText({ ...tick, runs }, null)
+  expect(head).toContain('working')
+  expect(head).toContain('lease: herdr:one (herdr)')
+  expect(head).not.toContain('read-only')
 })

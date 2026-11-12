@@ -130,13 +130,34 @@ export function parseTick(code, out, err) {
       manager: res.manager ?? [],
       rigs: res.rigs ?? [],
       halt: res.halt,
-      readOnly: res.readOnly,
+      lease: res.lease ?? null,
       managerLimited: res.managerLimited ?? null,
       managerCodexAuth: res.managerCodexAuth ?? null,
     }
   } catch {
     return { error: line(`factory tick printed no JSON: ${out || err}`, 300) }
   }
+}
+
+/** the lease as one part of the header: 'lease: holder (kind)', or '' when no lease is on the board */
+export const leaseText = lease =>
+  lease?.holder ? `lease: ${lease.holder}${lease.kind ? ` (${lease.kind})` : ''}` : ''
+
+/**
+ * the header line of the board: the run counts, the limits, the manager context and the lease.
+ * The mod never ticks, so it is always a reader: no part of the line says "read-only".
+ */
+export function headerText(state, context) {
+  if (state.error) return `tick failed: ${state.error}`
+  return [
+    statusText(state.runs ?? []) || 'no live runs',
+    managerLimitText(state.managerLimited),
+    managerContextText(context),
+    managerCodexAuthText(state.managerCodexAuth),
+    leaseText(state.lease),
+  ]
+    .filter(Boolean)
+    .join(' · ')
 }
 
 /** the board header when the manager's Claude is limited: 'manager: Claude limited until HH:MM', else '' */
