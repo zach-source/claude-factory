@@ -86,7 +86,10 @@ export function parseEgress(spec: string): Egress {
     throw new Error(`--egress key "${key}" is SCREAMING_SNAKE_CASE, as agent-vault names it (OPENAI)`)
   if (header !== undefined && !/^[A-Za-z][A-Za-z0-9-]*$/.test(header))
     throw new Error(`--egress header "${header}" is a header name (Authorization)`)
-  return { hosts, key, ...(header !== undefined && { header, prefix: prefix.join(':') }) }
+  const p = prefix.join(':')
+  if (!/^[\x20-\x7e]*$/.test(p))
+    throw new Error(`--egress prefix ${JSON.stringify(p)} must use printable ASCII (Bearer )`)
+  return { hosts, key, ...(header !== undefined && { header, prefix: p }) }
 }
 
 export type Launch = {

@@ -2239,6 +2239,17 @@ test('--egress parses hosts, a vault key, and its header and prefix', () => {
   expect(() => ax.parseEgress('a.example.com=K:bad header:')).toThrow('header name')
 })
 
+test('--egress prefix must use printable ASCII', () => {
+  for (const prefix of ['Bearer\r\nX-Inject: 1', 'a\nb', 'a\tb', '\0', '\x7f', 'é']) {
+    expect(() => ax.parseEgress(`h.example.com=K:Authorization:${prefix}`)).toThrow(
+      /^--egress prefix .*printable ASCII/,
+    )
+  }
+  for (const prefix of ['Bearer ', '~']) {
+    expect(ax.parseEgress(`h.example.com=K:Authorization:${prefix}`).prefix).toBe(prefix)
+  }
+})
+
 test('the AWS broker egress rule sends the vault key as the raw Authorization value (claude-factory-5n22)', () => {
   const host = 'aws-broker.factory-aws.svc.cluster.local'
   const rule = ax.parseEgress(`${host}=AWS_BROKER:Authorization:`)
