@@ -28,6 +28,7 @@ import {
 } from 'herdr'
 import {
   agentsOf,
+  headerText,
   answerArgs,
   board,
   interviewItems,
@@ -36,7 +37,6 @@ import {
   newlyBlocked,
   parseConfig,
   shortId,
-  statusText,
   actionWords,
   snapshotWords,
   serverCall,
@@ -57,10 +57,7 @@ import {
   FLOW_WINDOWS,
   flowJobWords,
   flowLayout,
-  managerLimitText,
-  managerContextText,
   parseContext,
-  managerCodexAuthText,
   parseFlows,
   recentMovers,
 } from './view.js'
@@ -206,7 +203,7 @@ export default class Factory extends View {
     setShared('factory', {
       runs: res.runs,
       halt: res.halt,
-      readOnly: res.readOnly,
+      lease: res.lease,
       managerLimited: res.managerLimited ?? null,
       managerCodexAuth: res.managerCodexAuth ?? null,
       at: Date.now(),
@@ -253,18 +250,7 @@ export default class Factory extends View {
     const t = theme()
     const state = shared('factory') ?? {}
     const runs = state.runs ?? []
-    const head = state.readOnly
-      ? `read-only: ${state.readOnly}`
-      : state.error
-        ? `tick failed: ${state.error}`
-        : [
-            statusText(runs) || 'no live runs',
-            managerLimitText(state.managerLimited),
-            managerContextText(shared('factory.context')),
-            managerCodexAuthText(state.managerCodexAuth),
-          ]
-            .filter(Boolean)
-            .join(' · ')
+    const head = headerText(state, shared('factory.context'))
     if (p.band)
       return h_flex()
         .size_full()
@@ -272,7 +258,7 @@ export default class Factory extends View {
         .items_center()
         .bg(t.chrome)
         .text_size(12)
-        .text_color(state.readOnly || state.error ? t.blocked : t.muted)
+        .text_color(state.error ? t.blocked : t.muted)
         .child(div().truncate().child(`factory · ${head}`))
     if (!this.cfg)
       return v_flex()
@@ -349,7 +335,7 @@ export default class Factory extends View {
                 .flex_1()
                 .min_w(0)
                 .truncate()
-                .text_color(state.readOnly || state.error ? t.blocked : t.muted)
+                .text_color(state.error ? t.blocked : t.muted)
                 .child(head),
             ),
         )
