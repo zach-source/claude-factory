@@ -6887,7 +6887,7 @@ function codexPassHome(
     const forms = pathForms(root)
     if (
       forms.some(r => protectedPaths.some(p => pathUnder(p, r))) ||
-      forms.some(r => tokenDirs.some(t => pathUnder(r, t)))
+      forms.some(r => tokenDirs.some(t => pathUnder(r, t) || pathUnder(t, r)))
     )
       return { refused: 'scope' }
     keys.set(real, mode) // the write root comes last, so it wins over an equal read root
@@ -7031,7 +7031,7 @@ async function dream() {
         proposals: proposalsBefore.map(p => `- ${p.name} (${p.status}, rung ${p.rung})`),
       },
     )
-    // FACTORY_DREAM_CODEX=<model> runs the dream on codex in its workspace-write sandbox (y3zo)
+    // FACTORY_DREAM_CODEX=<model> runs the dream on codex under a closed filesystem profile (jbfv.4) (y3zo)
     const model = process.env.FACTORY_DREAM_CODEX
     let codexHome: string | undefined
     if (model) {

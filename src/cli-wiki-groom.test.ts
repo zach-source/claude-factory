@@ -1158,7 +1158,8 @@ test(
     expect(ghCalls().flat().join('\n')).toContain('zqcontrol-jbfv4')
     const patch = bareGit('log', '-p', '--all')
     expect(patch).not.toContain(secret)
-    expect(patch).toContain('zqcontrol-jbfv4')
+    // the control must come from the apply pass: only the groom branch diff counts
+    expect(bareGit('diff', `main..groom/${today()}`)).toContain('zqcontrol-jbfv4')
     expect(readlinkSync(join(home, 'codex-groom', 'auth.json'))).toStartWith(join(dir, 'user-codex'))
   },
   SLOW,
@@ -1190,6 +1191,25 @@ test(
         () => {
           mkdirSync(join(dir, 'user-codex', 'sub'), { recursive: true })
           setRepos(join(dir, 'user-codex', 'sub'))
+        },
+      ],
+      ...(['CLAUDE_CONFIG_DIR', 'GROK_HOME', 'CURSOR_CONFIG_DIR'] as const).map(
+        k =>
+          [
+            `parent of ${k}`,
+            () => {
+              mkdirSync(join(dir, 'par', 'tok'), { recursive: true })
+              setRepos(join(dir, 'par'))
+              return { [k]: join(dir, 'par', 'tok') }
+            },
+          ] as [string, () => Record<string, string>],
+      ),
+      [
+        'home .config (parent of .config/gh)',
+        () => {
+          mkdirSync(join(dir, 'h2', '.config', 'gh'), { recursive: true })
+          setRepos(join(dir, 'h2', '.config'))
+          return { HOME: join(dir, 'h2') }
         },
       ],
       [

@@ -335,7 +335,8 @@ test(
     expect(r.out + r.err).not.toContain('zqopaque-jbfv4')
     expect(readFileSync(join(home, 'dream.log'), 'utf8')).not.toContain('zqopaque-jbfv4')
     expect(gitMemory('log', '-p')).not.toContain('zqopaque-jbfv4')
-    expect(gitMemory('log', '-p')).toContain('zqcontrol-jbfv4')
+    // the control must come from the dream pass: only its own commit diff counts
+    expect(gitMemory('log', '-p', '--grep=^dream:')).toContain('+zqcontrol-jbfv4')
     expect(readFileSync(join(memory, 'topic', 'x.md'), 'utf8')).toContain('zqcontrol-jbfv4')
   },
   SLOW,
@@ -354,6 +355,12 @@ test(
     expect(existsSync(mark('codex.argv'))).toBe(false)
     expect(existsSync(mark('claude.argv'))).toBe(false)
     expect(gitMemory('log', '--grep=^dream:', '--format=%H')).toBe('')
+    seed()
+    mkdirSync(join(memory, 'tok'))
+    r = run(bothFakes({ FACTORY_DREAM_CODEX: 'gpt-6-astra', CLAUDE_CONFIG_DIR: join(memory, 'tok') }))
+    expect(r.out).toContain('dream: codex read scope holds a secret path, dream refused')
+    expect(existsSync(mark('codex.argv'))).toBe(false)
+    expect(existsSync(mark('claude.argv'))).toBe(false)
     seed()
     r = run(bothFakes({ FACTORY_DREAM_CODEX: 'gpt-6-astra', FAKE_VERSION: '0.159.9' }))
     expect(r.out).toContain('dream: codex has no permission profiles, dream refused')
