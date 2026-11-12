@@ -53,6 +53,7 @@ const CHATGPT = ['chatgpt.com']
 const BUILTIN_KEY_HOSTS: Record<string, readonly string[]> = {
   ANTHROPIC: ['api.anthropic.com'],
   XAI_API_KEY: ['api.x.ai'],
+  GROK_SESSION: ['cli-chat-proxy.grok.com'],
   CURSOR_API_KEY: ['api2.cursor.sh'],
   CODEX_CHATGPT: CHATGPT,
   CODEX_CHATGPT_ACCOUNT: CHATGPT,

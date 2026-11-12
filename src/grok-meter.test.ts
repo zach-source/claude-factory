@@ -63,10 +63,10 @@ test('a grok pick that the gate refuses becomes the station agent; a claude pick
 test('the gate is open without a budget; with one it logs why, and keeps its answer for 6 hours', () => {
   const h = home()
   const log = spyOn(console, 'error').mockImplementation(() => {})
-  const env = { FACTORY_GROK_WEEKLY_BUDGET_USD: '2' }
+  const env = { FACTORY_GROK_AUTH: 'key', FACTORY_GROK_WEEKLY_BUDGET_USD: '2' }
   try {
     logGrokSpend(h, 'r1', [row('plan', 1_000_000)], NOW)
-    expect(grokAllowed('r1', 'a', {}, NOW, h)).toBe(true) // no budget
+    expect(grokAllowed('r1', 'a', { FACTORY_GROK_AUTH: 'key' }, NOW, h)).toBe(true) // no budget
     expect(grokAllowed('r1', 'a', env, NOW, h)).toBe(true) // $1 of $2
     logGrokSpend(h, 'r1', [row('plan', 1_500_000)], NOW)
     expect(grokAllowed('r1', 'a', env, NOW + 1000, h)).toBe(true) // kept
