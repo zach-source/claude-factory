@@ -3583,3 +3583,34 @@ test('launch wraps the worker in the sandbox', () => {
   expect(t.out).toEqual(['threw boom'])
   expect(readdirSync(t.home).filter(f => f !== '.bun')).toEqual([])
 })
+
+test('launch gives codex and pi no Claude-only plugin dir from FACTORY_WORKER_PLUGINS', () => {
+  const home = mkdtempSync(join(tmpdir(), 'launch-egm-'))
+  const cfg = join(home, 'claude')
+  const egm = join(home, 'egm-plugin')
+  mkdirSync(join(egm, 'skills', 'egm-x'), { recursive: true })
+  writeFileSync(join(egm, 'skills', 'egm-x', 'SKILL.md'), '---\nname: egm-x\ndescription: x\n---\n')
+  mkdirSync(join(cfg, 'plugins'), { recursive: true })
+  writeFileSync(join(cfg, 'settings.json'), JSON.stringify({ enabledPlugins: { 'egm@m': true } }))
+  writeFileSync(
+    join(cfg, 'plugins', 'installed_plugins.json'),
+    JSON.stringify({ plugins: { 'egm@m': [{ installPath: egm }] } }),
+  )
+  const script = `
+    import { launch } from ${JSON.stringify(join(import.meta.dir, 'cli'))}
+    const run = { id: 'r', ws: 'w', worktree: ${JSON.stringify(home)}, repo: ${JSON.stringify(home)}, branch: 'b' }
+    const out = {}
+    for (const agent of ['claude', 'codex', 'pi'])
+      out[agent] = launch(run, { name: 'x', start: 'a', agent, nodes: { a: { prompt: '', next: { ok: 'done' } } } }, 'a', { attempt: 1, seq: 1, mail: {} }, 'p.md')
+    console.log(JSON.stringify(out))
+  `
+  const p = Bun.spawnSync(['bun', '-e', script], {
+    env: { ...process.env, HOME: home, FACTORY_HOME: home, CLAUDE_CONFIG_DIR: cfg, FACTORY_WORKER_PLUGINS: 'egm' },
+  })
+  const out = JSON.parse(p.stdout.toString()) as Record<string, string>
+  expect(out.pi).not.toContain(egm)
+  expect(out.codex).toContain('CODEX_HOME')
+  expect(out.claude).toContain(egm)
+  const files = readdirSync(home, { recursive: true }).map(String)
+  expect(files.filter(f => f.includes('egm-x') && !f.startsWith('egm-plugin'))).toEqual([])
+})
