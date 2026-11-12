@@ -171,12 +171,17 @@ describe('CATALOG', () => {
     ])
     expect(CATALOG.filter(o => o.route.path === '/v1/gc')).toHaveLength(1)
   })
-  test('has 46 operations: 24 GET, 20 POST, 1 DELETE and 1 PATCH', () => {
-    expect(CATALOG.length).toBe(46)
-    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(24)
+  test('has 51 operations: 26 GET, 20 POST, 1 DELETE, 1 PATCH and 3 PUT', () => {
+    expect(CATALOG.length).toBe(51)
+    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(26)
     expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(20)
     expect(CATALOG.filter(o => o.route.method === 'DELETE').map(o => o.name)).toEqual(['runs.remove'])
     expect(CATALOG.filter(o => o.route.method === 'PATCH').map(o => o.name)).toEqual(['rigs.set'])
+    expect(CATALOG.filter(o => o.route.method === 'PUT').map(o => o.name)).toEqual([
+      'gates.setbrief',
+      'plan.set',
+      'review.set',
+    ])
     expect(CATALOG.filter(o => o.route.method === 'POST' && !o.mutates).map(o => o.name)).toEqual([
       'guard.check',
     ])
@@ -259,6 +264,7 @@ describe('CATALOG', () => {
       'flows.show GET /v1/flows',
       'gates.brief GET /v1/runs/:id/brief',
       'gates.decide POST /v1/runs/:id/decide',
+      'gates.setbrief PUT /v1/gate-brief/:run',
       'gc.run POST /v1/gc',
       'guard.check POST /v1/guard/check',
       'lease.show GET /v1/lease',
@@ -271,8 +277,12 @@ describe('CATALOG', () => {
       'memory.add POST /v1/memory',
       'memory.search GET /v1/memory/search',
       'metrics.show GET /v1/metrics',
+      'plan.facts GET /v1/plan/facts',
+      'plan.set PUT /v1/plan',
       'plan.show GET /v1/plan',
       'prs.show GET /v1/prs',
+      'review.facts GET /v1/review',
+      'review.set PUT /v1/review',
       'rigs.adopt POST /v1/adopt',
       'rigs.list GET /v1/rigs',
       'rigs.set PATCH /v1/rigs/:rig',
