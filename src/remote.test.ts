@@ -31,6 +31,8 @@ import {
   vmClaudeFlags,
   vmCodexHome,
 } from './cli'
+import { grokSpent, grokVerdict } from './grok-meter'
+import { validUsage } from './metrics'
 import * as worker from './worker'
 import { runnerOf, runners } from './runner'
 
@@ -3831,6 +3833,93 @@ test('a herdr pane makes no worker usage call at close (aure.1 AC2)', () => {
   expect(rows).toEqual([])
   expect(log).not.toContain('worker usage')
 })
+
+// claude-factory-53r2x: a VM sets no cost on a non-Grok model, and at most $100 for a row on a Grok one
+const meter = () => join(home, 'grok-spend.jsonl')
+const meterLines = () => (existsSync(meter()) ? readFileSync(meter(), 'utf8').trim().split('\n').length : 0)
+const COST_CASES: [string, string, number, boolean][] = [
+  ['claude 1e12', 'claude-opus-4-7', 1e12, false],
+  ['claude 1', 'claude-opus-4-7', 1, false],
+  ['grok over the cap', 'grok-4.7', 100_000_001, false],
+  ['grok at the cap', 'grok-4.7', 100_000_000, true],
+]
+
+test('53r2x cost grammar keeps costMicro only for an integer 1..1e8 on a grok model', () => {
+  const cost = (model: string, costMicro: unknown) => {
+    const r = validUsage([usageRow({ model, costMicro })], 'a', 7)
+    expect(r).toHaveLength(1)
+    return r[0]!.costMicro
+  }
+  for (const m of ['grok', 'grok-4.7']) for (const c of [1, 100_000_000]) expect(cost(m, c)).toBe(c)
+  for (const c of [100_000_001, 1e12, 0, -1, 1.5, NaN, Infinity, '5', null, {}, undefined])
+    expect(cost('grok-4.7', c)).toBeUndefined()
+  for (const m of [
+    'claude-opus-4-7',
+    'gpt-6-astra',
+    'Grok-4.7',
+    'xgrok-4.7',
+    'grokish',
+    'grok-',
+    'xai:grok-4.7',
+  ])
+    expect(cost(m, 1)).toBeUndefined()
+  const forged = { ...usageRow({ model: 'grok-4.7', costMicro: 5 }), node: 'evil', seq: 99, extra: 1 }
+  expect(validUsage([forged], 'a', 7)).toEqual([
+    { node: 'a', seq: 7, ...usageRow({ model: 'grok-4.7' }), costMicro: 5 },
+  ])
+  expect(validUsage([usageRow({ model: 'grok-4.7', input: -1, costMicro: 5 })], 'a', 7)).toEqual([])
+  expect(validUsage('rows', 'a', 7)).toEqual([])
+  const many = Array.from({ length: 21 }, () => usageRow({ model: 'grok', costMicro: 5 }))
+  expect(validUsage(many, 'a', 7)).toEqual([])
+  expect(validUsage([usageRow({ model: 'g'.repeat(65), costMicro: 5 })], 'a', 7)).toEqual([])
+  expect(validUsage([usageRow({ session: 's'.repeat(65), model: 'grok', costMicro: 5 })], 'a', 7)).toEqual([])
+})
+
+test.each(COST_CASES.map(c => [...c] as const))(
+  '53r2x replay cost boundary: %s',
+  (_n, model, costMicro, kept) => {
+    const id = 'rg1'
+    rmSync(meter(), { force: true })
+    const seq = launched(id)
+    const report = reportLine(id, seq, [usageRow({ model, costMicro })])
+    cluster('Running', { status: 'idle', session: 's1', lines: [report] })
+    expect(factory(['tick']).code).toBe(0)
+    expect(inbox(id)).toContain('"outcome":"ready"')
+    const rows = storedRows(id)
+    expect(rows).toHaveLength(1)
+    expect('costMicro' in rows[0]!).toBe(kept)
+    expect(meterLines()).toBe(kept ? 1 : 0)
+    expect(grokSpent(home)).toBe(kept ? 100 : 0)
+    expect(grokVerdict(grokSpent(home), 1).use).toBe(!kept)
+    if (kept) {
+      cluster('Running', { status: 'idle', session: 's1', lines: [report] })
+      expect(factory(['tick']).code).toBe(0)
+      expect(storedRows(id)).toHaveLength(1)
+      expect(meterLines()).toBe(1)
+    }
+    rmSync(join(home, 'runs', id), { recursive: true })
+    rmSync(meter(), { force: true })
+  },
+)
+
+test.each(COST_CASES.map(c => [...c] as const))(
+  '53r2x close cost boundary: %s',
+  (_n, model, costMicro, kept) => {
+    rmSync(meter(), { force: true })
+    const out = JSON.stringify([usageRow({ model, costMicro })])
+    const { rows, seq, code, log } = timeoutTick('rg2', { out, code: 0 })
+    expect(code).toBe(0)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ node: 'a', seq, session: 's1', model, input: 1, output: 4 })
+    expect('costMicro' in rows[0]!).toBe(kept)
+    expect(meterLines()).toBe(kept ? 1 : 0)
+    expect(grokSpent(home)).toBe(kept ? 100 : 0)
+    expect(grokVerdict(grokSpent(home), 1).use).toBe(!kept)
+    expect(log.indexOf('worker usage')).toBeGreaterThan(-1)
+    expect(log.indexOf('worker usage')).toBeLessThan(log.indexOf('delete task'))
+    rmSync(meter(), { force: true })
+  },
+)
 
 const writeHalt = (id: string, seq: number) =>
   writeFileSync(
