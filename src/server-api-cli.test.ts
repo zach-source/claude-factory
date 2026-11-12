@@ -239,6 +239,28 @@ describe('port-call: the internal verb of childPort', () => {
     expect(r.exitCode).toBe(0)
     expect(JSON.parse(lastLine(r)).value).toEqual([])
   })
+  test('8 parallel decisionsList children on a home with a stale proposal all answer without error', async () => {
+    const home = tmp()
+    writeFileSync(join(home, 'rigs.json'), '[]')
+    const f = argsFile(home, '[]')
+    for (let round = 0; round < 10; round++) {
+      writeFileSync(join(home, 'decisions.json'), JSON.stringify({ 'iv:norun@1': { at: 1 } }))
+      const procs = Array.from({ length: 8 }, () =>
+        Bun.spawn([process.execPath, cli, 'port-call', 'decisionsList', '--text-file', f], {
+          env: cleanEnv(home),
+          cwd: home,
+          stdout: 'pipe',
+          stderr: 'pipe',
+        }),
+      )
+      for (const p of procs) {
+        const out = await new Response(p.stdout).text()
+        expect(await p.exited).toBe(0)
+        expect(JSON.parse(out.trim().split('\n').at(-1)!).error).toBeUndefined()
+      }
+      expect(() => JSON.parse(readFileSync(join(home, 'decisions.json'), 'utf8'))).not.toThrow()
+    }
+  })
   test('a name that is not a read, a missing file flag and a file outside the allowed dirs all fail', () => {
     const home = tmp()
     const f = argsFile(home, '[]')

@@ -599,8 +599,8 @@ function durable(path: string, text: string, flag: 'a') {
     closeSync(fd)
   }
 }
-export function writeJson(path: string, value: unknown) {
-  writeFresh(path, JSON.stringify(value, null, 2)) // atomic: a reader never sees half a snapshot
+export function writeJson(path: string, value: unknown, tmp?: string) {
+  writeFresh(path, JSON.stringify(value, null, 2), tmp) // atomic: a reader never sees half a snapshot
 }
 /** `factory manager --ax [args]`: run the manager as the long-lived AX task (claude-factory-192.2) */
 async function launchAxManager(args: string[]) {
@@ -13058,7 +13058,7 @@ async function prs() {
   for (const [id, file] of files) {
     if (sameFile(before.get(id) ?? { version: 1, prs: [] }, file)) continue // wyc.7: unchanged, skip the write
     try {
-      writeJson(prsFile(id), file)
+      writeJson(prsFile(id), file, `${prsFile(id)}.${process.pid}.tmp`) // pid name: parallel port-call children
     } catch {
       // the run was removed mid-pass: nothing to write back to
     }
@@ -13108,7 +13108,7 @@ function decisionsList() {
   // read again: a propose may have landed while the bd calls ran
   const fresh = proposals()
   for (const k of stale) delete fresh[k]
-  writeJson(decisionsFile(), fresh)
+  writeJson(decisionsFile(), fresh, `${decisionsFile()}.${process.pid}.tmp`) // pid name: parallel port-call children
   for (const k of stale) delete all[k]
   return { rigs: rows, proposals: all }
 }
