@@ -67,7 +67,12 @@ test('AC1: a rewritten rigs.json changes nothing for the run: runRig and brief k
 
 test('AC2: guard lists are the union of snapshot and live', () => {
   const snap = { ...base, personOnlyContexts: ['ctx-a'], protectedBranches: ['rel'], sensitivePaths: ['p1/'] }
-  const live = { ...base, personOnlyContexts: ['ctx-b'], protectedBranches: ['prod'], sensitivePaths: ['p2/'] }
+  const live = {
+    ...base,
+    personOnlyContexts: ['ctx-b'],
+    protectedBranches: ['prod'],
+    sensitivePaths: ['p2/'],
+  }
   const got = run(snap, [live]).rig!
   expect(got.personOnlyContexts).toEqual(['ctx-a', 'ctx-b'])
   expect(got.protectedBranches).toEqual(['rel', 'prod'])
@@ -76,7 +81,9 @@ test('AC2: guard lists are the union of snapshot and live', () => {
   expect(gone.personOnlyContexts).toEqual(['ctx-a'])
   expect(gone.protectedBranches).toEqual(['rel'])
   expect(gone.sensitivePaths).toEqual(['p1/'])
-  const dup = run({ ...base, personOnlyContexts: ['ctx-a'] }, [{ ...base, personOnlyContexts: ['ctx-a'] }]).rig!
+  const dup = run({ ...base, personOnlyContexts: ['ctx-a'] }, [
+    { ...base, personOnlyContexts: ['ctx-a'] },
+  ]).rig!
   expect(dup.personOnlyContexts).toEqual(['ctx-a'])
   const none = run(base, [base]).rig!
   for (const k of ['personOnlyContexts', 'protectedBranches', 'sensitivePaths']) expect(k in none).toBe(false)
@@ -111,7 +118,9 @@ test('AC3: denied rows', () => {
   expect(gone.egress).toEqual([])
   expect('env' in gone).toBe(false)
   expect('mcp' in gone).toBe(false)
-  const e2 = run({ ...base, egress: [E1, E2] }, [{ ...base, egress: [E1, { ...E2, header: 'X-Other' }] }]).rig!
+  const e2 = run({ ...base, egress: [E1, E2] }, [
+    { ...base, egress: [E1, { ...E2, header: 'X-Other' }] },
+  ]).rig!
   expect(e2.egress).toEqual([E1])
   expect(run({ ...base, env: { B: '1' } }, [{ ...base, env: { B: '2' } }]).rig!.env).toBeUndefined()
   expect('egress' in run(base, [{ ...base, egress: [E1] }]).rig!).toBe(false)
@@ -135,7 +144,13 @@ test('AC3: allowed rows and the pinned beadsRemote', () => {
 })
 
 test('AC4: legacy run, no rig at launch, bad file', () => {
-  const live = { ...base, goal: 'live goal', runner: 'ax', personOnlyContexts: ['ctx-b'], mergeAuthority: true }
+  const live = {
+    ...base,
+    goal: 'live goal',
+    runner: 'ax',
+    personOnlyContexts: ['ctx-b'],
+    mergeAuthority: true,
+  }
   expect(run(undefined, [live]).rig).toEqual(live)
   const nul = run(null, [live]).rig!
   expect(nul.goal).toBeUndefined()
@@ -185,7 +200,11 @@ test('AC4: factory start writes the rig entry, or null when the repo is no rig',
   const def = join(dir, 'tiny.json')
   writeFileSync(
     def,
-    JSON.stringify({ name: 'tiny', start: 'work', nodes: { work: { prompt: 'Do it.', next: { ok: 'done' } } } }),
+    JSON.stringify({
+      name: 'tiny',
+      start: 'work',
+      nodes: { work: { prompt: 'Do it.', next: { ok: 'done' } } },
+    }),
   )
   const { FACTORY_OUTBOX, FACTORY_FROM, FACTORY_RUN, FACTORY_AX_CONTEXT, FACTORY_AX_MANAGER, ...laptop } =
     process.env
