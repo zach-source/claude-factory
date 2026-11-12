@@ -56,6 +56,8 @@ import {
   FLOW_LENSES,
   FLOW_WINDOWS,
   flowJobWords,
+  flowDue,
+  flowResult,
   flowLayout,
   parseContext,
   contextProblem,
@@ -110,7 +112,7 @@ export default class Factory extends View {
   }
 
   /** starts a factory command, unless one with that name is in flight. It runs direct, in the foreground. */
-  start(name, words, req) {
+  start(name, words, req, flowId) {
     const job = this.jobs[name]
     if (job && Date.now() - job.at < JOB_LIMIT_MS) return
     if (this.cfg.server && !req) return // no /v1 route for this call (the Flow tab)
@@ -125,8 +127,8 @@ export default class Factory extends View {
           return r
         })
     )
-      .then(r => (mine.result = { code: r.code, out: r.stdout, err: r.stderr }))
-      .catch(e => (mine.result = { code: 1, out: '', err: String(e) }))
+      .then(r => (mine.result = { code: r.code, out: r.stdout, err: r.stderr, flowId })) // flowId: the Flow factory/window of this call
+      .catch(e => (mine.result = { code: 1, out: '', err: String(e), flowId }))
       .then(() => this.apply(name)) // draw when the call ends, not at the next beat
   }
 
@@ -145,8 +147,10 @@ export default class Factory extends View {
       setShared('factory.context', parseContext(r.code, r.out))
       this.problem('context', contextProblem(r.code, r.out, r.err))
     } else if (name === 'flows') {
-      this.flow = parseFlows(r.code, r.out, r.err)
-      if (this.flow.graph) this.flowCache[this.flowKey()] = this.flow
+      const flow = parseFlows(r.code, r.out, r.err)
+      const { cache, shown } = flowResult(this.flowCache, this.flowKey(), r.flowId, flow, Date.now())
+      this.flowCache = cache
+      if (shown) this.flow = shown
     }
     this.cx.notify()
   }
@@ -170,7 +174,8 @@ export default class Factory extends View {
   beat(cx) {
     cx.spawn(async cx => {
       // the Flow tab asks for the graph while it is shown
-      if (this.tab === 'flow') this.start('flows', flowJobWords(this.flowFactory, this.flowWindow))
+      if (this.tab === 'flow' && flowDue(this.flowCache, this.flowKey(), Date.now()))
+        this.start('flows', flowJobWords(this.flowFactory, this.flowWindow), undefined, this.flowKey())
       // the first beat takes any cached board; later beats take one at most BOARD_MAX_AGE old (over the beat)
       // the manager's model and context use: one read of its transcript, so each turn shows by the next beat
       const age = this.beats++ ? BOARD_MAX_AGE : FIRST_MAX_AGE

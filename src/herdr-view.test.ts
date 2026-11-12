@@ -545,3 +545,23 @@ test('the real interview view is a list, so it gives no problem line (claude-fac
   expect(Array.isArray(s.interview)).toBe(true)
   expect(s.interviewError).toBeUndefined()
 })
+
+// claude-factory-hpmc.34: a flows job keeps its own id; a graph is not asked for again within FLOWS_MAX_AGE
+test('a flows job that ends after a switch is cached under its own id (claude-factory-hpmc.34)', () => {
+  const lifecycle = { graph: { factory: 'lifecycle', nodes: [] } }
+  // the person switches from lifecycle to ship while the lifecycle job runs
+  const r = herdr.flowResult({}, 'ship/24h', 'lifecycle/24h', lifecycle, 1000)
+  expect(r.shown).toBeUndefined() // ship is on screen: the lifecycle graph must not replace it
+  expect(r.cache['ship/24h']).toBeUndefined()
+  expect(r.cache['lifecycle/24h'].graph).toBe(lifecycle.graph)
+  // a job for the id on screen shows; a failure is not cached
+  expect(herdr.flowResult({}, 'ship/24h', 'ship/24h', lifecycle, 1).shown).toBe(lifecycle)
+  expect(herdr.flowResult({}, 'a', 'a', { error: 'x' }, 1).cache).toEqual({})
+})
+
+test('the Flow tab asks again only when the cached graph is old (claude-factory-hpmc.34)', () => {
+  const cache = { 'lifecycle/24h': { graph: {}, at: 1000 } }
+  expect(herdr.flowDue(cache, 'ship/24h', 1001)).toBe(true)
+  expect(herdr.flowDue(cache, 'lifecycle/24h', 1000 + herdr.FLOWS_MAX_AGE - 1)).toBe(false)
+  expect(herdr.flowDue(cache, 'lifecycle/24h', 1000 + herdr.FLOWS_MAX_AGE)).toBe(true)
+})

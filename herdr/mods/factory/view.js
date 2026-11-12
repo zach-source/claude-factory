@@ -348,6 +348,24 @@ export const PULSE_MS = 90_000
 /** the words of the flows job */
 export const flowJobWords = (factory, window) => ['flows', '--json', '--factory', factory, '--since', window]
 
+/** A cached flows graph younger than this (ms) is not requested again. Before, each beat computed it again. */
+export const FLOWS_MAX_AGE = 30_000
+
+/** true if the cache has no graph for the flow id, or the graph is older than FLOWS_MAX_AGE */
+export const flowDue = (cache, id, now) => !cache[id] || now - cache[id].at >= FLOWS_MAX_AGE
+
+/**
+ * Put the result of a flows job in the cache. The job started for the flow id `id`.
+ * The graph goes under `id`, not under the id on screen.
+ * The graph shows only if `id` is still the id on screen (`current`).
+ */
+export function flowResult(cache, current, id, flow, now) {
+  return {
+    cache: flow.graph ? { ...cache, [id]: { ...flow, at: now } } : cache,
+    shown: id === current ? flow : undefined,
+  }
+}
+
 /** the result of `factory flows --json`: { graph } or { error } */
 export function parseFlows(code, out, err) {
   if (code !== 0) return { error: line(err || out || `factory flows exited ${code}`, 300) }
