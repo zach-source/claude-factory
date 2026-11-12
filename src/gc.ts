@@ -96,12 +96,7 @@ export function gcPlan(
     for (const f of r.entries) {
       if (f.isDir || !f.name.endsWith(MEMORY_SUFFIX)) continue
       if (!finished && (r.task === undefined || f.name === `${r.task}${MEMORY_SUFFIX}`)) continue
-      if (
-        typeof f.mtimeMs !== 'number' ||
-        !Number.isFinite(f.mtimeMs) ||
-        !(now - f.mtimeMs >= MEMORY_MIN_AGE_MS)
-      )
-        continue
+      if (!(now - (f.mtimeMs ?? NaN) >= MEMORY_MIN_AGE_MS)) continue // a missing, NaN or future mtime keeps the file
       memory.push({ id: r.id, name: f.name })
       memTotal.bytes += f.bytes
       memTotal.files++
