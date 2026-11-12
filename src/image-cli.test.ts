@@ -125,6 +125,12 @@ describe('factory image build', () => {
       expect(existsSync(marker)).toBe(false)
     },
   )
+  test('a worker with a bad argv gets the usage line and no docker run', () => {
+    const { run, marker } = setup()
+    const r = run(['image', 'push'], { FACTORY_FROM: 'implement' })
+    expect(r.code).not.toBe(0)
+    expect(existsSync(marker)).toBe(false)
+  })
   test('help names the command', () => {
     const r = setup().run(['help'])
     expect(r.code).toBe(0)
