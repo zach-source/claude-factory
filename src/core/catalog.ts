@@ -385,11 +385,14 @@ export function slimBoard(b: unknown): unknown {
   return { ...o, runs, ...(rigs ? { rigs } : {}) }
 }
 
-/** the view names of `snapshot`: the group of each read op that has no required input */
+/**
+ * the view names of `snapshot`: the group of each read op that has no required input, or one full op name
+ * (`manager.context`) when a group has several such ops and the first is not the one wanted
+ */
 const viewOp = (view: string): Op | undefined =>
   CATALOG.find(
     o =>
-      o.name.split('.')[0] === view &&
+      (view.includes('.') ? o.name === view : o.name.split('.')[0] === view) &&
       o.name !== 'snapshot.show' &&
       o.route.method === 'GET' &&
       o.rights === 'read' &&

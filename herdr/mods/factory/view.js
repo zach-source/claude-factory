@@ -183,7 +183,7 @@ export function managerContextText(c) {
 export function parseContext(code, out) {
   if (code !== 0) return null
   try {
-    const c = JSON.parse(out).views?.manager
+    const c = (j => j.views?.['manager.context'] ?? j)(JSON.parse(out))
     return c && typeof c.model === 'string' ? c : null
   } catch {
     return null

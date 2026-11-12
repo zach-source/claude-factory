@@ -146,7 +146,8 @@ export function route(
       if (n === 2 && a === '--board' && b === '--slim') return { method: 'GET', path: '/v1/board?slim=1' }
       return n === 0 ? { method: 'GET', path: '/v1/board' } : bad
     case 'snapshot':
-      if (!((n === 2 || n === 4) && a === '--views' && /^[a-z]+(,[a-z]+)*$/.test(b!))) return bad
+      if (!((n === 2 || n === 4) && a === '--views' && /^[a-z]+(\.[a-z]+)?(,[a-z]+(\.[a-z]+)?)*$/.test(b!)))
+        return bad
       if (n === 2) return { method: 'GET', path: `/v1/snapshot?views=${b}` }
       return args[2] === '--max-age' && /^\d+$/.test(args[3]!)
         ? { method: 'GET', path: `/v1/snapshot?views=${b}&maxAge=${args[3]}` }
