@@ -9,8 +9,7 @@ export const appHomeOf = (env: Record<string, string | undefined>) =>
 
 /** what config.json holds. `machine` makes the mod a view and control client of a manager on that machine. */
 export type ModConfig =
-  | { cli: string; home: string; machine?: string }
-  | { server: string; cert: string; key: string; ca: string }
+  { cli: string; home: string; machine?: string } | { server: string; cert: string; key: string; ca: string }
 
 /** the server mode config: the person certificate files in ~/.config/factory (client.ts tlsFor) */
 export const serverConfig = (server: string, dir = join(homedir(), '.config', 'factory')): ModConfig => ({

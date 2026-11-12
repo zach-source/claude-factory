@@ -9739,8 +9739,7 @@ export function runRig(run: Pick<Run, 'id' | 'repo'>): Rig | undefined {
   if (snap !== null && !isObj(snap)) return live
   // null: the repo was no rig at launch, so a rig added later gives the run its guards and nothing else
   const base = (snap ?? (live && { name: live.name, repo: live.repo, factory: live.factory })) as
-    | Rig
-    | undefined
+    Rig | undefined
   if (!base) return undefined
   const out: Rig = { ...base, repo: run.repo }
   for (const k of GUARD_LISTS) {
