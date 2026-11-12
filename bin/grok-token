@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# This script stores a SuperGrok login for the grok CLI in the op item that agent-vault reads. The Grok workers in
+# AX send a placeholder. The gateway adds the access token to each request to the grok chat proxy, so the VM never
+# has it. A cluster CronJob renews the access token from the refresh token in the same item. The access token
+# lasts 6 hours.
+#
+# The source is a dedicated login. Do not use your own ~/.grok. To make the login, run:
+# GROK_HOME=$(mktemp -d) grok login --device-auth
+# After a seed, the script deletes the auth.json of that login. Two refreshers would use up one refresh token.
+#
+#   grok-token            Show the login in the item: the email, when the access token expires, and the last refresh.
+#   grok-token seed DIR   Copy the login in DIR/auth.json (the GROK_HOME of the dedicated login) into the item.
+#                         It creates the item if the item does not exist.
+#
+# You must set these variables. This public script has no private default for them.
+#
+#   GROK_TOKEN_VAULT  The vault of the item.
+#   GROK_TOKEN_ITEM   The op item (title or id). The item has these fields: access_token (vault key GROK_SESSION), refresh_token,
+#                     expires_at, email, oidc_issuer, oidc_client_id, last_refresh.
+#
+# For op auth, see claude-token: a writer service account in OP_SERVICE_ACCOUNT_TOKEN, or your own op sign-in.
+#
+# Tokens are sent to op on stdin. Never send tokens in argv.
+# This script does not show a token.
+set -euo pipefail
+for v in GROK_TOKEN_VAULT GROK_TOKEN_ITEM; do
+  [ -n "${!v:-}" ] || { echo "grok-token: $v is not set" >&2; exit 1; }
+done
+I=$GROK_TOKEN_ITEM
+V=$GROK_TOKEN_VAULT
+# jq function: set the field $l to $v. If $c is true, use the type CONCEALED. If the field does not exist, append it. The values come from the environment.
+put='def put($l; $v; $c): ($c | if . then "CONCEALED" else "STRING" end) as $t | if any(.fields[]?; .label == $l) then .fields |= map(if .label == $l then .value = $v | .type = $t else . end) else .fields = (.fields // []) + [{label: $l, type: $t, value: $v}] end;'
+FIELDS="put(\"access_token\"; \$ENV.AT; true) | put(\"refresh_token\"; \$ENV.RT; true) | put(\"expires_at\"; \$ENV.EXP; false) | put(\"email\"; \$ENV.EMAIL; false) | put(\"oidc_issuer\"; \$ENV.ISS; false) | put(\"oidc_client_id\"; \$ENV.CID; false) | put(\"last_refresh\"; \$ENV.NOW; false)"
+
+seed() {
+  local f=$1/auth.json j
+  [ -f "$f" ] || { echo "grok-token: no $f; run GROK_HOME=$1 grok login --device-auth first" >&2; exit 1; }
+  # auth.json holds one entry for each issuer and client; the dedicated login has one
+  j=$(jq -c '[.[]] | if length == 1 then .[0] else error("expected one login in auth.json") end' "$f")
+  export AT RT EXP EMAIL ISS CID NOW
+  AT=$(jq -r '.key // empty' <<<"$j")
+  RT=$(jq -r '.refresh_token // empty' <<<"$j")
+  EXP=$(jq -r '.expires_at // empty' <<<"$j")
+  EMAIL=$(jq -r '.email // empty' <<<"$j")
+  ISS=$(jq -r '.oidc_issuer // empty' <<<"$j")
+  CID=$(jq -r '.oidc_client_id // empty' <<<"$j")
+  NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  { [ -n "$AT" ] && [ -n "$RT" ] && [ -n "$ISS" ] && [ -n "$CID" ]; } ||
+    { echo "grok-token: $f has no access token, refresh token, issuer or client id" >&2; exit 1; }
+  if op item get "$I" --vault "$V" --format json >/dev/null 2>&1; then
+    op item get "$I" --vault "$V" --format json | jq "$put $FIELDS" |
+      op item edit "$I" --vault "$V" >/dev/null 2>&1 || { echo "grok-token: couldn't update the item" >&2; exit 1; }
+  else
+    jq -n --arg t "$I" "$put {title: \$t, category: \"API_CREDENTIAL\", fields: []} | $FIELDS" |
+      op item create --vault "$V" >/dev/null 2>&1 || { echo "grok-token: couldn't create the item" >&2; exit 1; }
+  fi
+  rm -f "$f"
+  echo "seeded $EMAIL into $I (access token expires $EXP); deleted $f so the CronJob is the only refresher"
+}
+
+case "${1:-}" in
+  seed) [ -n "${2:-}" ] || { echo "usage: grok-token seed <GROK_HOME of the dedicated login>" >&2; exit 1; }; seed "$2" ;;
+  *)
+    op item get "$I" --vault "$V" --format json |
+      jq -r '[.fields[] | select(.label | IN("email", "expires_at", "last_refresh")) | "\(.label): \(.value)"] | join("\n")' ;;
+esac
