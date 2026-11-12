@@ -185,10 +185,30 @@ describe('CATALOG', () => {
     ])
     expect(CATALOG.filter(o => o.route.path === '/v1/gc')).toHaveLength(1)
   })
-  test('has 51 operations: 26 GET, 20 POST, 1 DELETE, 1 PATCH and 3 PUT', () => {
-    expect(CATALOG.length).toBe(51)
+  test('kq1a AC1 image.build is one owner POST operation with an optional target enum', () => {
+    const op = CATALOG.find(o => o.name === 'image.build')
+    expect(op).toMatchObject({
+      route: { method: 'POST', path: '/v1/image/build' },
+      output: 'text',
+      rights: 'owner',
+      mutates: true,
+      long: true,
+      since: 1,
+    })
+    expect(op!.inputs).toEqual([
+      expect.objectContaining({
+        name: 'target',
+        kind: 'enum',
+        required: false,
+        values: ['worker', 'manager'],
+      }),
+    ])
+    expect(CATALOG.filter(o => o.name === 'image.build')).toHaveLength(1)
+  })
+  test('has 52 operations: 26 GET, 21 POST, 1 DELETE, 1 PATCH and 3 PUT', () => {
+    expect(CATALOG.length).toBe(52)
     expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(26)
-    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(20)
+    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(21)
     expect(CATALOG.filter(o => o.route.method === 'DELETE').map(o => o.name)).toEqual(['runs.remove'])
     expect(CATALOG.filter(o => o.route.method === 'PATCH').map(o => o.name)).toEqual(['rigs.set'])
     expect(CATALOG.filter(o => o.route.method === 'PUT').map(o => o.name)).toEqual([
@@ -206,12 +226,12 @@ describe('CATALOG', () => {
       expect(o.rights).toBe(
         get
           ? 'read'
-          : ['factory.halt', 'gc.run', 'chat.send', 'manager.say'].includes(o.name)
+          : ['factory.halt', 'gc.run', 'image.build', 'chat.send', 'manager.say'].includes(o.name)
             ? 'owner'
             : 'manager',
       )
       expect(o.mutates).toBe(!get)
-      expect(o.long).toBe(o.name === 'chat.send')
+      expect(o.long).toBe(o.name === 'chat.send' || o.name === 'image.build')
       expect(o.since).toBe(1)
     }
     expect(CATALOG_VERSION).toBe(1)
@@ -281,6 +301,7 @@ describe('CATALOG', () => {
       'gates.setbrief PUT /v1/gate-brief/:run',
       'gc.run POST /v1/gc',
       'guard.check POST /v1/guard/check',
+      'image.build POST /v1/image/build',
       'lease.show GET /v1/lease',
       'mail.list GET /v1/mail',
       'manager.brief GET /v1/manager/brief',

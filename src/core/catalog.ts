@@ -13,6 +13,7 @@ import * as backlogOps from './ops/backlog'
 import * as decisionsOps from './ops/decisions'
 import * as gatesOps from './ops/gates'
 import * as gcOps from './ops/gc'
+import * as imageOps from './ops/image'
 import * as leaseOps from './ops/lease'
 import * as mailOps from './ops/mail'
 import * as managerOps from './ops/manager'
@@ -44,6 +45,8 @@ export type Port = {
   gcRigs: () => string[] | Promise<string[]>
   gcHold: (name: string) => (() => void) | null | undefined
   gcStamp: (name: string) => void
+  /** build and push the image of a target, store its ref and return it; warnings go to `error` */
+  imageBuild: (target: 'worker' | 'manager', error: Print) => Promise<string>
   show: (id: string | undefined) => Promise<unknown>
   status: (id: string | undefined, print: Print) => Promise<void>
   backlog: () => Promise<unknown>
@@ -489,6 +492,29 @@ export const CATALOG: Op[] = makeCatalog([
     'text',
     (c, i) => gcOps.run(c, i),
   ),
+  {
+    ...local(
+      {
+        name: 'image.build',
+        summary: 'Build and push the worker or manager image, then store its ref.',
+        method: 'POST',
+        path: '/v1/image/build',
+        rights: 'owner',
+        inputs: [
+          {
+            name: 'target',
+            kind: 'enum',
+            required: false,
+            values: ['worker', 'manager'],
+            help: 'the image to build; worker when not set',
+          },
+        ],
+      },
+      'text',
+      (c, i) => imageOps.run(c, i),
+    ),
+    long: true,
+  },
   {
     ...local(
       {

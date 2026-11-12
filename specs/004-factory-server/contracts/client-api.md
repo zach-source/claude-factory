@@ -31,6 +31,7 @@ Each action endpoint takes `Idempotency-Key`, as in the worker API.
 | Method and path                                 | Body                                    | Replaces                            |
 | ----------------------------------------------- | --------------------------------------- | ----------------------------------- |
 | `POST /v1/gc` | `{worktrees?, dryRun?, days?, rig?}` | `factory gc` |
+| `POST /v1/image/build` | `{target?}` | `factory image build` |
 | `POST /v1/runs/<id>/decide`                     | `{outcome, note}`                       | `factory decide`                    |
 | `POST /v1/runs/<id>/mail`                       | `{to, text}`                            | `factory mail` from the person      |
 | `POST /v1/runs/<id>/goto`, `/abort`             |                                         | `factory goto`, `factory rm`        |
@@ -48,6 +49,7 @@ The HTTP transport writes audit and idempotency records for previews too.
 
 A successful reply is JSON: `{code: 0, out: string, err: string}`.
 The catalog's text output describes `out`. Clients must emit both fields to their own streams without extra newlines.
+`POST /v1/image/build` gives the same JSON reply.
 Nonzero results retain status 422 and the existing `{refused}` body.
 The timeout stays 60 s. A timed-out pass can continue. The client does not retry the call.
 

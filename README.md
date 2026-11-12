@@ -777,6 +777,8 @@ that tier off. A share that is not a number from 0 to 1 counts as `0`. A rig wit
 the token, see `docs/remote-runner.md`). It uses an API key when the rig names `api.openai.com`. `factory metrics` shows the launches for each station by
 harness and model.
 
+A station can list more than one split. The runner tries them in order and uses the first one whose share picks the run. `implement`, `verify`, `triage`, `quick`, `maintain` and `resolve` try Grok first, with `grok_<station>_share` (default `0`, so off) and `grok_<station>_model` (default `grok-4.7`). The Codex split takes the runs that Grok does not.
+
 Codex keeps `unified_exec` on under `--disable` and `-c`. Its `write_stdin` tool runs a command with no deny
 hook. Only a managed pin turns `unified_exec` off. The factory does not start Codex unless
 `codex features list` shows `unified_exec` as `false` (claude-factory-fzm3). The worker image has the pin.
