@@ -28,6 +28,12 @@ const OPUS = claude('judge_model')
 // production reads need the laptop's kubectl, cluster access and network, which a rig's VM workers
 // (--runner ax) do not have
 const LAPTOP = 'herdr'
+// A share of a station's runs launch as codex (cli.ts splitPick). Params: codex_<station>_model, _effort and _share.
+// hygiene starts no worker, and monitor reads production, so neither has a codex split.
+const codexAt = (station: string) => ({
+  agent: `{codex} -m '{codex_${station}_model}' -c model_reasoning_effort='{codex_${station}_effort}'`,
+  share: `codex_${station}_share`,
+})
 // the monitor recheck window in hours; no import, so ownCopy can copy this file alone.
 // A test in sweeps.test.ts keeps it equal to MONITOR_RECHECK_MIN / 60.
 const RECHECK_HOURS = 6
@@ -81,6 +87,25 @@ export default {
     grok: 'grok --permission-mode bypassPermissions --trust', // the grok launcher (the deny hook stays on)
     grok_maintain_model: 'grok-4.7', // grok at maintain
     grok_maintain_share: '0', // share of runs whose maintain uses grok; 0 turns it off
+    codex: 'codex --dangerously-bypass-approvals-and-sandbox', // the codex launcher (the deny hook stays on)
+    codex_maintain_model: 'gpt-6.1-terra', // codex at maintain
+    codex_maintain_effort: 'medium', // reasoning effort of codex at maintain
+    codex_maintain_share: '0.4', // share of runs whose maintain uses codex (after the grok split); 0 turns it off
+    codex_flakes_model: 'gpt-6.1-sol', // codex at flakes
+    codex_flakes_effort: 'medium', // reasoning effort of codex at flakes
+    codex_flakes_share: '0.4', // share of runs whose flakes uses codex; 0 turns it off
+    codex_ci_model: 'gpt-6.1-sol', // codex at ci
+    codex_ci_effort: 'medium', // reasoning effort of codex at ci
+    codex_ci_share: '0.4', // share of runs whose ci uses codex; 0 turns it off
+    codex_drift_model: 'gpt-6.1-terra', // codex at drift
+    codex_drift_effort: 'medium', // reasoning effort of codex at drift
+    codex_drift_share: '0.4', // share of runs whose drift uses codex; 0 turns it off
+    codex_advisories_model: 'gpt-6.1-terra', // codex at advisories
+    codex_advisories_effort: 'medium', // reasoning effort of codex at advisories
+    codex_advisories_share: '0.4', // share of runs whose advisories uses codex; 0 turns it off
+    codex_improve_model: 'gpt-6.1-terra', // codex at improve
+    codex_improve_effort: 'medium', // reasoning effort of codex at improve
+    codex_improve_share: '0.4', // share of runs whose improve uses codex; 0 turns it off
   },
   backoffSec: 60,
   maxSteps: 24,
@@ -110,6 +135,7 @@ Report filed with the key numbers, which the next pass compares against, and wha
       next: { filed: 'done' },
     },
     ci: {
+      split: codexAt('ci'),
       runner: LAPTOP,
       everyMin: 120,
       timeoutMin: 20,
@@ -120,6 +146,7 @@ Report filed with the keys and the bead id.`,
       next: { filed: 'done' },
     },
     flakes: {
+      split: codexAt('flakes'),
       runner: LAPTOP,
       everyMin: 10080,
       timeoutMin: 30,
@@ -130,6 +157,7 @@ Report filed with the ids and the beads you filed.`,
       next: { filed: 'done' },
     },
     drift: {
+      split: codexAt('drift'),
       runner: LAPTOP,
       everyMin: 60,
       timeoutMin: 30,
@@ -144,7 +172,10 @@ Report filed with the resources you checked, what you filed and what you comment
       next: { filed: 'done' },
     },
     maintain: {
-      split: { agent: "{grok} -m '{grok_maintain_model}'", share: 'grok_maintain_share' },
+      split: [
+        { agent: "{grok} -m '{grok_maintain_model}'", share: 'grok_maintain_share' },
+        codexAt('maintain'),
+      ],
       everyMin: 1440,
       timeoutMin: 60,
       prompt: `One pass of maintenance. Look for, most urgent first: deprecated APIs and end-of-life runtimes; dependency updates (patch and minor batched, majors one at a time); issues labeled \`factory\` in the tracker; docs that drifted from the code. The ci and flakes sweeps own red main-branch CI and flaky tests: do not file those.
@@ -154,6 +185,7 @@ Report filed with what you filed and what you skipped on purpose.`,
       next: { filed: 'done' },
     },
     advisories: {
+      split: codexAt('advisories'),
       runner: LAPTOP, // the person's gh reads Dependabot alerts, and the live bin/factory has the filing command
       everyMin: 10080,
       timeoutMin: 45,
@@ -169,6 +201,7 @@ Report filed with the command's last line (filed N, queued, held, digest rows, o
       next: { filed: 'done' },
     },
     improve: {
+      split: codexAt('improve'),
       agent: OPUS,
       everyMin: 1440,
       timeoutMin: 90,
