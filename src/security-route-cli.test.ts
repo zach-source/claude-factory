@@ -90,6 +90,14 @@ const prompt = () => {
   const snap = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8')).snapshot
   return readFileSync(join(runDir, 'prompts', `${snap.context.seq}-review.md`), 'utf8')
 }
+const head = () => git(other, 'rev-parse', 'b').trim()
+const pushB = (file: string) => {
+  mkdirSync(join(other, file, '..'), { recursive: true })
+  writeFileSync(join(other, file), 'y\n')
+  git(other, 'add', '.')
+  git(other, 'commit', '-qm', 'more')
+  git(other, 'push', '-q', 'origin', 'b')
+}
 const routeJson = () => JSON.parse(readFileSync(join(runDir, 'security-route.json'), 'utf8'))
 
 test('a branch that changes factories/ gets a required route in the brief and the route file (AC5)', () => {
@@ -100,7 +108,11 @@ test('a branch that changes factories/ gets a required route in the brief and th
   expect(routeJson()).toEqual({
     seq: snap.context.seq,
     route: { required: true, why: ['factories/x.ts (dir:factories)'] },
+    head: head(),
   })
+  expect(prompt()).toContain(
+    `## Security route\nrequired: factories/x.ts (dir:factories)\ncomputed at ${head()}`,
+  )
 }, 60_000)
 
 test('a plain branch with a "no" plan line gets "not required" (AC5)', () => {
@@ -158,6 +170,8 @@ test('a fetch that fails gives a required route with paths unknown (AC5)', () =>
   reviewRun(def(true), 'Security-sensitive: no')
   tick()
   expect(prompt()).toContain('required: paths unknown')
+  expect(routeJson().head).toBeNull()
+  expect(prompt()).toContain('computed at an unknown head')
 }, 60_000)
 
 test('the route diffs the branch the run started from, not the run branch (security round 1)', () => {
@@ -179,7 +193,7 @@ test('a station without securityRoute has no section and no route file (AC5)', (
   expect(existsSync(join(runDir, 'security-route.json'))).toBe(false)
 }, 60_000)
 
-// report: the route file is written by the test; no git or bd runs
+// report: the route file is written by the test; a not-required approve or security row runs a git fetch of the test origin (no bd runs: the run has no bead)
 type Row = {
   route?: unknown
   seqOffset?: number
@@ -189,6 +203,9 @@ type Row = {
   def?: boolean
   summary?: string
   file?: boolean
+  head?: unknown // 'b' = head of b; absent = the old file shape with no head key
+  gone?: true
+  headAfter?: true
 }
 const NOT = { required: false, why: [] }
 const YES = { required: true, why: ['factories/x.ts (dir:factories)'] }
@@ -235,7 +252,14 @@ const rows: [string, Row][] = [
     },
   ],
   ['required, security', { route: YES, outcome: 'security', code: 0 }],
-  ['not required, approve', { route: NOT, outcome: 'approve', code: 0 }],
+  ['not required, approve', { route: NOT, outcome: 'approve', code: 0, headAfter: true }],
+  [
+    'not required, approve, head zqsecret',
+    { route: NOT, head: 'zqsecret', outcome: 'approve', code: 0, headAfter: true },
+  ],
+  ['not required, approve, head 42', { route: NOT, head: 42, outcome: 'approve', code: 0, headAfter: true }],
+  ['required, approve, remote gone', { route: YES, head: 'b', gone: true, outcome: 'approve', code: 1 }],
+  ['required, security, remote gone', { route: YES, head: 'b', gone: true, outcome: 'security', code: 0 }],
   ['no file, approve', { outcome: 'approve', code: 1 }],
   ['no file, security', { outcome: 'security', code: 0 }],
   ['older seq, approve', { route: NOT, seqOffset: -1, outcome: 'approve', code: 1 }],
@@ -254,8 +278,13 @@ test.each(rows)(
     if (row.route !== undefined)
       writeFileSync(
         join(runDir, 'security-route.json'),
-        JSON.stringify({ seq: seq + (row.seqOffset ?? 0), route: row.route }),
+        JSON.stringify({
+          seq: seq + (row.seqOffset ?? 0),
+          route: row.route,
+          ...('head' in row && { head: row.head === 'b' ? head() : row.head }),
+        }),
       )
+    if (row.gone) git(clone, 'remote', 'set-url', 'origin', join(dir, 'gone.git'))
     const inbox = join(runDir, 'inbox.jsonl')
     const lines = () =>
       existsSync(inbox)
@@ -273,6 +302,80 @@ test.each(rows)(
     expect(p.exitCode).toBe(row.code)
     expect(lines() - before).toBe(row.code === 0 ? 1 : 0)
     for (const e of row.err ?? []) expect(p.stderr.toString()).toContain(e)
+    if (row.headAfter) expect(routeJson().head).toBe(head())
   },
   60_000,
 )
+
+/** a not-required route file with the head of b, then a run that reports */
+function pinned(file: string) {
+  setup(file)
+  reviewRun(def(true))
+  const seq = JSON.parse(readFileSync(join(runDir, 'state.json'), 'utf8')).snapshot.context.seq
+  const h = head()
+  writeFileSync(join(runDir, 'security-route.json'), JSON.stringify({ seq, route: NOT, head: h }))
+  const report = (outcome: string, summary = 'summary text') =>
+    Bun.spawnSync([CLI, 'report', 'r1', String(seq), outcome, summary], { env: env() })
+  const inbox = () => {
+    const f = join(runDir, 'inbox.jsonl')
+    return existsSync(f)
+      ? readFileSync(f, 'utf8')
+          .split('\n')
+          .filter(l => l).length
+      : 0
+  }
+  return { seq, h, report, inbox }
+}
+
+test('a sensitive push after the spawn refuses approve and allows security (AC2)', () => {
+  const { seq, h, report, inbox } = pinned('src/metrics.ts')
+  pushB('factories/x.ts')
+  const p = report('approve')
+  const err = p.stderr.toString()
+  expect(p.exitCode).toBe(1)
+  expect(inbox()).toBe(0)
+  expect(err).toContain(`moved from ${h}`)
+  expect(err).toContain(`to ${head()}`)
+  expect(err).toContain('needs the security station')
+  expect(routeJson()).toEqual({
+    seq,
+    route: { required: true, why: ['factories/x.ts (dir:factories)'] },
+    head: head(),
+  })
+  expect(report('security').exitCode).toBe(0)
+  expect(inbox()).toBe(1)
+}, 60_000)
+
+test('a sensitive push after the spawn allows security with no reason (AC2b)', () => {
+  const { report, inbox } = pinned('src/metrics.ts')
+  pushB('factories/x.ts')
+  expect(report('security').exitCode).toBe(0)
+  expect(inbox()).toBe(1)
+  expect(routeJson().route.required).toBe(true)
+}, 60_000)
+
+test('a benign push after the spawn still approves (AC3)', () => {
+  const { report, inbox } = pinned('src/metrics.ts')
+  pushB('src/other.ts')
+  expect(report('approve').exitCode).toBe(0)
+  expect(inbox()).toBe(1)
+  expect(routeJson().head).toBe(head())
+}, 60_000)
+
+test('no push means no recompute (AC4)', () => {
+  const { report } = pinned('src/metrics.ts')
+  const before = readFileSync(join(runDir, 'security-route.json'), 'utf8')
+  expect(report('approve').exitCode).toBe(0)
+  expect(readFileSync(join(runDir, 'security-route.json'), 'utf8')).toBe(before)
+}, 60_000)
+
+test('a failed fetch at report fails closed (AC5)', () => {
+  const { report } = pinned('src/metrics.ts')
+  git(clone, 'remote', 'set-url', 'origin', join(dir, 'gone.git'))
+  const p = report('approve')
+  expect(p.exitCode).toBe(1)
+  expect(p.stderr.toString()).toContain('could not read the branch head again')
+  expect(p.stderr.toString()).toContain('needs the security station')
+  expect(routeJson().route.why).toContain('paths unknown')
+  expect(routeJson().head).toBeNull()
+}, 60_000)
