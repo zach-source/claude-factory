@@ -68,6 +68,7 @@ import {
   timeoutOf,
   unread,
   validate,
+  splitsOf,
   gotoRefusal,
   where,
   type Ctx,
@@ -3026,12 +3027,17 @@ export const pickAgent = (
       ? savedPlanPick(join(home, 'runs', runId))
       : null
   if (jev) params.plan_model = jev.model
-  const split = def.nodes[node]!.split
-  // a host without the unified_exec pin cannot launch codex (the probe refuses), so the split keeps Claude there
+  const splits = splitsOf(def.nodes[node]!)
+  // a host without the unified_exec pin cannot launch codex (the probe refuses), so a codex split keeps Claude there
   const codexOk = runner === 'ax' ? axCodex(env) : existsSync(pin)
-  const picked = split && codexOk && splitPick(runId, split.share, params[split.share])
+  // the first split whose pick is true wins; a codex split also needs the pin
+  const picked = splits.find(
+    sp =>
+      (harnessOf(fill(sp.agent, params)) !== 'codex' || codexOk) &&
+      splitPick(runId, sp.share, params[sp.share]),
+  )
   const own = fill(def.nodes[node]!.agent ?? def.agent ?? AGENT, params)
-  const agent = fill(rig?.agent ?? (picked ? split.agent : own), params)
+  const agent = fill(rig?.agent ?? (picked ? picked.agent : own), params)
   const h0 = harnessOf(agent)
   if (rig?.agent || !h0)
     return (h0 === 'cursor' && !allowed(runId, node, env)) || (h0 === 'grok' && !grokOk(runId, node, env))
@@ -3067,14 +3073,8 @@ export const pickAgent = (
     },
     true,
   )
-  const split2 = split && fill(split.agent, params)
-  return h === h0
-    ? agent
-    : harnessOf(own) === h
-      ? own
-      : split2 && harnessOf(split2) === h
-        ? split2
-        : fill(params[h] ?? LAUNCHERS[h], params)
+  const split2 = splits.map(sp => fill(sp.agent, params)).find(a => harnessOf(a) === h)
+  return h === h0 ? agent : harnessOf(own) === h ? own : (split2 ?? fill(params[h] ?? LAUNCHERS[h], params))
 }
 const agentOfNode = (run: Run, def: Factory, node: string) =>
   pickAgent(run.id, def, node, runRig(run), runnerOfStation(run, def, node).name)

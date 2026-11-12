@@ -9,6 +9,7 @@ import {
   fill,
   isPrWait,
   repeatQuestion,
+  splitsOf,
   timeoutOf,
   validate,
   where,
@@ -772,13 +773,17 @@ test('implement, verify, security, plan and review split to codex, and the exec 
   const lc = lifecycle as Factory
   const split = Object.entries(lc.nodes)
     .filter(([, n]) => n.split)
-    .map(([id, n]) => [id, n.split!.share, n.split!.agent])
+    .flatMap(([id, n]) => splitsOf(n).map(sp => [id, sp.share, sp.agent]))
   expect(split).toEqual([
+    ['triage', 'grok_triage_share', "{grok} -m '{grok_triage_model}'"],
     ['plan', 'codex_judge_share', "{codex} -m '{codex_judge_model}'"],
+    ['implement', 'grok_implement_share', "{grok} -m '{grok_implement_model}'"],
     ['implement', 'codex_share', "{codex} -m '{codex_exec_model}'"],
+    ['verify', 'grok_verify_share', "{grok} -m '{grok_verify_model}'"],
     ['verify', 'codex_share', "{codex} -m '{codex_exec_model}'"],
     ['review', 'codex_judge_share', "{codex} -m '{codex_judge_model}'"],
     ['security', 'codex_security_share', "{codex} -m '{codex_security_model}'"],
+    ['quick', 'grok_quick_share', "{grok} -m '{grok_quick_model}'"],
   ])
   for (const id of ['check', 'incident']) expect(lc.nodes[id]!.split).toBeUndefined()
   expect(lc.params!.codex_share).toBe('0.3')
@@ -792,7 +797,7 @@ test('implement, verify, security, plan and review split to codex, and the exec 
   }
   expect(lc.params!.cursor).toContain('cursor-agent')
   // grok is off for every station until a rig sets its share
-  for (const st of ['plan', 'implement', 'verify', 'review', 'security']) {
+  for (const st of ['plan', 'implement', 'verify', 'review', 'security', 'triage', 'quick']) {
     expect(lc.params![`grok_${st}_share`]).toBe('0')
     expect(lc.params![`grok_${st}_model`]).toBeTruthy()
   }
@@ -809,19 +814,20 @@ test('every station model id of every factory resolves to a known id', async () 
     'claude-fable-5-2[1m]',
     'gpt-6.1-sol',
     'gpt-6-astra',
+    'grok-4.7',
   ]
   const rework = await loadFactory(join(import.meta.dir, 'rework.yaml'))
   for (const def of [lifecycle, ship, release, sweeps, rework] as Factory[]) {
     for (const node of Object.values(def.nodes)) {
-      for (const cmd of [node.agent ?? def.agent, node.split?.agent]) {
+      for (const cmd of [node.agent ?? def.agent, ...splitsOf(node).map(sp => sp.agent)]) {
         if (!cmd) continue
         expect(known).toContain(modelOf(fill(cmd, def.params ?? {}))!)
       }
     }
   }
-  expect(modelOf(fill(lc.nodes.implement!.split!.agent, lc.params!))).toBe('gpt-6.1-sol')
-  expect(modelOf(fill(lc.nodes.security!.split!.agent, lc.params!))).toBe('gpt-6-astra')
-  expect(modelOf(fill(lc.nodes.review!.split!.agent, lc.params!))).toBe('gpt-6-astra')
+  expect(modelOf(fill(splitsOf(lc.nodes.implement!)[1]!.agent, lc.params!))).toBe('gpt-6.1-sol')
+  expect(modelOf(fill(splitsOf(lc.nodes.security!)[0]!.agent, lc.params!))).toBe('gpt-6-astra')
+  expect(modelOf(fill(splitsOf(lc.nodes.review!)[0]!.agent, lc.params!))).toBe('gpt-6-astra')
 })
 
 test('claude-factory-0gww.4: review, security and check approve or request changes as the reviewer identity on the exact head, with a comment fallback', () => {

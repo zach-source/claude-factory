@@ -52,6 +52,11 @@ const codex = (model: string) => `{codex} -m '{${model}}'`
 const CODEX_EXEC = codex('codex_exec_model')
 const CODEX_SECURITY = codex('codex_security_model')
 const CODEX_JUDGE = codex('codex_judge_model')
+// A grok split goes first at the code and chore stations: its share picks first, then the codex split
+const grok = (station: string) => ({
+  agent: `{grok} -m '{grok_${station}_model}'`,
+  share: `grok_${station}_share`,
+})
 // stations that read or change production need the laptop's kubectl, cluster access and network, which a
 // rig's VM workers (--runner ax) do not have: on the laptop manager they stay in herdr panes whatever the
 // rig's runner. The AX manager ignores this pin: there these stations run as AX workers like the others
@@ -121,13 +126,17 @@ export default {
     cursor_review_share: '0', // share of runs whose review uses cursor; 0 turns it off
     cursor_security_model: 'grok-4.7-low', // cursor at security
     cursor_security_share: '0', // share of runs whose security uses cursor; 0 turns it off
-    grok: 'grok --permission-mode bypassPermissions --trust', // the grok launcher (the deny hook stays on); no station splits to it yet
+    grok: 'grok --permission-mode bypassPermissions --trust', // the grok launcher (the deny hook stays on)
     grok_plan_model: 'grok-4.7', // grok at plan
     grok_plan_share: '0', // share of runs whose plan uses grok; 0 turns it off
     grok_implement_model: 'grok-4.7', // grok at implement
     grok_implement_share: '0', // share of runs whose implement uses grok; 0 turns it off
     grok_verify_model: 'grok-4.7', // grok at verify
     grok_verify_share: '0', // share of runs whose verify uses grok; 0 turns it off
+    grok_triage_model: 'grok-4.7', // grok at triage
+    grok_triage_share: '0', // share of runs whose triage uses grok; 0 turns it off
+    grok_quick_model: 'grok-4.7', // grok at quick
+    grok_quick_share: '0', // share of runs whose quick uses grok; 0 turns it off
     grok_review_model: 'grok-4.7', // grok at review
     grok_review_share: '0', // share of runs whose review uses grok; 0 turns it off
     grok_security_model: 'grok-4.7', // grok at security
@@ -141,6 +150,7 @@ export default {
   nodes: {
     // ── intake ───────────────────────────────────────────────────────────────
     triage: {
+      split: grok('triage'),
       // parked on a PR, plain mail waits for the PR watch or the timer (claude-factory-ey90)
       holdMail: true,
       timeoutMin: 20,
@@ -209,7 +219,7 @@ Report pinned with the invariants the refactor must keep and the area's coverage
     // ── the inner loop: build it, prove it, review it ────────────────────────
     implement: {
       skills: ['asd-ste100'],
-      split: { agent: CODEX_EXEC, share: 'codex_share' },
+      split: [grok('implement'), { agent: CODEX_EXEC, share: 'codex_share' }],
       timeoutMin: 120,
       prompt: `Build what the plan in the journal specifies, one task at a time in dependency order (see Tracking), closing each with its commit. Each attempt must end with a pushed commit. Commit and push each finished task (its test and its fix) before you start the next. Never delete a test you wrote to fit a plan's 'one commit' rule: commit it as WIP and say so. Test first: write the failing test, watch it fail, make it pass. Failures and review findings come back as new tasks and in your inbox: fix every one and say how. A finding names an instance: grep for its siblings and fix the class, not the one line. ${siblingSites}
 Before you report ready, run this self-check at the final HEAD, after your last commit. Do what review would:
@@ -237,7 +247,7 @@ For a refactor: no behavior change; the characterization tests stay untouched an
       },
     },
     verify: {
-      split: { agent: CODEX_EXEC, share: 'codex_share' },
+      split: [grok('verify'), { agent: CODEX_EXEC, share: 'codex_share' }],
       timeoutMin: 75,
       prompt: `Check the branch independently; trust no earlier report and change no code.
 If your brief has a Fast check section, run its command first. If it exits non-zero, run nothing else: report red at once with the command, its exit code and at most 20 lines of its output, record one bug task, and end with the line \`Failing: fast check\`. A command that cannot start on this worker follows the local tool rule below.
@@ -290,6 +300,7 @@ Report approve, or changes with each finding, its severity and its fix, each als
     // ── the small route: a tiny, docs-only or test-only change skips plan and a separate review ──────
     quick: {
       skills: ['asd-ste100'],
+      split: grok('quick'),
       timeoutMin: 60,
       prompt: `Build what triage's summary in the journal says, with no plan. Test first when code changes. ${siblingSites} Merge origin/{base_branch}, run the formatter and the tests of what you touched, commit.
 Fix every finding check sends back and say how, closing each task check filed, with its commit (see Tracking), as implement does for review's findings.
