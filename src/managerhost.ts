@@ -3,11 +3,13 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { AUTHORIZED_KEYS_ENV, MANAGER_CWD, MANAGER_HOME, publicKeys, SSH_DIR, SSHD_CONFIG, WS } from './ax'
 import { sq } from './harness'
@@ -414,4 +416,65 @@ export async function host(
       log(`restart failed: ${(e as Error).message}`)
     }
   }
+}
+
+/** what the session loop needs from outside; a test gives fakes (gogxc.17) */
+export type SessionDeps = {
+  bringUp: () => Promise<void>
+  startManager: () => void
+  panes: () => number
+  health: (row: { at: number; action: HostAction; panes: number }) => void
+  sleep: () => Promise<unknown>
+  log: (m: string) => void
+  /** a test ends the loop here; the real host never stops */
+  stop?: () => boolean
+}
+
+/** the loop of `factory manager session`: start, then each beat post the health and restart what is down */
+export async function sessionLoop(d: SessionDeps) {
+  await d.bringUp()
+  do {
+    await d.sleep()
+    const n = d.panes()
+    const action = decide({ herdrUp: n >= 0, panes: Math.max(n, 0) })
+    d.health({ at: Date.now(), action, panes: Math.max(n, 0) })
+    if (action === 'none') continue
+    d.log(`${action}: herdr ${action === 'restart-all' ? 'is down' : 'has no pane'}`)
+    try {
+      await (action === 'restart-all' ? d.bringUp() : d.startManager())
+    } catch (e) {
+      d.log(`restart failed: ${(e as Error).message}`)
+    }
+  } while (!d.stop?.())
+}
+
+/**
+ * Host mode `factory manager session` (contracts/manager-task.md): only sshd, herdr and the Claude manager.
+ * No home, restore, memory warm, repos sync or backup: the pod owns the state, and `post` sends the health
+ * to it. The scratch dir holds the herdr log and nothing else. The new session gets its brief from the pod,
+ * so there is no transcript resume.
+ */
+export async function session(
+  args: string[],
+  { everyMs = 30_000, post }: { everyMs?: number; post: (row: unknown) => void },
+) {
+  if (process.env.FACTORY_IN_AX !== '1')
+    throw new Error('factory manager session runs only inside the AX task')
+  if (!process.env.FACTORY_SERVER) throw new Error('FACTORY_SERVER is not set')
+  ttyGroup(m => console.error(m))
+  worker.asWorker()
+  mkdirSync(worker.own(), { recursive: true })
+  worker.trustCA()
+  const dir = mkdtempSync(join(tmpdir(), 'factory-session-'))
+  const log = (m: string) =>
+    appendFileSync(join(dir, 'manager-host.log'), `${new Date().toISOString()} ${m}\n`)
+  prepareSsh(log)
+  await sessionLoop({
+    bringUp: () => bringUp(args, dir, log),
+    startManager: () => startManager(args),
+    panes: paneCount,
+    health: post,
+    sleep: () => Bun.sleep(everyMs),
+    log,
+  })
 }

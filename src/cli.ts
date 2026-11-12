@@ -14198,6 +14198,16 @@ if (import.meta.main && !outboxCmd)
           await managerhost.host(args.slice(1), { prepare: reposSync, lock: () => hold('tick.lock') })
           break
         }
+        if (args[0] === 'session') {
+          await managerhost.session(args.slice(1), {
+            post: row =>
+              void Bun.spawnSync([CLI, 'manager', 'log', 'health', JSON.stringify(row)], {
+                stdin: 'ignore',
+                timeout: 20_000,
+              }),
+          })
+          break
+        }
         if (args[0] === '--ax') {
           await launchAxManager(args.slice(1))
           break
