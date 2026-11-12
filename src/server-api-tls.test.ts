@@ -219,9 +219,14 @@ describe('mTLS on the client port', () => {
     expect(JSON.parse(r.out)).toEqual({ runs: ['r1'] })
     expect(t.calls.length).toBe(0)
   })
-  test('mail history spans ticks and board keeps the last tick', async () => {
-    let n = 0
-    const t = start(() => ({ manager: [{ text: `m${++n}` }] }))
+  const mailRig = (script: unknown[][]) => {
+    const seen: unknown[] = []
+    const t = start(() => {
+      const m = script.shift()
+      const r = m ? { manager: m, keep: { n: 1 } } : { keep: { n: 1 } }
+      seen.push(r)
+      return r
+    })
     const who = pair(A)
     const get = async (path: string) => {
       const p = Bun.spawn(
@@ -234,12 +239,62 @@ describe('mTLS on the client port', () => {
       )
       return await new Response(p.stdout).text()
     }
-    const until = Date.now() + 5000
-    while (n < 3 && Date.now() < until) await Bun.sleep(10)
-    const mail = JSON.parse(await get('/v1/mail')) as { text: string }[]
-    expect(mail.slice(0, 3)).toEqual([{ text: 'm1' }, { text: 'm2' }, { text: 'm3' }])
-    expect(JSON.parse(await get('/v1/board')).manager.length).toBe(1)
+    const drained = async () => {
+      const until = Date.now() + 5000
+      while ((script.length > 0 || seen.length < 2) && Date.now() < until) await Bun.sleep(10)
+      await Bun.sleep(120)
+    }
+    return { t, get, drained, seen }
+  }
+  const mk = (a: number, b: number) => Array.from({ length: b - a }, (_, i) => ({ text: `m${a + i}` }))
+  test('mail history spans three ticks', async () => {
+    const { t, get, drained } = mailRig([
+      [{ text: 'm1', at: 3 }],
+      [{ text: 'm2', at: 1 }],
+      [{ text: 'm3', at: 2 }],
+    ])
+    await drained()
+    const body = await get('/v1/mail')
+    expect(JSON.parse(body)).toEqual([
+      { text: 'm1', at: 3 },
+      { text: 'm2', at: 1 },
+      { text: 'm3', at: 2 },
+    ])
+    expect(body.endsWith('\n')).toBe(true)
+    expect(await get('/v1/mail')).toBe(body)
     expect(t.calls.length).toBe(0)
+  })
+  test('mail history retains the last 50 entries', async () => {
+    const same = (n: number) => Array.from({ length: n }, () => ({ text: 'same' }))
+    const rows: [{ text: string }[][], { text: string }[]][] = [
+      [[mk(0, 50)], mk(0, 50)],
+      [[mk(0, 25), mk(25, 51)], mk(1, 51)],
+      [[mk(0, 20), mk(20, 40), mk(40, 60)], mk(10, 60)],
+      [[mk(0, 60)], mk(10, 60)],
+      [
+        [same(30), mk(0, 30)],
+        [...same(20), ...mk(0, 30)],
+      ],
+    ]
+    for (const [ticks, want] of rows) {
+      const { get, drained } = mailRig(ticks)
+      await drained()
+      const out = JSON.parse(await get('/v1/mail')) as unknown[]
+      expect(out.length).toBeLessThanOrEqual(50)
+      expect(out).toEqual(want)
+    }
+  }, 30_000)
+  test('mail history preserves board bytes', async () => {
+    const { get, drained, seen } = mailRig([[{ text: 'm1' }], [{ text: 'm2' }], [{ text: 'm3' }]])
+    await drained()
+    expect(JSON.parse(await get('/v1/mail'))).toEqual(mk(1, 4))
+    const board = JSON.parse(await get('/v1/board')) as { manager?: unknown[] }
+    expect(board.manager).toBeUndefined()
+    const third = seen[2] as { manager: unknown[] }
+    expect(third.manager).toEqual([{ text: 'm3' }])
+    expect(Object.keys(third).sort()).toEqual(['keep', 'manager'])
+    const last = seen[seen.length - 1]
+    expect(await get('/v1/board')).toBe(JSON.stringify(last) + '\n')
   })
   test('decide is not served on the health listener (FR-009)', async () => {
     const t = start()

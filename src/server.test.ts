@@ -861,12 +861,32 @@ test('mail keeps the last 50 manager mails across ticks and ignores other ticks'
       { busy: true, manager: [{ text: 'b' }] },
       new Error('boom'),
     )
-    await after(m0 + 6)
-    expect(s.mail()).toEqual(mails(0, 3))
+    for (let i = 1; i <= 6; i++) {
+      await after(m0 + i)
+      expect(s.mail()).toEqual(mails(0, 3))
+    }
+    script.push({ manager: [{ text: 'later' }] })
+    await after(n + 1)
+    expect(s.mail()).toEqual([...mails(0, 3), { text: 'later' }])
     script.push({ manager: mails(3, 63) })
     await after(n + 1)
     expect(s.mail()).toEqual(mails(13, 63))
     expect(s.board()).toEqual({ manager: mails(3, 63) })
+    const other = serve({
+      home: mkdtempSync(join(tmpdir(), 'server-mail-')),
+      port: 0,
+      everyMs: 5,
+      leaseMs: 1000,
+      holder: 'b',
+      log: () => {},
+      tick: async () => ({ busy: true }),
+    })
+    try {
+      await Bun.sleep(30)
+      expect(other.mail()).toEqual([])
+    } finally {
+      await other.stop()
+    }
   } finally {
     await s.stop()
   }

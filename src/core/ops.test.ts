@@ -369,7 +369,11 @@ describe('runners.show and mail.list read the board', () => {
     const nb = { manager: [{ text: 'new' }] }
     expect((await run('mail.list', withMail(nb, m), {})).out).toBe(JSON.stringify(m) + '\n')
     expect((await run('mail.list', withMail(nb, []), {})).out).toBe('[]\n')
-    expect(((await run('mail.list', withMail(null, m), {}).catch(x => x)) as OpError).status).toBe(503)
+    for (const b of [null, undefined]) {
+      const e = (await run('mail.list', withMail(b, m), {}).catch(x => x)) as OpError
+      expect(e.status).toBe(503)
+      expect(e.message).toContain('no tick yet')
+    }
   })
 })
 
