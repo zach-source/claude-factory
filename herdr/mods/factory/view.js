@@ -82,42 +82,16 @@ export const newlyBlocked = (runs, before) =>
 /** the run id -> agent state map for the next newlyBlocked call */
 export const agentsOf = runs => Object.fromEntries(runs.map(r => [r.id, r.agent ?? null]))
 
-/** the gates and decisions the Interview dialog shows: gates first, oldest first */
-export function interviewItems(runs, decisions) {
-  const gates = runs
-    .filter(r => r.gate && isLive(r))
-    .sort((a, b) => (a.since ?? 0) - (b.since ?? 0))
-    .map(r => ({
-      kind: 'gate',
-      key: `gate:${r.id}`,
-      run: r.id,
-      title: r.gate.question || `${r.id} waits at ${r.node}`,
-      detail: r.gate.brief ?? line(r.goal ?? '', 300),
-      options: r.gate.outcomes,
-    }))
-  const beads = (decisions?.rigs ?? []).flatMap(d =>
-    d.beads.map(b => {
-      const key = `${b.kind === 'bead' ? 'bd' : 'own'}:${d.rig}:${b.id}`
-      const p = decisions.proposals?.[key]
-      return {
-        kind: b.kind,
-        key,
-        rig: d.rig,
-        bead: b.id,
-        title: p?.question ?? b.title,
-        detail: p?.context ?? line(b.description ?? '', 300),
-        // an owner-only bead keeps its two fixed answers
-        options:
-          b.kind === 'owned' ? ['start now', 'not now'] : (p?.options ?? []).map(o => o.split(':')[0].trim()),
-      }
-    }),
-  )
-  return [...gates, ...beads]
-}
+/** the open questions the Interview dialog shows: the core list (`factory interview`), one button for each option */
+export const interviewItems = items =>
+  (items ?? []).map(iv => ({
+    ...iv,
+    detail: iv.context || line(iv.details ?? '', 300),
+    options: iv.options.map(o => o.label),
+  }))
 
-/** the shell words for one answer: `decide` for a gate, `decisions answer` for a bead */
-export const answerArgs = (item, option) =>
-  item.kind === 'gate' ? ['decide', item.run, option] : ['decisions', 'answer', item.rig, item.bead, option]
+/** the shell words for one answer: the core routes it (gate, bead, start now, mail) */
+export const answerArgs = (item, option) => ['interview', 'answer', item.key, option]
 
 /** the result of `factory tick`, or why it failed. A read-only tick names the lease holder. */
 export function parseTick(code, out, err) {
@@ -187,8 +161,8 @@ export function parseSnapshot(code, out, err) {
   const tick = board?.error
     ? { error: line(board.error, 300) }
     : parseTick(0, JSON.stringify(board ?? {}), '')
-  const d = views?.decisions
-  return { tick, decisions: d && !d.error ? d : undefined }
+  const d = views?.interview
+  return { tick, interview: Array.isArray(d) ? d : undefined }
 }
 
 // Remote mode (claude-factory-hpmc.14): the manager runs on another machine, such as the AX task f-manager.

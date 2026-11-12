@@ -11,6 +11,7 @@ import * as chat from './chat'
 import { check, type Role } from './guards'
 import * as backlogOps from './ops/backlog'
 import * as decisionsOps from './ops/decisions'
+import * as interviewOps from './ops/interview'
 import * as gatesOps from './ops/gates'
 import * as gcOps from './ops/gc'
 import * as imageOps from './ops/image'
@@ -709,6 +710,16 @@ export const CATALOG: Op[] = makeCatalog([
     'text',
     (c, i) => decisionsOps.list(c, i),
   ),
+  local(
+    {
+      name: 'interview.list',
+      summary: 'List the open questions for the person: gates, parked and stuck runs, and bead decisions.',
+      method: 'GET',
+      path: '/v1/interview',
+    },
+    'json',
+    (c, i) => interviewOps.list(c, i),
+  ),
   local({ name: 'plan.show', summary: 'Show the plan.', method: 'GET', path: '/v1/plan' }, 'text', (c, i) =>
     planOps.show(c, i),
   ),
@@ -1230,5 +1241,18 @@ export const CATALOG: Op[] = makeCatalog([
     },
     'text',
     (c, i) => decisionsOps.answer(c, i),
+  ),
+  local(
+    {
+      name: 'interview.answer',
+      summary:
+        'Answer an open question: decide a gate, answer a bead, start an owner-only bead, or mail a run.',
+      method: 'POST',
+      path: '/v1/interview/answer',
+      rights: 'owner',
+      inputs: [id('item'), f('choice', 'text'), f('text', 'note')],
+    },
+    'text',
+    (c, i) => interviewOps.answer(c, i),
   ),
 ])

@@ -32,7 +32,6 @@ import {
   line,
   mailKey,
   mailTabs,
-  openInterviews,
   patrolAgo,
   planAgo,
   patrolFallbackLine,
@@ -1022,10 +1021,9 @@ export function interviewView(
   board: FactoryBoard,
   draft: FactoryDraft,
   decisions: FactoryDecisions,
+  all: readonly Interview[],
 ) {
   const { Box, Text, Button, Input } = p.ui
-  const answered = Object.fromEntries((draft.interviewed ?? []).map(d => [d.key, d.answer]))
-  const all = openInterviews(board.runs, decisions.rigs, decisions.proposals, answered)
   // owner-only steps lead, in one group; every row keeps its own answer path
   const open = [...all.filter(i => i.step), ...all.filter(i => !i.step)]
   const nSteps = all.filter(i => i.step).length
