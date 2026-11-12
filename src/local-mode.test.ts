@@ -1,7 +1,7 @@
 // Local mode stays as it is (spec 010 FR-017, user story 6): a laptop home with no FACTORY_SERVER_MODE.
 // The CLI runs against the home and `factory ui` serves it, with no pod.
 import { expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -15,7 +15,12 @@ writeFileSync(join(home, 'rigs.json'), JSON.stringify([{ name: 'laptop', repo }]
 // no server mode and no AX mode: the laptop paths decide
 const { FACTORY_SERVER_MODE, FACTORY_IN_AX, FACTORY_SERVER, ...rest } = process.env
 void [FACTORY_SERVER_MODE, FACTORY_IN_AX, FACTORY_SERVER]
-const env = { ...rest, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' }
+// ponytail: a stub bd that lists no issues; the CI runner has no bd, and ui needs one on PATH
+const bin = join(dir, 'bin')
+mkdirSync(bin)
+writeFileSync(join(bin, 'bd'), '#!/bin/sh\necho "[]"\n')
+chmodSync(join(bin, 'bd'), 0o755)
+const env = { ...rest, PATH: `${bin}:${rest.PATH}`, FACTORY_HOME: home, FACTORY_SELF_UPDATE: '0' }
 
 test('gogxc.26: the CLI reads a laptop home with no server mode', () => {
   const r = Bun.spawnSync(['bun', join(root, 'src/cli.ts'), 'rig', 'show', 'laptop'], {
