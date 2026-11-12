@@ -108,11 +108,11 @@ The server checks the client certificate before it reads a request. It does not 
   - 404: unknown route.
   - 409: another request already used the key.
   - 422: the CLI refused. The body holds the first 500 characters of stderr.
-  - 503: no tick yet, or a corrupt store.
+  - 503: no tick yet, a corrupt store, or 8 reads that wait for an answer already (retry).
   - 504: the CLI ran for more than 60 s.
 - A body is at most 128 KiB. A free-text field has 1 to 65536 characters and no U+0000. A `start` goal must not hold the word `--owned`.
 - Each POST needs `content-type: application/json`. Each POST that changes state also needs `Idempotency-Key`. The server keeps each action answer for 24 h in `<home>/client-idempotency.json` (mode 0600). The same key and the same request give the stored answer, also after a restart. The same key with another request gives 409. If the file is corrupt, the server gives 503 and runs no action. The server runs one action at a time.
-- Each POST that changes state and passes the form check adds one line to `<home>/client-actions.jsonl`. The line has the time, client address, method, path, key and status. A `decide` line also has the outcome. The line holds no free text.
+- Each POST that changes state and passes the form check adds one line to `<home>/client-actions.jsonl`. The line has the time, client address, method, path, key and status. A `decide` line also has the outcome. The line holds no free text. The client address is the TCP peer address of the connection. Behind a TCP passthrough gateway, it is the address of the gateway pod, not of the laptop.
 - The server dispatches catalog operations. Core operations run in process. CLI bridges use a child process with the server home.
   Each core call and CLI child gets an environment without `FACTORY_SERVER`, `FACTORY_FROM`, `FACTORY_RUN`, `FACTORY_DEF_NAME`, `FACTORY_PATROL`, `FACTORY_OUTBOX` or `BEADS_ACTOR`.
   If a CLI bridge receives mail text, it uses a file in `<home>/text/`. The server removes that file after the call.

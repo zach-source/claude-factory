@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { cliRunner, personEnv } from './server-api'
@@ -67,4 +67,55 @@ describe('cliRunner', () => {
     const r = await cliRunner(home, cli, 50)(['status'])
     expect(r.timedOut).toBe(true)
   })
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+  const pidOf = (f: string) => (existsSync(f) ? Number(readFileSync(f, 'utf8')) : 0)
+  const reap = (...pids: number[]) => {
+    for (const p of pids) if (p && alive(p)) process.kill(p, 'SIGKILL')
+  }
+  test('a child that ignores SIGTERM is killed and the call returns', async () => {
+    env()
+    const home = tmp()
+    const cli = join(home, 'stubborn.ts')
+    writeFileSync(
+      cli,
+      `import { writeFileSync } from 'node:fs'\nprocess.on('SIGTERM', () => {})\nwriteFileSync(${JSON.stringify(join(home, 'pid'))}, String(process.pid))\nawait Bun.sleep(30_000)\n`,
+    )
+    try {
+      const t0 = performance.now()
+      const r = await cliRunner(home, cli, 1500, 200)(['status'])
+      expect(performance.now() - t0).toBeLessThan(4000)
+      expect(r.timedOut).toBe(true)
+      const pid = pidOf(join(home, 'pid'))
+      expect(pid).toBeGreaterThan(0)
+      for (let i = 0; i < 20 && alive(pid); i++) await Bun.sleep(50)
+      expect(alive(pid)).toBe(false)
+    } finally {
+      reap(pidOf(join(home, 'pid')))
+    }
+  }, 10_000)
+  test('a grandchild that holds stdout does not block the return', async () => {
+    env()
+    const home = tmp()
+    const cli = join(home, 'holder.ts')
+    writeFileSync(
+      cli,
+      `import { writeFileSync } from 'node:fs'\nprocess.on('SIGTERM', () => {})\nconst g = Bun.spawn(['sleep', '30'], { stdout: 'inherit' })\nwriteFileSync(${JSON.stringify(join(home, 'gpid'))}, String(g.pid))\nwriteFileSync(${JSON.stringify(join(home, 'pid'))}, String(process.pid))\nawait Bun.sleep(30_000)\n`,
+    )
+    try {
+      const t0 = performance.now()
+      const r = await cliRunner(home, cli, 1500, 200)(['status'])
+      expect(performance.now() - t0).toBeLessThan(4000)
+      expect(r.timedOut).toBe(true)
+      expect(pidOf(join(home, 'gpid'))).toBeGreaterThan(0)
+    } finally {
+      reap(pidOf(join(home, 'gpid')), pidOf(join(home, 'pid')))
+    }
+  }, 10_000)
 })
