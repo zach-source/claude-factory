@@ -147,7 +147,10 @@ function guarded(body: string[], codex = false) {
   const env: Record<string, string> = codex
     ? {
         FACTORY_DREAM_CODEX: 'acme-model',
-        FACTORY_CODEX: fake(body, 'fake-codex.sh'),
+        FACTORY_CODEX: fake(
+          [`[ "$1" = --version ] && { echo 'codex-cli 0.160.1'; exit 0; }`, ...body],
+          'fake-codex.sh',
+        ),
         CODEX_HOME: join(dir, 'ch'),
       }
     : {}
