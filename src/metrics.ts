@@ -477,6 +477,7 @@ const NUMS = ['input', 'cacheWrite', 'cacheRead', 'output', 'turns', 'peak'] as 
  * the usage rows an AX worker sent with its report. The laptop does not trust the VM: its agent can
  * write its own outbox. Keep at most 20 rows. Keep only well-formed rows. Take node and seq from the
  * laptop's own record of the task. A bad or missing value gives fewer rows, never an error.
+ * Keep costMicro only on a grok model, as an integer up to 1e8 (100 USD): it feeds the grok budget gate.
  */
 export function validUsage(raw: unknown, node: string, seq: number): Usage[] {
   if (!Array.isArray(raw) || raw.length > 20) return []
@@ -488,7 +489,9 @@ export function validUsage(raw: unknown, node: string, seq: number): Usage[] {
     const n = NUMS.map(k => r[k])
     if (!n.every(v => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 1e12)) return []
     const c = r.costMicro
-    const cost = typeof c === 'number' && Number.isInteger(c) && c > 0 && c <= 1e12 ? { costMicro: c } : {}
+    const grok = /^grok(?:-[A-Za-z0-9._:-]+)?$/.test(model) // only a grok row feeds the spend meter: cap it at $100
+    const cost =
+      grok && typeof c === 'number' && Number.isInteger(c) && c > 0 && c <= 1e8 ? { costMicro: c } : {}
     return [
       { node, seq, session, model, ...Object.fromEntries(NUMS.map((k, i) => [k, n[i]])), ...cost } as Usage,
     ]
