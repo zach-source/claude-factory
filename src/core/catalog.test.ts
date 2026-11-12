@@ -44,6 +44,13 @@ describe('makeCatalog', () => {
         op({ name: 't.b', route: { method: 'GET', path: '/v1/runs/:run' }, inputs: [idIn('run')] }),
       ],
     ],
+    [
+      'a literal and a param route at one position',
+      [
+        op({ route: { method: 'GET', path: '/v1/runs/:id' }, inputs: [idIn('id')] }),
+        op({ name: 't.b', route: { method: 'GET', path: '/v1/runs/active' } }),
+      ],
+    ],
     ['mutates with read rights', [op({ mutates: true, route: { method: 'POST', path: '/v1/t' } })]],
     ['mutates with GET', [op({ mutates: true, rights: 'owner' })]],
     ['a name with no dot', [op({ name: 'runs' })]],
