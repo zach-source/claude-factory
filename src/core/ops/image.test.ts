@@ -103,6 +103,7 @@ test('kq1a AC6 argsInput accepts build and build --target; every other argv thro
     ['build', '--target', 'worker', 'extra'],
     ['build', '--other'],
     ['build', 'build'],
+    ['build', 'worker', 'manager'],
   ])
     expect(() => argsInput(args)).toThrow('usage: factory image build')
 })
