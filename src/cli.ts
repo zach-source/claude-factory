@@ -1957,7 +1957,7 @@ export function brief(
   c: Ctx,
   inbox: Mail[],
   notes = '',
-  route?: SecurityRoute,
+  route?: RouteFile,
 ) {
   const n = def.nodes[node]!
   const lastFail = c.attempt > 1 ? c.log.findLast(e => e.node === node && e.outcome === 'fail') : undefined
@@ -1988,7 +1988,14 @@ export function brief(
     '',
     '## Your task',
     fill(n.prompt.trim(), prm),
-    ...(route ? ['', '## Security route', routeLine(route)] : []),
+    ...(route
+      ? [
+          '',
+          '## Security route',
+          routeLine(route.route),
+          route.head ? `computed at ${route.head}` : 'computed at an unknown head',
+        ]
+      : []),
     ...(fastCheck
       ? [
           '',
@@ -2307,7 +2314,7 @@ function spawn(run: Run, def: Factory, node: string, c: Ctx, session?: string) {
       ? savedRoute(run, c)
       : securityRouteOf(run, def, c)
     : undefined
-  if (route && !session) writeJson(routeFile(run), { seq: c.seq, route })
+  if (route && !session) writeJson(routeFile(run), { seq: c.seq, ...route })
   const full = () => brief(run, def, node, c, c.mail[node] ?? [], notes, route)
   // a revived run (goto after gc) lost prompts/: recreate it before writing (claude-factory-503.1.5)
   if (!session) {
@@ -8495,18 +8502,41 @@ export function conflictsOf(repo: string, base: string, branch: string): string[
   return [...new Set(end < 0 ? lines : lines.slice(0, end))]
 }
 
+const SHA_RE = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/
+
+/** Fetch `branch` (and `base`) from origin and give the SHA of origin/<branch>, or null on any failure. */
+function branchHead(repo: string, branch: string, base?: string): string | null {
+  const ref = (b: string) => `+refs/heads/${b}:refs/remotes/origin/${b}`
+  const fetch = Bun.spawnSync(
+    ['git', '-C', repo, 'fetch', '-q', 'origin', ...(base ? [ref(base)] : []), ref(branch)],
+    { env: gitNetworkEnv(), timeout: GIT_NETWORK_TIMEOUT_MS },
+  )
+  if (fetch.exitCode !== 0) return null
+  const p = Bun.spawnSync([
+    'git',
+    '-C',
+    repo,
+    'rev-parse',
+    '--verify',
+    '-q',
+    `refs/remotes/origin/${branch}^{commit}`,
+  ])
+  const sha = p.stdout.toString().trim()
+  return p.exitCode === 0 && SHA_RE.test(sha) ? sha : null
+}
+
 /**
  * The paths the branch changes against `base`, from origin. It gives null when the fetch or the diff fails,
  * so the security route fails closed. `-z` and core.quotePath=false keep a non-ASCII path whole, and
  * --no-renames lists both names of a rename.
  */
-export function changedPaths(repo: string, base: string, branch: string): string[] | null {
-  const ref = (b: string) => `+refs/heads/${b}:refs/remotes/origin/${b}`
-  const fetch = Bun.spawnSync(['git', '-C', repo, 'fetch', '-q', 'origin', ref(base), ref(branch)], {
-    env: gitNetworkEnv(),
-    timeout: GIT_NETWORK_TIMEOUT_MS,
-  })
-  if (fetch.exitCode !== 0) return null
+export function changedPaths(
+  repo: string,
+  base: string,
+  branch: string,
+): { head: string; paths: string[] } | null {
+  const head = branchHead(repo, branch, base)
+  if (!head) return null
   const p = Bun.spawnSync([
     'git',
     '-c',
@@ -8517,19 +8547,22 @@ export function changedPaths(repo: string, base: string, branch: string): string
     '--name-only',
     '--no-renames',
     '-z',
-    `origin/${base}...origin/${branch}`,
+    `origin/${base}...${head}`,
   ])
   if (p.exitCode !== 0) return null
-  return p.stdout
-    .toString()
-    .split('\0')
-    .filter(x => x)
+  return {
+    head,
+    paths: p.stdout
+      .toString()
+      .split('\0')
+      .filter(x => x),
+  }
 }
 
 const routeFile = (run: Run) => join(runDir(run.id), 'security-route.json')
 
 /** The runner's security route for this run: changed paths, the rig's sensitivePaths, the plan's line and the bead's labels. */
-function securityRouteOf(run: Run, def: Factory, c: Ctx): SecurityRoute {
+function securityRouteOf(run: Run, def: Factory, c: Ctx): RouteFile {
   let labels: string[] | null = []
   const ref = run.shipBranch ?? run.branch
   if (run.bead) {
@@ -8544,17 +8577,19 @@ function securityRouteOf(run: Run, def: Factory, c: Ctx): SecurityRoute {
   }
   const plan = c.log.findLast(e => e.node === 'plan' && e.outcome === 'ready')?.summary
   const rig = runRig(run)
-  return securityRoute({
-    paths: changedPaths(run.repo, baseBranchOf(def, rig, run.repo), ref),
-    plan,
-    labels,
-    rigPaths: rigPaths(rig?.sensitivePaths),
-  })
+  const cp = changedPaths(run.repo, baseBranchOf(def, rig, run.repo), ref)
+  return {
+    route: securityRoute({ paths: cp?.paths ?? null, plan, labels, rigPaths: rigPaths(rig?.sensitivePaths) }),
+    head: cp?.head ?? null,
+  }
 }
 
-/** The route file of this attempt, or the fail-closed route when it is missing, malformed or old. */
-function savedRoute(run: Run, c: Ctx): SecurityRoute {
-  const closed = { required: true, why: ['route not recorded'] }
+/** The route and the head SHA it was computed at (null when unknown). */
+type RouteFile = { route: SecurityRoute; head: string | null }
+
+/** The route file of this attempt, or the fail-closed route when it is missing or malformed. An old file has no head. */
+function savedRoute(run: Run, c: Ctx): RouteFile {
+  const closed = { route: { required: true, why: ['route not recorded'] }, head: null }
   try {
     const j = JSON.parse(readFileSync(routeFile(run), 'utf8'))
     const r = j?.route
@@ -8562,7 +8597,10 @@ function savedRoute(run: Run, c: Ctx): SecurityRoute {
       typeof r?.required === 'boolean' &&
       Array.isArray(r.why) &&
       r.why.every((w: unknown) => typeof w === 'string')
-      ? { required: r.required, why: r.why }
+      ? {
+          route: { required: r.required, why: r.why },
+          head: typeof j.head === 'string' && SHA_RE.test(j.head) ? j.head : null,
+        }
       : closed
   } catch {
     return closed
@@ -15093,7 +15131,8 @@ if (import.meta.main && !outboxCmd)
         const [id, seq, outcome] = args
         const { run, value, c } = current(id)
         const [node] = where(value)
-        const n = (await loadPinned(run.factory)).nodes[node]
+        const pinned = await loadPinned(run.factory)
+        const n = pinned.nodes[node]
         if (n?.gate) fail(`${node} is a gate: the person decides it, with factory decide`)
         const outcomes = Object.keys(n?.next ?? {}).concat(WORKER_OUTCOMES)
         if (Number(seq) !== c.seq)
@@ -15101,7 +15140,21 @@ if (import.meta.main && !outboxCmd)
         if (!outcomes.includes(outcome ?? '')) fail(`outcome must be one of: ${outcomes.join(', ')}`)
         const text = cleanReport(summaryArgs(args).slice(3).join(' '))
         if (n?.securityRoute && (outcome === 'security' || outcome === 'approve')) {
-          const route = savedRoute(run, c)
+          let { route, head } = savedRoute(run, c)
+          let why = ''
+          if (!route.required) {
+            const now = branchHead(run.repo, run.shipBranch ?? run.branch)
+            if (!now || now !== head) {
+              const fresh = securityRouteOf(run, pinned, c)
+              writeJson(routeFile(run), { seq: c.seq, ...fresh })
+              why = !now
+                ? 'the runner could not read the branch head again, so the route fails closed. '
+                : head
+                  ? `the branch moved from ${head} to ${now} after the route was computed. Review the new commits first. `
+                  : ''
+              route = fresh.route
+            }
+          }
           const line = routeLine(route)
           if (outcome === 'security' && !route.required && !SECURITY_REASON.test(text))
             fail(
@@ -15109,7 +15162,7 @@ if (import.meta.main && !outboxCmd)
             )
           if (outcome === 'approve' && route.required)
             fail(
-              `this diff needs the security station (${line}). If you marked the pull request ready, run gh pr ready <n> --undo. If you posted an APPROVE review, dismiss it: gh api -X PUT repos/<owner>/<repo>/pulls/<n>/reviews/<review id>/dismissals -f message='security review follows' -f event=DISMISS. If the dismissal fails, name the review id in your summary. Post the verdict as a COMMENT, then report security.`,
+              `${why}this diff needs the security station (${line}). If you marked the pull request ready, run gh pr ready <n> --undo. If you posted an APPROVE review, dismiss it: gh api -X PUT repos/<owner>/<repo>/pulls/<n>/reviews/<review id>/dismissals -f message='security review follows' -f event=DISMISS. If the dismissal fails, name the review id in your summary. Post the verdict as a COMMENT, then report security.`,
             )
         }
         post(

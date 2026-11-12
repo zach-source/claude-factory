@@ -168,7 +168,7 @@ export type Node = {
   /**
    * The runner decides the security route when it starts this station (src/security-route.ts), writes it in
    * the brief as `## Security route`, and `report` refuses `approve` when the route is required, and `security`
-   * when it is not required and the summary has no `Security-reason:` line. `validate` refuses this field on a gate, and on a node whose `next` lacks `security` or `approve`.
+   * when it is not required and the summary has no `Security-reason:` line. The route file pins the head SHA; `report` computes the route again at the new head when the branch moved. `validate` refuses this field on a gate, and on a node whose `next` lacks `security` or `approve`.
    */
   securityRoute?: true
 }
