@@ -1,6 +1,6 @@
 # Contract: the auth operations in the catalog
 
-Covers FR-013 to FR-016 and FR-022 to FR-024. These operations go into `src/core/catalog.ts` as `local` operations in `src/core/ops/auth.ts`. They follow the catalog rules: the name is `<group>.<verb>` with `^[a-z]+\.[a-z]+$`, the route starts with `/v1/`, and a changing operation needs `Idempotency-Key` (spec 008 contracts/catalog.md).
+Covers FR-013 to FR-016 and FR-022 to FR-024. These operations go into `src/core/catalog.ts` as `local` operations in `src/core/ops/auth.ts`. They follow the catalog rules. The name is `<group>.<verb>` with `^[a-z]+\.[a-z]+$`. The route starts with `/v1/`. A changing operation must have `Idempotency-Key` (spec 008 contracts/catalog.md).
 
 | Operation | CLI | Route | Rights | Changes |
 | --- | --- | --- | --- | --- |
@@ -12,14 +12,14 @@ Covers FR-013 to FR-016 and FR-022 to FR-024. These operations go into `src/core
 | `auth.swap` | `factory auth swap <provider> <label>` | `POST /v1/auth/:provider/swap` | owner | yes |
 | `auth.mark` | `factory auth mark <provider> <label> <state>` | `POST /v1/auth/:provider/mark` | owner | yes |
 | `auth.refresh` | `factory auth refresh <provider> <label>` | `POST /v1/auth/:provider/refresh` | owner | yes, `long` |
-| `auth.seed` | `factory auth seed` (ccswitch calls it) | `POST /v1/auth/seed` | owner | yes |
+| `auth.seed` | `factory auth seed` (ccswitch uses this command) | `POST /v1/auth/seed` | owner | yes |
 | `auth.classify` | `factory auth classify <provider> < text` | `POST /v1/auth/classify` | read | no |
 | `auth.capture` | `factory auth capture <run>` | `POST /v1/auth/capture` | owner | yes (a fixture file in the worktree, not in the home) |
 
 - `auth.classify` changes nothing. It is POST only because it takes a body, as `guard.check` does.
 - The old commands stay as aliases until the migration ends:
-  - `factory token [list|use|best]` calls `auth.accounts`, `auth.swap` and `auth.pick` for `claude`.
-  - `factory unhold <runner> [--codex]` calls `auth.mark ... ok` for the accounts of that runner.
+  - `factory token [list|use|best]` uses `auth.accounts`, `auth.swap` and `auth.pick` for `claude`.
+  - `factory unhold <runner> [--codex]` uses `auth.mark ... ok` for the accounts of that runner.
 
 ## Outputs
 
@@ -44,16 +44,16 @@ Covers FR-013 to FR-016 and FR-022 to FR-024. These operations go into `src/core
 }
 ```
 
-`auth.keys` returns the agent-vault key list (data-model.md). With `--format agent-vault`, the CLI prints the configuration patch for a person to apply. The patch holds item and field names, not values.
+`auth.keys` returns the agent-vault key list (data-model.md). With `--format agent-vault`, the CLI prints the configuration patch. A person applies the patch. The patch holds item and field names, not values.
 
 ## Pick rules (`auth.pick` and each launch)
 
 1. Take the accounts of the provider with state `ok`, or with state `limited` and `limitedUntil` in the past.
-2. Take out each account whose load is at or above `launch-limit`. The load is the highest `used` of its fresh readings.
-3. Sort by load, low first. Accounts with no reading go after the accounts with readings, in `auth.<p>.accounts` order.
-4. Keep the current account when its load is less than the best load plus 0.10 (hysteresis, from ccswitch). Swap at most one time in 5 minutes for each provider (cooldown, from ccswitch).
-5. If no account is left, hold the runs that need the provider. Return the earliest `limitedUntil` or `resetsAt`.
+2. Take out each account whose load is at or above `launch-limit`. The load is the highest `used` of its fresh indications.
+3. Sort by load, low first. Accounts with no indication go after the accounts with indications, in `auth.<p>.accounts` order.
+4. Keep the current account when its load is less than the best load plus 0.10 (hysteresis, from ccswitch). Change the picked account at most one time in 5 minutes for each provider (cooldown, from ccswitch).
+5. If no account is left, hold the runs that must use the provider. Return the earliest `limitedUntil` or `resetsAt`.
 
 ## Front ends
 
-Each front end shows `auth.accounts` and `auth.meters`. The views are a table in the web UI, `factory auth` in the CLI, a tab in the Claude mod and a tab in the Herdr mod. A front end that cannot show the table, such as the status band, shows one line with the worst provider and a link to `factory auth`. If a front end does not get the views in the same change, the PR files one bead for each gap (constitution Principle II).
+Each front end shows `auth.accounts` and `auth.meters`. The views are a table in the web UI, `factory auth` in the CLI, a tab in the Claude mod and a tab in the Herdr mod. A front end that cannot show the table shows one line instead. For example, the status band shows that line. The line names the worst provider and links to `factory auth`. If a front end does not get the views in the same change, the PR files one bead for each gap (constitution Principle II).

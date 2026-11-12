@@ -8,7 +8,7 @@ The auth state is one file in the factory home. The secrets stay in the password
 | --- | --- | --- |
 | name | string | Unique. Examples: `claude`, `codex`, `grok`, `cursor`, `xai`, `openai`, `typesafe`, `linear`. |
 | kind | `subscription` \| `session` \| `key` | `subscription` and `session` have a refresh call. `key` has none. |
-| harnesses | list of harness names | The harnesses that use this vendor. Example: `codex` for the Codex provider. A key vendor such as Linear can have none (it serves an MCP server or a tool). |
+| harnesses | list of harness names | The harnesses that use this vendor. Example: `codex` for the Codex provider. A key vendor such as Linear can have none. It serves an MCP server or a tool. |
 | itemTitle(account) | function | Gives the vault item title of an account. It follows the ccswitch names (research R3). |
 | fields | list | The account item fields that the provider reads. The secret fields are marked `secret: true`. |
 | live | `{ item, fields, vaultKeys }` | The live item and the agent-vault keys for this vendor. Example: Codex has `CODEX_CHATGPT` and `CODEX_CHATGPT_ACCOUNT`. |
@@ -35,15 +35,15 @@ Rules:
 | order | number | The place in the pick order when two accounts have the same room. |
 | expiresAt | ms or null | The expiry of the access value. `null` for a key. |
 | lastRefresh | ms or null | The time of the last good refresh. |
-| limitedUntil | ms or null | Set by a `limit` result or a meter at its limit. |
-| deadAt, deadWhy | ms, string | Set when the vendor refuses the refresh value. |
+| limitedUntil | ms or null | The core sets it when a `limit` result or a meter reaches its limit. |
+| deadAt, deadWhy | ms, string | The core records these when the vendor refuses the refresh value. |
 | meter | Meter reading or null | The last reading. |
 
 State changes:
 
 - `unknown` → `ok`: a good refresh or a good meter reading.
-- `ok` → `limited`: a meter at or above the launch limit, or a `limit` classify result. `limitedUntil` is the reset time, or now + 30 minutes when no reset time is known (as `MANAGER_LIMIT_UNKNOWN_MS` today).
-- `limited` → `ok`: `limitedUntil` is past, and a new meter reading (if the provider has a meter) shows room.
+- `ok` → `limited`: a meter at or above the launch limit, or a `limit` classify result. `limitedUntil` is the reset time. If no reset time is known, the core sets `limitedUntil` to now + 30 minutes (as `MANAGER_LIMIT_UNKNOWN_MS` today).
+- `limited` → `ok`: `limitedUntil` is past. A new meter reading shows room, if the provider has a meter.
 - `ok` or `limited` → `dead`: the vendor refuses the refresh value (FR-010). The core sends one mail.
 - `ok` → `refresh` (a step, not a state): a `refused` classify result. If the refresh is good, the state stays `ok`. If the vendor refuses it, the state goes to `dead`.
 - `dead` → `unknown`: the person seeds the account again (ccswitch export) or runs `auth.mark --state unknown`.
@@ -81,8 +81,8 @@ Rules:
 | account | The account id. |
 | holder | The holder of the manager lease (spec 010 server lease in server mode, the manager lease in local mode) and the home id. |
 | at | The time when the holder took it. |
-| ttl | 10 minutes. A holder renews it at each step. A stale lease can be taken. |
-| vault copy | A field `refresh_holder` in the account item has the same holder. This stops a second home (laptop and pod) that shares the account (research R4). |
+| ttl | 10 minutes. A holder renews it at each step. Another holder can take a stale lease. |
+| vault copy | The `refresh_holder` field in the account item holds the same holder. This field stops a second home (laptop and pod) that shares the account (research R4). |
 
 ## Meter reading
 
@@ -94,7 +94,7 @@ Rules:
 | at | The read time. A reading older than 2 meter periods counts as no reading. |
 | source | `headers`, `usage-api`, `spend-log` or `none`. |
 
-A provider can give more than one reading (for example, Claude `5h` and `7d`). The pick uses the highest `used` of the readings.
+A provider can give more than one reading. For example, Claude gives `5h` and `7d`. The pick uses the highest `used` of the readings.
 
 ## Classify result
 
@@ -102,7 +102,7 @@ A provider can give more than one reading (for example, Claude `5h` and `7d`). T
 | --- | --- |
 | class | `limit`, `refused` or `none`. |
 | provider, account | From the run's harness and the picked account at launch. |
-| resetsAt | From the text, when the text has it. Else null. |
+| resetsAt | The text gives it, when the text has one. Otherwise null. |
 | pattern | The id of the pattern that matched, for the run log. |
 
 ## Auth state (`<home>/auth-state.json`)
@@ -119,9 +119,9 @@ A provider can give more than one reading (for example, Claude `5h` and `7d`). T
 }
 ```
 
-- The core writes it with `writeJson` under the tick lock, as the other home files today.
+- The core writes it with `writeJson` under the tick lock. It writes the other home files the same way today.
 - It holds no secret value. A test checks that no field matches the secret shapes of the providers.
-- The git home backup takes it, as other home files.
+- The git home backup includes it, as it includes other home files.
 
 It replaces these files:
 
@@ -157,7 +157,7 @@ Old names stay as aliases:
 | `cursor.cap` | `auth.cursor.launch-limit` (a percent becomes a part) |
 | `grok.auth` | `auth.grok.mode` |
 | `grok.weeklyBudgetUsd` | `auth.grok.weekly-budget-usd` |
-| env `FACTORY_AX_TOKEN_SWAP`, `FACTORY_AX_CODEX_TOKEN_SWAP` | not needed: the core swaps. The env stays read for the rollback. |
+| env `FACTORY_AX_TOKEN_SWAP`, `FACTORY_AX_CODEX_TOKEN_SWAP` | Not needed. The core swaps. The rollback still reads the env. |
 
 ## Agent-vault key list
 
@@ -166,6 +166,6 @@ Old names stay as aliases:
 | vaultKey | Example: `CODEX_CHATGPT`. From `provider.live.vaultKeys`. |
 | item, field | The live item and the field. |
 | placeholder | The value in the worker VM. |
-| hosts | The vendor hosts that agent-vault adds the key for. |
+| hosts | The vendor hosts for which agent-vault adds the key. |
 
 The core makes this list from the provider list (`auth.keys`). A later step applies it to agent-vault (research R9).

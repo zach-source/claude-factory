@@ -14,8 +14,11 @@ Covers FR-011, FR-028 and FR-029, and user story 8. Do each phase first on a cop
 
 ## Order rules
 
-- In M4, the CronJob stops before the pod starts to refresh. In the rollback, the pod stops before the CronJob starts. There is never a time with two refreshers.
-- M4 runs for one vendor at a time: Grok first (it has the shortest token life, 6 hours, so a fault shows quickly), then Codex, then Claude OAuth accounts if any.
+- In M4, the CronJob stops before the pod starts to refresh. In the rollback, the pod stops before the CronJob starts. There is no time with two refreshers.
+- M4 runs for one vendor at a time:
+  - Grok first. It has the shortest token life (6 hours), so a fault shows quickly.
+  - Then Codex.
+  - Then Claude OAuth accounts, if any.
 - The factory keeps running in each phase. A swap during the move uses the live item, as today.
 
 ## Rollback (full)
@@ -24,7 +27,12 @@ Covers FR-011, FR-028 and FR-029, and user story 8. Do each phase first on a cop
 2. Run `ccswitch export --release` for each item. This makes ccswitch the laptop refresher again for Codex.
 3. Resume the `codex-refresh` and `grok-refresh` CronJobs.
 4. Set `auth.enabled=false`. The old code uses the old files again (M2 kept them current).
-5. If M5 is done: restore the old files from the attic. Write the Grok `refresh_token` back into its live item from `Grok-Session-<email>`, because the CronJob reads it there.
-6. Check: a Claude swap with `bin/claude-token best`, a Codex copy with `bin/codex-token refresh`, and a Grok CronJob run.
+5. If M5 is done, restore the old files from the attic.
+   Write the Grok `refresh_token` back into its live item from `Grok-Session-<email>`.
+   The reason is that the CronJob reads it there.
+6. Check these items:
+   - a Claude swap with `bin/claude-token best`
+   - a Codex copy with `bin/codex-token refresh`
+   - a Grok CronJob run
 
 The rollback must take less than 30 minutes (SC-010).

@@ -5,20 +5,27 @@
 
 ## Summary
 
-One auth core in `src/auth/` takes over the auth code that is now in ten files (research R1).
+The auth code is now in ten files (research R1). The new auth core in `src/auth/` holds all of it.
 
-- **Providers:** each vendor is one provider file: Claude, Codex, Grok, Cursor, xAI, OpenAI, Typesafe and Linear (contracts/provider.md).
-- **Refresh:** the server pod refreshes every account under its lease, with a vault writer token. The core stores a rotated refresh token before the access token, and it never sends one refresh token two times (contracts/refresh.md, research R4).
-- **Pick:** usage meters stop a launch on a full account and pick the account with the most room. The text match stays as the backstop, with fixtures from real text (research R5, R6, R11).
-- **State:** one `auth-state.json` replaces seven state files (data-model.md).
-- **Operations:** the auth features are catalog operations, so every front end gets them (contracts/auth-ops.md).
-- **Seeder:** ccswitch stays the laptop seeder. It gets the Grok session, the key vendors and an export that hands the refresh to the factory (contracts/seeder.md).
-- **Agent-vault:** the core makes the agent-vault key list from the providers. The step that applies it waits for a managed agent-vault (research R9).
-- **Move:** a phased migration retires the `codex-refresh` and `grok-refresh` CronJobs, with a rollback at each phase (contracts/migration.md).
+- **Providers:** Each vendor has one provider file. The vendors are Claude, Codex, Grok, Cursor, xAI, OpenAI, Typesafe and Linear (contracts/provider.md).
+
+- **Refresh:** The server pod refreshes every account under its lease (contracts/refresh.md). It uses a vault writer token. The core stores a rotated refresh token before the access token. It never sends one refresh token two times (research R4).
+
+- **Pick:** Usage meters stop a launch on a full account. The pick chooses the account with the most room. The text match is the backstop. Fixtures come from real text (research R5, R6, R11).
+
+- **State:** One `auth-state.json` replaces seven state files (data-model.md).
+
+- **Operations:** The auth features are catalog operations. Every front end gets them (contracts/auth-ops.md).
+
+- **Seeder:** ccswitch stays the laptop seeder. Its changes add three things: the Grok session, the key vendors and an export. The export gives the refresh to the factory (contracts/seeder.md).
+
+- **Agent-vault:** The core makes the agent-vault key list from the providers. A step applies the list. That step waits for a managed agent-vault (research R9).
+
+- **Move:** A phased migration retires the `codex-refresh` and `grok-refresh` CronJobs. Each phase has a rollback (contracts/migration.md).
 
 ## Technical Context
 
-**Language/Version**: TypeScript on Bun (as today). Go for the ccswitch change (its own repo).
+**Language/Version**: TypeScript on Bun, as today. Go for the ccswitch change in its own repo.
 **Primary Dependencies**:
 - the catalog (`src/core/catalog.ts`), the settings (`src/settings.ts`), `src/ax.ts` (egress and placeholders) and `src/metrics.ts`
 - the server pod and its lease (spec 010)
@@ -26,10 +33,10 @@ One auth core in `src/auth/` takes over the auth code that is now in ten files (
 - agent-vault (no change to its code)
 - ccswitch v2.13.1 and later
 
-**Storage**: `auth-state.json` in the factory home (no secret value). The secrets are in the password vault: one account item for each account and one live item for each vendor.
+**Storage**: `auth-state.json` in the factory home. It holds no secret value. The password vault holds the secrets: one account item for each account and one live item for each vendor.
 **Testing**: `bun test` with a temporary home, a fake vault and a fake `fetch`. Fixture tests in `src/auth/fixtures/`. `go test` in ccswitch. The quickstart scenarios on a copy of the home.
 **Target Platform**: the server pod (amd64) and the laptop (local mode). The AX VMs keep only placeholders.
-**Project Type**: a CLI and server in one codebase, plus a change in the ccswitch repo and the GitOps repo (the CronJobs and the secret-sync item).
+**Project Type**: One codebase with a CLI and a server. It also has a change in the ccswitch repo and a change in the GitOps repo. The GitOps change covers the CronJobs and the secret-sync item.
 **Performance Goals**:
 - a dead chain gives mail within 10 minutes (SC-004)
 - a pick before each launch takes less than 1 s with cached meters
@@ -40,7 +47,7 @@ One auth core in `src/auth/` takes over the auth code that is now in ten files (
 - no secret value outside the vault and the gateway (FR-009, FR-021)
 - local mode unchanged (FR-030)
 - catalog names `^[a-z]+\.[a-z]+$`
-- AX allows at most 32 env entries for each task, so the placeholders come from the provider list and add no new env per account
+- AX allows at most 32 env entries for each task. The placeholders come from the provider list. They add no new env per account
 
 **Scale/Scope**: 8 providers, about 10 to 20 accounts, up to 40 live runs.
 
@@ -55,7 +62,11 @@ One auth core in `src/auth/` takes over the auth code that is now in ten files (
 | II. Local and server mode | The core works on a laptop home (FR-030, research R15) and in the pod (research R10). | Pass |
 | Governance | The spec names its changes to specs 004, 005, 008 and 010. | Pass |
 
-Re-check after Phase 1: pass. The contracts add operations to the existing catalog only. The refresh runs in the core loop, not in a front end. The Herdr and Claude mods only show `auth.accounts` and `auth.meters`.
+Re-check after Phase 1: pass.
+
+- The contracts add operations to the existing catalog only.
+- The core loop runs the refresh, not a front end.
+- The Herdr and Claude mods only show `auth.accounts` and `auth.meters`.
 
 ## Project Structure
 
@@ -111,7 +122,11 @@ the GitOps repo/
 └── <gitops-overlays>/       # the factory-vault-writer secret-sync item; the CronJob suspend, then delete
 ```
 
-**Structure Decision**: The auth core is one new directory in the one claude-factory codebase. ccswitch gets a small change in its own repo (decision 2). It is not a port. The GitOps changes are the writer token item and the CronJob retirement. The owner merges them.
+**Structure Decision**: The auth core is one new directory in the one claude-factory codebase.
+
+- ccswitch gets a small change in its own repo (decision 2). It is not a port.
+- The GitOps changes are the writer token item and the CronJob retirement.
+- The owner merges them.
 
 ## Phases and order
 
@@ -134,13 +149,17 @@ Each phase leaves a working factory.
 
 ## Open questions for the owner
 
-Each question has a default. Planning goes on with the default.
+Each question has a default. Planning continues with the default.
 
-1. **Q1. New item names** (research R3). The default is `Grok-Session-<email>` and `Key-<vendor>-<label>`, with the ccswitch prefix.
-2. **Q2. Claude in the VMs** (research R5). The default: the VM slots stay long-lived `setup-token` tokens with no refresh, and the core warns 30 days before expiry. OAuth refresh is for local mode and for any OAuth account that ccswitch exports.
-3. **Q3. Time before the CronJobs are deleted** (research R14). The default is 7 days with no dead chain.
-4. **Q4. Launch limit and swap rules** (contracts/auth-ops.md). The default: launch limit 0.95, hysteresis 0.10 and cooldown 5 minutes (the ccswitch values). The Cursor cap of 60% stays as its `launch-limit` (0.60).
-5. **Q5. A managed agent-vault** (research R9). Phase L needs agent-vault as a GitOps object. Is that a separate spec, or part of this one? The default: a separate bead, and `factory auth keys --format agent-vault` covers the gap.
+1. **Q1. New item names** (research R3). The default is `Grok-Session-<email>` and `Key-<vendor>-<label>`. The names have the ccswitch prefix.
+
+2. **Q2. Claude in the VMs** (research R5). The default: the VM slots use long-lived `setup-token` tokens. These tokens have no refresh. The core warns 30 days before expiry. OAuth refresh is for local mode. It is also for any OAuth account that ccswitch exports.
+
+3. **Q3. Time before the CronJob deletion** (research R14). The default is 7 days with no dead chain.
+
+4. **Q4. Launch limit and swap rules** (contracts/auth-ops.md). The default uses the ccswitch values. Launch limit: 0.95. Hysteresis: 0.10. Cooldown: 5 minutes. The Cursor cap of 60% stays as its `launch-limit` (0.60).
+
+5. **Q5. A managed agent-vault** (research R9). Phase L needs agent-vault as a GitOps object. Is that a separate spec or part of this one? The default is a separate bead. The command `factory auth keys --format agent-vault` covers the gap.
 
 ## Complexity Tracking
 

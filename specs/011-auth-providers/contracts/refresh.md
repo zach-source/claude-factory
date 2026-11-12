@@ -36,23 +36,28 @@ The loop runs every minute. It refreshes an account when `expiresAt - now < refr
 
 | Where | Result | Action |
 | --- | --- | --- |
-| 4 | `refused` | state `dead`. One mail to the manager: account, provider, time, `ccswitch` login command. The pick drops the account. |
-| 4 | `unclear` | Retry with back-off (1, 2, 4, 8 min, then every 15 min). Before each retry, do step 3 again. If `refresh_seq` changed, another writer refreshed: take its values and stop. |
-| 5 | the write fails after the vendor rotated | Do not send the old refresh value again. State `unknown`, reason "rotated value not stored". Mail at once. Keep the new access value in memory, and copy it to the live item if needed, so that work goes on until it expires. Retry only the write, with the new value from memory. Never retry the vendor call with the old value. |
+| 4 | `refused` | The core sets state `dead`. It sends one mail to the manager. The mail names the account, the provider, the time and the `ccswitch` login command. The pick drops the account. |
+| 4 | `unclear` | Retry with back-off (1, 2, 4, 8 min, then every 15 min). Before each retry, do step 3 again. If `refresh_seq` changed, another writer refreshed. Then take its values and stop. |
+| 5 | the write fails after the vendor issued a new value | Do not send the old refresh value again. Set state `unknown`, reason "rotated value not stored", and send a mail at once. Keep the new access value in memory and copy it to the live item if needed. Work goes on until it expires. Retry only the write, with the new value from memory. Do not retry the vendor call with the old value. |
 | 6 or 7 | the write fails | Retry the write. The refresh value is safe. |
-| any | the vault is down | Keep the current access values. Show "vault down" on every front end. Back-off as for `unclear`. |
-| any | the writer token is refused | Stop all writes. Mail the manager one time. Show "vault writer refused". |
+| any | the vault is down | Keep the current access values. Show "vault down" on every front end. Use back-off as for `unclear`. |
+| any | the writer token is refused | Stop all writes. Send one mail to the manager. Show "vault writer refused". |
 
-## Never
+## Do not
 
-- Send one refresh value to the vendor two times after the vendor accepted it.
-- Write a refresh value to the live item, the auth state, a log, a metric, mail or a worker VM.
-- Refresh in server mode from a process that does not hold the pod lease.
-- Refresh an account whose item names another live `refresh_holder`.
+- Do not send one refresh value to the vendor two times. This applies after the vendor accepted it.
+
+- Do not write a refresh value to the live item, the auth state or a log.
+
+- Do not write a refresh value to a metric, to mail or to a worker VM.
+
+- Do not refresh in server mode from a process that does not hold the pod lease.
+
+- Do not refresh an account whose item names another live `refresh_holder`.
 
 ## Mail
 
-The core sends one mail for each dead chain. The mail is to `manager`. It names the account and the command to fix it, for example `ccswitch codex login <email>` and then `ccswitch export --to factory`. A second mail for the same account comes only after the account was `ok` again.
+The core sends one mail for each dead chain. The mail goes to `manager`. It names the account and the command to fix it. For example: `ccswitch codex login <email>`, then `ccswitch export --to factory`. The core sends a second mail for the same account only after the account is `ok` again.
 
 ## Metrics
 
