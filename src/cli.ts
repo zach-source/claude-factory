@@ -229,7 +229,7 @@ import * as worker from './worker'
 import { realPath } from './token-guard'
 import { REASON, boundedRun } from './screen'
 import * as client from './client'
-import { backupAge, backupError, backupWanted } from './homebackup'
+import { backupAge, backupError, backupWanted, secretFile } from './homebackup'
 import * as managerhost from './managerhost'
 import { drainHaltQueue, haltLine, runHaltCmd } from './halt-order'
 import * as leases from './lease'
@@ -6244,8 +6244,41 @@ const GROOM_PLAN_ONLY = '\n\nDo only step 1 now. Print the plan and change no fi
 const GROOM_APPLY =
   '\n\nStep 1 is done. The rig repos are not open to you now. Do only step 2, for these lines and no other:\n\n'
 
-/** one groom agent call: `-p`, no MCP, no project settings; stdout and stderr are piped so raw output stays private */
-function groomAgent(dir: string, stdin: string, mode: string, tools: string, addDirs: string[]) {
+const repoNote = (repos: string[]) =>
+  repos.length
+    ? '\n\nThe rig repos are at these paths. Read them, and do not edit them:\n' +
+      repos.map(r => `- ${JSON.stringify(r)}`).join('\n') +
+      '\n'
+    : ''
+
+/**
+ * one groom agent call: `-p`, no MCP, no project settings; stdout and stderr are piped so raw output stays private.
+ * When FACTORY_DREAM_CODEX is set it runs `codex exec` in the sandbox instead, and a refusal starts no process.
+ */
+function groomAgent(
+  dir: string,
+  stdin: string,
+  mode: string,
+  tools: string,
+  addDirs: string[],
+  sandbox: 'read-only' | 'workspace-write',
+): { code: number | null; out: string; refused?: string } {
+  const model = process.env.FACTORY_DREAM_CODEX
+  if (model) {
+    const refuse = (refused: string) => ({ code: null, out: '', refused })
+    if (!CODEX_MODEL.test(model))
+      return refuse('wiki groom: FACTORY_DREAM_CODEX is not a model name, skipped')
+    // the wiki is trusted, so a .codex/config.toml in it can widen the sandbox
+    try {
+      lstatSync(join(dir, '.codex'))
+      return refuse('wiki groom: the wiki holds .codex, codex refused')
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT')
+        return refuse('wiki groom: the wiki holds .codex, codex refused')
+    }
+    const p = codexExec(dir, sandbox, model, codexPassHome('codex-groom', dir), stdin)
+    return { code: p.exitCode, out: p.stdout.toString() }
+  }
   const settings = passSettings()
   const p = Bun.spawnSync(
     [
@@ -6283,8 +6316,18 @@ function wikiGroom(dryRun: boolean) {
       .map(r => r.repo)
       .filter(d => existsSync(d))
     const prompt = groomPrompt(wikiPages(dir), wikiTombstones(dir), groomCap())
-    const r = groomAgent(dir, prompt + GROOM_PLAN_ONLY, 'default', 'Read,Glob,Grep', repos)
+    const r = groomAgent(
+      dir,
+      prompt + repoNote(repos) + GROOM_PLAN_ONLY,
+      'default',
+      'Read,Glob,Grep',
+      repos,
+      'read-only',
+    )
+    if (r.refused) return wikiLog(r.refused)
     if (r.code !== 0) return wikiLog(`wiki groom: plan call failed (exit ${exit(r)})`)
+    // line() masks a reason, but not a path slug, and a codex shell can read files outside the wiki
+    if (secretFile(Buffer.from(r.out))) return wikiLog('wiki groom: secret shape in the plan, skipped')
     const actions = groomPlan(r.out)
     if (!actions.length) return wikiLog('wiki groom: no actions')
     return {
@@ -6370,7 +6413,9 @@ function wikiGroom(dryRun: boolean) {
       'acceptEdits',
       'Read,Glob,Grep,Edit,Write',
       [],
+      'workspace-write',
     )
+    if (ap.refused) return wikiLog(ap.refused)
     const gk = gitDirKept(dir, before.git)
     if (gk !== 'same') return void gitChangedAct('wiki groom', gk, wikiRun(dir), before, wikiLog)
     if (!repoConfigOk(dir)) {
@@ -6720,19 +6765,64 @@ function compactMessage(
  * merges and prunes, mines the journals since the last dream, reorders. Committed before and after.
  */
 /**
- * Make a private CODEX_HOME for the codex dream. It holds a trust line for the memory and a link to the
- * person's auth.json (one token store, as codexWorker does). The dream copies nothing else.
+ * Make a private CODEX_HOME `HOME/<name>` for a codex pass (the dream, wiki groom). It holds a trust line for
+ * `trusted` and a link to the person's auth.json (one token store, as codexWorker does). It copies nothing else.
  */
-function dreamCodexHome() {
-  const dir = join(HOME, 'codex-dream')
+function codexPassHome(name: string, trusted: string) {
+  const dir = join(HOME, name)
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   chmodSync(dir, 0o700)
-  writeFileSync(join(dir, 'config.toml'), `[projects.${JSON.stringify(MEMORY)}]\ntrust_level = "trusted"\n`)
+  writeFileSync(join(dir, 'config.toml'), `[projects.${JSON.stringify(trusted)}]\ntrust_level = "trusted"\n`)
   const auth = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'auth.json')
   const link = join(dir, 'auth.json')
   rmSync(link, { force: true })
   if (existsSync(auth)) symlinkSync(auth, link)
   return dir
+}
+
+/**
+ * One `codex exec` call in `dir` with the prompt on stdin. Returns the raw spawn result.
+ * ponytail: spawnSync kills only the direct child, so a codex grandchild can write after the caller's guards.
+ * The callers undo what a pass leaves behind. Upgrade path: spawn in its own process group and kill the group.
+ */
+function codexExec(
+  dir: string,
+  sandbox: 'read-only' | 'workspace-write',
+  model: string,
+  home: string,
+  stdin: string,
+) {
+  return Bun.spawnSync(
+    [
+      process.env.FACTORY_CODEX ?? 'codex',
+      ...['exec', '-s', sandbox, '-c', 'approval_policy="never"'],
+      ...(sandbox === 'workspace-write'
+        ? [
+            ...['-c', 'sandbox_workspace_write.network_access=false'],
+            ...['-c', 'sandbox_workspace_write.exclude_slash_tmp=true'],
+            ...['-c', 'sandbox_workspace_write.exclude_tmpdir_env_var=true'],
+          ]
+        : []),
+      ...['-C', dir, '-m', model, '-'],
+    ],
+    {
+      cwd: dir,
+      // 6w0m: the codex sandbox can run printenv, so pass an allowlist, not the tick env.
+      // Add a key only when the live pass fails without it.
+      env: {
+        ...Object.fromEntries(
+          ['PATH', 'HOME', 'TERM', 'LANG'].flatMap(k =>
+            process.env[k] === undefined ? [] : [[k, process.env[k]!]],
+          ),
+        ),
+        CODEX_HOME: home,
+      },
+      stdin: Buffer.from(stdin),
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: 45 * 60_000,
+    },
+  )
 }
 
 const DREAM_CODEX_NOTE =
@@ -6833,8 +6923,7 @@ async function dream() {
     const model = process.env.FACTORY_DREAM_CODEX
     let codexHome: string | undefined
     if (model) {
-      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(model))
-        return refuse('FACTORY_DREAM_CODEX is not a model name')
+      if (!CODEX_MODEL.test(model)) return refuse('FACTORY_DREAM_CODEX is not a model name')
       // the memory is trusted, so a .codex/config.toml in it can widen the sandbox at the next dream
       let hasCodexDir = true
       try {
@@ -6845,39 +6934,15 @@ async function dream() {
       }
       if (hasCodexDir || codexLinked)
         return refuse('the memory holds .codex, which would add codex project config')
-      codexHome = dreamCodexHome()
+      codexHome = codexPassHome('codex-dream', MEMORY)
     }
     const gitPre = gitDirPre(MEMORY)
     if ('why' in gitPre) return refuse(gitPreLine('dream', gitPre.why))
-    // ponytail: spawnSync kills only the direct child, so a codex grandchild can plant a link after the last dropLinks.
-    // The memory readers skip a link and the writers refuse it, and the next dream removes it. Upgrade path: spawn in its own process group and kill the group.
+    // a codex grandchild can plant a link after the last dropLinks (see codexExec). The memory readers skip a link
+    // and the writers refuse it, and the next dream removes it.
     // claude: edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = codexHome
-      ? Bun.spawnSync(
-          [
-            process.env.FACTORY_CODEX ?? 'codex',
-            ...['exec', '-s', 'workspace-write', '-c', 'approval_policy="never"'],
-            ...['-c', 'sandbox_workspace_write.network_access=false'],
-            ...['-c', 'sandbox_workspace_write.exclude_slash_tmp=true'],
-            ...['-c', 'sandbox_workspace_write.exclude_tmpdir_env_var=true'],
-            ...['-C', MEMORY, '-m', model!, '-'],
-          ],
-          {
-            cwd: MEMORY,
-            // 6w0m: the codex sandbox can run printenv, so pass an allowlist, not the tick env.
-            // Add a key only when the live dream fails without it.
-            env: {
-              ...Object.fromEntries(
-                ['PATH', 'HOME', 'TERM', 'LANG'].flatMap(k =>
-                  process.env[k] === undefined ? [] : [[k, process.env[k]!]],
-                ),
-              ),
-              CODEX_HOME: codexHome,
-            },
-            stdin: Buffer.from(prompt + DREAM_CODEX_NOTE),
-            timeout: 45 * 60_000,
-          },
-        )
+      ? codexExec(MEMORY, 'workspace-write', model!, codexHome, prompt + DREAM_CODEX_NOTE)
       : Bun.spawnSync(
           [
             ...claudeCommand().split(/\s+/),
