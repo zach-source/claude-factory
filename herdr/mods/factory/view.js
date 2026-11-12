@@ -104,13 +104,34 @@ export function parseTick(code, out, err) {
       manager: res.manager ?? [],
       rigs: res.rigs ?? [],
       halt: res.halt,
-      readOnly: res.readOnly,
+      lease: res.lease ?? null,
       managerLimited: res.managerLimited ?? null,
       managerCodexAuth: res.managerCodexAuth ?? null,
     }
   } catch {
     return { error: line(`factory tick printed no JSON: ${out || err}`, 300) }
   }
+}
+
+/** the lease as one part of the header: 'lease: holder (kind)', or '' when no lease is on the board */
+export const leaseText = lease =>
+  lease?.holder ? `lease: ${lease.holder}${lease.kind ? ` (${lease.kind})` : ''}` : ''
+
+/**
+ * the header line of the board: the run counts, the limits, the manager context and the lease.
+ * The mod never ticks, so it is always a reader: no part of the line says "read-only".
+ */
+export function headerText(state, context) {
+  if (state.error) return `tick failed: ${state.error}`
+  return [
+    statusText(state.runs ?? []) || 'no live runs',
+    managerLimitText(state.managerLimited),
+    managerContextText(context),
+    managerCodexAuthText(state.managerCodexAuth),
+    leaseText(state.lease),
+  ]
+    .filter(Boolean)
+    .join(' · ')
 }
 
 /** the board header when the manager's Claude is limited: 'manager: Claude limited until HH:MM', else '' */
@@ -136,7 +157,7 @@ export function managerContextText(c) {
 export function parseContext(code, out) {
   if (code !== 0) return null
   try {
-    const c = JSON.parse(out).views?.manager
+    const c = (j => j.views?.['manager.context'] ?? j)(JSON.parse(out))
     return c && typeof c.model === 'string' ? c : null
   } catch {
     return null
@@ -167,20 +188,88 @@ export function parseSnapshot(code, out, err) {
 
 // Remote mode (claude-factory-hpmc.14): the manager runs on another machine, such as the AX task f-manager.
 
-/** the config.json text as { cli, home, machine? }, or null when it is not one */
+/**
+ * the config.json text as { cli, home, machine? } (local or remote mode) or { server, cert, key, ca } (server mode,
+ * claude-factory-gogxc.15), or null when it is neither. A config with both modes is null.
+ */
 export function parseConfig(text) {
   try {
     const c = JSON.parse(text)
-    if (typeof c?.cli !== 'string' || typeof c.home !== 'string') return null
-    if (c.machine !== undefined && typeof c.machine !== 'string') return null
+    const str = k => typeof c?.[k] === 'string'
+    const srv = ['server', 'cert', 'key', 'ca'].some(k => c?.[k] !== undefined)
+    const loc = ['cli', 'home', 'machine'].some(k => c?.[k] !== undefined)
+    if (srv) return !loc && ['server', 'cert', 'key', 'ca'].every(str) ? c : null
+    if (!str('cli') || !str('home')) return null
+    if (c.machine !== undefined && !str('machine')) return null
     return c
   } catch {
     return null
   }
 }
 
+// Server mode: one HTTPS call to /v1 with the person certificate, by curl. The mod holds no factory logic.
+
+/** an Idempotency-Key of the form ^[A-Za-z0-9-]{8,128}$ */
+export const idemKey = () => `mod-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+
+/** the curl call of one /v1 request. A refusal prints its body (--fail-with-body) and exits non-zero. */
+export function serverCall(conf, method, path, body, key = idemKey()) {
+  const args = [
+    '-sS',
+    '--fail-with-body',
+    '--max-time',
+    '20',
+    '--cert',
+    conf.cert,
+    '--key',
+    conf.key,
+    '--cacert',
+    conf.ca,
+  ]
+  if (method !== 'GET')
+    args.push(
+      '-X',
+      method,
+      '-H',
+      'content-type: application/json',
+      '-H',
+      `Idempotency-Key: ${key}`,
+      '-d',
+      JSON.stringify(body ?? {}),
+    )
+  return ['curl', [...args, conf.server.replace(/\/+$/, '') + path]]
+}
+
+/** the one snapshot request of a beat */
+export const snapshotPath = maxAge => `/v1/snapshot?views=board,decisions,lease&maxAge=${maxAge}`
+
+/** the request of a control button, as [method, path, body] */
+export function actionReq(action, arg) {
+  if (['stop', 'resume'].includes(action)) return ['POST', '/v1/halt', { mode: action }]
+  if (action === 'abort' && arg) return ['POST', `/v1/runs/${encodeURIComponent(arg)}/abort`, {}]
+  if (action === 'unhold' && arg) return ['POST', `/v1/rigs/${encodeURIComponent(arg)}/unhold`, {}]
+  if (action === 'say' && arg) return ['POST', '/v1/manager/say', { text: arg }]
+  throw new Error(`no such action: ${action}`)
+}
+
+/** the request of one answer in the Interview dialog */
+export const answerReq = (item, option) =>
+  item.kind === 'gate'
+    ? ['POST', `/v1/runs/${encodeURIComponent(item.run)}/decide`, { outcome: option, note: '' }]
+    : [
+        'POST',
+        `/v1/decisions/${encodeURIComponent(item.rig)}/${encodeURIComponent(item.bead)}/answer`,
+        { text: option },
+      ]
+
+/** the worker screen path of a run */
+export const screenPath = id => `/v1/runs/${encodeURIComponent(id)}/screen`
+
 /** the options that send an exec or a file read to the machine of a remote config */
 export const onOf = cfg => (cfg.machine ? { on: cfg.machine } : undefined)
+
+/** a GET answer is reused this long (ms), so a click on a run does not call the pod again at once */
+export const GET_CACHE_MS = 3_000
 
 /**
  * The read-only calls of a beat (claude-factory-hpmc.23, ql0jz). The board and the decisions are two calls, so the
@@ -206,7 +295,7 @@ export function actionWords(action, arg) {
  * none is live, and attaches to it. The values travel as arguments of sh, so no quoting is needed.
  */
 export function chatArgv(cfg, limited = null) {
-  if (!cfg.machine) return null
+  if (cfg.server || !cfg.machine) return null
   if (!limited) return ['hc', 'attach', `${cfg.machine}/manager`]
   const script =
     'hc run --bg --on "$0" --name manager-codex env "FACTORY_HOME=$1" "$2" manager chat --codex >/dev/null 2>&1; ' +

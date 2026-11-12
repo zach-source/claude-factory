@@ -170,10 +170,12 @@ const patrolPrompt = ($: EngineInterface) =>
   stepPrompt($, 'patrol', { cli: rt.cli, factories: rt.cli.replace(/bin\/factory$/, 'factories/') })
 
 // runtime handles only: a hot reload starts them over, which ensureTicking allows for
-const rt = {
+export const rt = {
   cli: '',
   /** this session's factory: every command the model runs works it, wherever its shell has cd'd */
   home: '',
+  /** claude-factory-gogxc.14: FACTORY_SERVER is set, so the pod owns the state: no tick, no home, log rows go to /v1 */
+  isServer: false,
   /** claude-factory-d289.25: the person's "Allow for this turn" tokens; the turn's end or exp empties each file */
   turnAllows: [] as { token: string; file: string; kinds: string[]; until: number }[],
   timer: undefined as { cancel: () => void } | undefined,
@@ -297,6 +299,14 @@ async function factory($: EngineInterface, args: string[]) {
   return { isOk, out: (isOk ? r.stdout : `${r.stdout}${r.stderr}`).trim() }
 }
 
+/** server mode: post one log row to the pod. Returns false in local mode, so the caller writes its own file. A failure shows in the status line and never throws. */
+async function postLog($: EngineInterface, kind: string, entry: unknown) {
+  if (!rt.isServer) return false
+  const { isOk, out } = await factory($, ['manager', 'log', kind, JSON.stringify(entry)])
+  if (!isOk) $.ui.status(`factory: could not post the ${kind} log row: ${line(out, 160)}`)
+  return true
+}
+
 /** a failed tick: say why in full enough to act on, and mark the board stale until a tick succeeds */
 async function tickFailed($: EngineInterface, why: string) {
   const now = await $.clock.now()
@@ -305,6 +315,7 @@ async function tickFailed($: EngineInterface, why: string) {
 }
 
 async function tick($: EngineInterface) {
+  if (rt.isServer) return // the pod ticks (gogxc.14)
   if (rt.isTicking) {
     rt.isTickWanted = true
     return
@@ -436,6 +447,7 @@ async function readPatrolLog($: EngineInterface): Promise<FactoryPatrolLogEntry[
 
 /** appends one patrol's outcome, keeping only the newest PATROL_LOG_CAP lines */
 async function appendPatrolLog($: EngineInterface, entry: FactoryPatrolLogEntry) {
+  if (await postLog($, 'patrol', entry)) return
   if (!rt.home) return
   const log = [...(await readPatrolLog($)), entry].slice(-PATROL_LOG_CAP)
   await $.fs.write(`${rt.home}/patrol-log.jsonl`, `${log.map(e => JSON.stringify(e)).join('\n')}\n`)
@@ -445,7 +457,7 @@ async function appendPatrolLog($: EngineInterface, entry: FactoryPatrolLogEntry)
  * claude-factory-hr94: what a manager subagent's turn spent, kept by its name in `<home>/manager-usage.jsonl`.
  * The file has no line cap: `factory metrics --tokens` reads it. A write failure never reaches the caller.
  */
-async function appendManagerUsage(
+export async function appendManagerUsage(
   $: EngineInterface,
   name: 'patrol' | 'pm' | 'briefer' | 'reviewer',
   usage:
@@ -459,7 +471,7 @@ async function appendManagerUsage(
     | undefined,
 ) {
   try {
-    if (!rt.home || !usage) return
+    if (!usage || (!rt.home && !rt.isServer)) return
     const file = `${rt.home}/manager-usage.jsonl`
     const row = {
       name,
@@ -470,6 +482,7 @@ async function appendManagerUsage(
       cacheRead: usage.cache_read_input_tokens,
       output: usage.output_tokens,
     }
+    if (await postLog($, 'usage', row)) return
     await $.fs.write(file, (await $.fs.read(file).catch(() => '')) + JSON.stringify(row) + '\n')
   } catch {}
 }
@@ -503,6 +516,7 @@ async function readPmLog($: EngineInterface): Promise<FactoryPmLogEntry[]> {
 
 /** appends one pm turn's outcome, keeping only the newest PM_LOG_CAP lines */
 async function appendPmLog($: EngineInterface, entry: FactoryPmLogEntry) {
+  if (await postLog($, 'pm', entry)) return
   if (!rt.home) return
   const log = [...(await readPmLog($)), entry].slice(-PM_LOG_CAP)
   await $.fs.write(`${rt.home}/pm-log.jsonl`, `${log.map(e => JSON.stringify(e)).join('\n')}\n`)
@@ -538,6 +552,7 @@ async function readBriefLog($: EngineInterface): Promise<FactoryBriefLogEntry[]>
 
 /** appends one briefer attempt's outcome, keeping only the newest BRIEFER_LOG_CAP lines */
 async function appendBriefLog($: EngineInterface, entry: FactoryBriefLogEntry) {
+  if (await postLog($, 'brief', entry)) return
   if (!rt.home) return
   const log = [...(await readBriefLog($)), entry].slice(-BRIEFER_LOG_CAP)
   await $.fs.write(`${rt.home}/brief-log.jsonl`, `${log.map(e => JSON.stringify(e)).join('\n')}\n`)
@@ -555,6 +570,7 @@ async function isReviewerAgent($: EngineInterface, agentId: string) {
 
 /** appends one reviewer attempt's outcome to `<home>/review-log.jsonl`, keeping only the newest REVIEWER_LOG_CAP lines */
 async function appendReviewLog($: EngineInterface, entry: FactoryReviewLogEntry) {
+  if (await postLog($, 'review', entry)) return
   if (!rt.home) return
   const path = `${rt.home}/review-log.jsonl`
   const text = await $.fs.read(path).catch(() => '')
@@ -1048,6 +1064,9 @@ async function ensureTicking($: EngineInterface) {
   if (rt.timer) return
   const root = await $.fs.stat($.plugin.root, { resolve: true })
   rt.cli = `${root.realPath ?? $.plugin.root}/../bin/factory`
+  // claude-factory-gogxc.14: in server mode the pod ticks and owns the home; the mod only posts log rows
+  rt.isServer = (await $.process.run(['sh', '-c', 'printf %s "$FACTORY_SERVER"'])).stdout.startsWith('http')
+  if (rt.isServer) return
   // the session's directory decides its factory once; the model's Bash cd's freely after that
   const { isOk, out } = await factory($, ['home'])
   if (isOk) rt.home = out

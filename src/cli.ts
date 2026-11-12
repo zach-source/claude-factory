@@ -232,6 +232,7 @@ import { REASON, boundedRun } from './screen'
 import * as client from './client'
 import { backupAge, backupError, backupWanted } from './homebackup'
 import * as managerhost from './managerhost'
+import * as managersup from './managersup'
 import { drainHaltQueue, haltLine, runHaltCmd } from './halt-order'
 import * as leases from './lease'
 import * as herdrApp from './herdr-install'
@@ -13944,6 +13945,30 @@ if (import.meta.main && !outboxCmd && client.serverMode(process.env)) {
   if (sent !== null) process.exit(sent)
 }
 
+/** the pod's supervisor of the manager task; it needs the pod address for the task (FACTORY_SERVER_MANAGER_URL) */
+const podSupervisor = (() => {
+  let s: ReturnType<typeof managersup.supervisor> | undefined
+  return () => {
+    if (!inServer() || !process.env.FACTORY_SERVER_MANAGER_URL)
+      throw new Error('this factory does not run a manager task: set FACTORY_SERVER_MANAGER_URL on the pod')
+    const task = ax.managerTask()
+    const apply = (image: string) =>
+      ax.launchManager(image, [], rawRigs(), { session: true, launch: crypto.randomUUID() })
+    return (s ??= managersup.supervisor({
+      home: HOME,
+      image: process.env.FACTORY_AX_MANAGER_IMAGE,
+      log: m => console.log(m),
+      ax: {
+        phase: () => ax.read(task).phase,
+        apply,
+        remove: ws => ax.remove(task, ws ? undefined : ['task']),
+        suspend: () => ax.suspend(task),
+        resume: () => ax.resume(task),
+      },
+    }))
+  }
+})()
+
 /** the helpers of this file that the catalog operations call (src/core/ops) */
 export const corePort: Port = {
   gcPass,
@@ -13990,6 +14015,8 @@ export const corePort: Port = {
   screen: screenRun,
   mail: mailRun,
   say: ax.say,
+  managerImage: image => podSupervisor().setImage(image),
+  managerSuspend: on => podSupervisor().suspend(on),
   chatModel: runModelAsync,
   chatRun: runApproved,
 }
@@ -14179,7 +14206,14 @@ if (import.meta.main && !outboxCmd)
           if (other) throw new Error(`no tick: ${leases.leaseLine(other, Date.now())}`)
           return tick()
         }
-        server.main(args, HOME, podTick, corePort, backup)
+        server.main(
+          args,
+          HOME,
+          podTick,
+          corePort,
+          backup,
+          process.env.FACTORY_SERVER_MANAGER_URL ? () => podSupervisor().check() : undefined,
+        )
         break
       case 'cert': {
         refuseWorker('cert', true)
@@ -14201,6 +14235,16 @@ if (import.meta.main && !outboxCmd)
           await managerhost.host(args.slice(1), { prepare: reposSync, lock: () => hold('tick.lock') })
           break
         }
+        if (args[0] === 'session') {
+          await managerhost.session(args.slice(1), {
+            post: row =>
+              void Bun.spawnSync([CLI, 'manager', 'log', 'health', JSON.stringify(row)], {
+                stdin: 'ignore',
+                timeout: 20_000,
+              }),
+          })
+          break
+        }
         if (args[0] === '--ax') {
           await launchAxManager(args.slice(1))
           break
@@ -14220,15 +14264,29 @@ if (import.meta.main && !outboxCmd)
       case 'herdr': {
         refuseWorker('herdr', true)
         const opt = (k: string) => (args.includes(k) ? args[args.indexOf(k) + 1] : undefined)
-        const flags = ['--app-home', '--machine', '--home']
+        const flags = ['--app-home', '--machine', '--home', '--server']
         const bad =
           args[0] !== 'install' ||
+          (!!opt('--server') && (!!opt('--machine') || !!opt('--home'))) ||
           args.length !== 1 + 2 * flags.filter(k => args.includes(k)).length ||
           flags.some(k => args.includes(k) && !opt(k)) ||
           (!!opt('--machine') && !/^[A-Za-z0-9._-]+$/.test(opt('--machine')!))
-        if (bad) fail('usage: factory herdr install [--app-home <dir>] [--machine <name> [--home <path>]]')
+        if (bad)
+          fail(
+            'usage: factory herdr install [--app-home <dir>] [--machine <name> [--home <path>] | --server <https-url>]',
+          )
         const repo = resolve(import.meta.dir, '..')
         const app = opt('--app-home') ? resolve(opt('--app-home')!) : herdrApp.appHomeOf(process.env)
+        const server = opt('--server')
+        if (server) {
+          if (!URL.canParse(server) || new URL(server).protocol !== 'https:')
+            fail('--server must be an https URL')
+          const o = herdrApp.install(repo, app, herdrApp.serverConfig(server.replace(/\/+$/, '')))
+          console.log(
+            `installed the factory mod in ${o.mod} for the server ${server} (it calls /v1 with the person certificate)`,
+          )
+          break
+        }
         const machine = opt('--machine')
         // a remote home is a path on the machine: do not resolve it here
         const home = machine

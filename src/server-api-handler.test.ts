@@ -37,6 +37,8 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult>; imageFail?: bo
   const log = (port: string, args: unknown[]) => calls.push({ port, args })
   const port: Port = {
     say: () => {},
+    managerImage: async () => {},
+    managerSuspend: async () => {},
     gcPass: () => {},
     gcWorktreesPass: () => {},
     gcRigs: () => [],

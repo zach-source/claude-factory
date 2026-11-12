@@ -6,7 +6,8 @@
 //
 // Props { band: true } draw a status band of one line.
 // Props { dialog: "interview" } draw the Interview dialog.
-// `factory herdr install` writes config.json next to this file: { cli, home, machine? }.
+// `factory herdr install` writes config.json next to this file: { cli, home, machine? } or, in server mode
+// (claude-factory-gogxc.15), { server, cert, key, ca }: each call is one HTTPS call to /v1 by curl.
 
 import { View, div, PathBuilder } from 'gpui-kit'
 import { v_flex, h_flex } from 'gpui-base'
@@ -27,6 +28,7 @@ import {
 } from 'herdr'
 import {
   agentsOf,
+  headerText,
   answerArgs,
   board,
   interviewItems,
@@ -35,9 +37,14 @@ import {
   newlyBlocked,
   parseConfig,
   shortId,
-  statusText,
   actionWords,
   snapshotWords,
+  serverCall,
+  snapshotPath,
+  actionReq,
+  answerReq,
+  screenPath,
+  GET_CACHE_MS,
   BOARD_MAX_AGE,
   FIRST_MAX_AGE,
   DECISIONS_MS,
@@ -50,10 +57,7 @@ import {
   FLOW_WINDOWS,
   flowJobWords,
   flowLayout,
-  managerLimitText,
-  managerContextText,
   parseContext,
-  managerCodexAuthText,
   parseFlows,
   recentMovers,
 } from './view.js'
@@ -67,6 +71,7 @@ const configPath = () => `${appHome()}/mods/factory/config.json`
 export default class Factory extends View {
   init(_props, cx) {
     this.cfg = null
+    this.getCache = {} // GET path -> { at, r }
     this.jobs = {} // name -> { at, result? }
     this.selected = null
     this.screen = ''
@@ -108,12 +113,21 @@ export default class Factory extends View {
   }
 
   /** starts a factory command, unless one with that name is in flight. It runs direct, in the foreground. */
-  start(name, words) {
+  start(name, words, req) {
     const job = this.jobs[name]
     if (job && Date.now() - job.at < JOB_LIMIT_MS) return
+    if (this.cfg.server && !req) return // no /v1 route for this call (the Flow tab)
     const mine = (this.jobs[name] = { at: Date.now() })
-    const [cmd, args] = directJob(this.cfg, words)
-    exec(cmd, args, onOf(this.cfg))
+    const [cmd, args] = req ? serverCall(this.cfg, ...req) : directJob(this.cfg, words)
+    // a GET answer is cached for a short time; calls in flight run side by side
+    const hit = req?.[0] === 'GET' && this.getCache[req[1]]
+    ;(hit && Date.now() - hit.at < GET_CACHE_MS
+      ? Promise.resolve(hit.r)
+      : exec(cmd, args, onOf(this.cfg)).then(r => {
+          if (req?.[0] === 'GET' && r.code === 0) this.getCache[req[1]] = { at: Date.now(), r }
+          return r
+        })
+    )
       .then(r => (mine.result = { code: r.code, out: r.stdout, err: r.stderr }))
       .catch(e => (mine.result = { code: 1, out: '', err: String(e) }))
   }
@@ -129,7 +143,11 @@ export default class Factory extends View {
   beat(cx) {
     cx.spawn(async cx => {
       const r = this.finished('snapshot')
-      if (r) this.onTick(parseSnapshot(r.code, r.out, r.err).tick)
+      if (r) {
+        const s = parseSnapshot(r.code, r.out, r.err)
+        this.onTick(s.tick)
+        if (s.decisions) setShared('factory.decisions', s.decisions) // server mode: one call holds both views
+      }
       const d = this.finished('decisions')
       if (d) {
         const s = parseSnapshot(d.code, d.out, d.err)
@@ -146,8 +164,14 @@ export default class Factory extends View {
       if (this.tab === 'flow') this.start('flows', flowJobWords(this.flowFactory, this.flowWindow))
       // the first beat takes any cached board; later beats take one at most BOARD_MAX_AGE old
       // the manager's model and context use: one read of its transcript, so each turn shows by the next beat
-      this.start('context', snapshotWords('manager', BOARD_MAX_AGE))
-      this.start('snapshot', snapshotWords('board', this.beats++ ? BOARD_MAX_AGE : FIRST_MAX_AGE))
+      const age = this.beats++ ? BOARD_MAX_AGE : FIRST_MAX_AGE
+      if (this.cfg.server) {
+        this.start('context', null, ['GET', '/v1/manager/context'])
+        this.start('snapshot', null, ['GET', snapshotPath(age)])
+        return cx.notify()
+      }
+      this.start('context', snapshotWords('manager.context', BOARD_MAX_AGE))
+      this.start('snapshot', snapshotWords('board', age))
       if (Date.now() - this.decisionsAt >= DECISIONS_MS && !this.jobs.decisions) {
         this.decisionsAt = Date.now()
         this.start('decisions', snapshotWords('interview', this.beats > 1 ? DECISIONS_MS : FIRST_MAX_AGE))
@@ -179,7 +203,7 @@ export default class Factory extends View {
     setShared('factory', {
       runs: res.runs,
       halt: res.halt,
-      readOnly: res.readOnly,
+      lease: res.lease,
       managerLimited: res.managerLimited ?? null,
       managerCodexAuth: res.managerCodexAuth ?? null,
       at: Date.now(),
@@ -192,6 +216,15 @@ export default class Factory extends View {
     this.screen = ''
     cx.notify()
     if (!r.pane) return
+    if (this.cfg?.server) {
+      const [cmd, args] = serverCall(this.cfg, 'GET', screenPath(r.id))
+      cx.spawn(async cx => {
+        const p = await exec(cmd, args).catch(() => null)
+        this.screen = (p && (p.stdout || p.stderr).trimEnd()) || 'no worker screen' // the pod text as it is
+        cx.notify()
+      })
+      return
+    }
     if (this.cfg?.machine) {
       this.screen = 'worker screens are not in remote mode yet (claude-factory-hpmc.10)'
       return
@@ -217,18 +250,7 @@ export default class Factory extends View {
     const t = theme()
     const state = shared('factory') ?? {}
     const runs = state.runs ?? []
-    const head = state.readOnly
-      ? `read-only: ${state.readOnly}`
-      : state.error
-        ? `tick failed: ${state.error}`
-        : [
-            statusText(runs) || 'no live runs',
-            managerLimitText(state.managerLimited),
-            managerContextText(shared('factory.context')),
-            managerCodexAuthText(state.managerCodexAuth),
-          ]
-            .filter(Boolean)
-            .join(' · ')
+    const head = headerText(state, shared('factory.context'))
     if (p.band)
       return h_flex()
         .size_full()
@@ -236,7 +258,7 @@ export default class Factory extends View {
         .items_center()
         .bg(t.chrome)
         .text_size(12)
-        .text_color(state.readOnly || state.error ? t.blocked : t.muted)
+        .text_color(state.error ? t.blocked : t.muted)
         .child(div().truncate().child(`factory · ${head}`))
     if (!this.cfg)
       return v_flex()
@@ -313,7 +335,7 @@ export default class Factory extends View {
                 .flex_1()
                 .min_w(0)
                 .truncate()
-                .text_color(state.readOnly || state.error ? t.blocked : t.muted)
+                .text_color(state.error ? t.blocked : t.muted)
                 .child(head),
             ),
         )
@@ -508,7 +530,10 @@ export default class Factory extends View {
 
   /** runs one factory command (on the machine of a remote config) and toasts the result */
   act(action, arg) {
-    exec('env', [`FACTORY_HOME=${this.cfg.home}`, this.cfg.cli, ...actionWords(action, arg)], onOf(this.cfg))
+    const [cmd, args] = this.cfg.server
+      ? serverCall(this.cfg, ...actionReq(action, arg))
+      : ['env', [`FACTORY_HOME=${this.cfg.home}`, this.cfg.cli, ...actionWords(action, arg)]]
+    exec(cmd, args, onOf(this.cfg))
       .then(r =>
         notify({
           title: `factory ${action}`,
@@ -549,11 +574,10 @@ export default class Factory extends View {
         const cfg = parseConfig((await readTextFile(configPath())) ?? '')
         if (!cfg) return
         // the person clicks the answer: this click is the confirm step
-        const r = await exec(
-          'env',
-          [`FACTORY_HOME=${cfg.home}`, cfg.cli, ...answerArgs(item, option)],
-          onOf(cfg),
-        ).catch(e => ({
+        const [cmd, args] = cfg.server
+          ? serverCall(cfg, ...answerReq(item, option))
+          : ['env', [`FACTORY_HOME=${cfg.home}`, cfg.cli, ...answerArgs(item, option)]]
+        const r = await exec(cmd, args, onOf(cfg)).catch(e => ({
           code: 1,
           stdout: '',
           stderr: String(e),
