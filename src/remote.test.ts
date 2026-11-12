@@ -3848,7 +3848,12 @@ test('53r2x cost grammar keeps costMicro only for an integer 1..1e8 on a grok mo
   const cost = (model: string, costMicro: unknown) => {
     const r = validUsage([usageRow({ model, costMicro })], 'a', 7)
     expect(r).toEqual([
-      { node: 'a', seq: 7, ...usageRow({ model }), ...(r[0]?.costMicro === undefined ? {} : { costMicro }) },
+      {
+        node: 'a',
+        seq: 7,
+        ...usageRow({ model }),
+        ...(r[0]?.costMicro === undefined ? {} : { costMicro: costMicro as number }),
+      },
     ])
     return r[0]!.costMicro
   }
