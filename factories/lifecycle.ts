@@ -45,13 +45,14 @@ const SONNET = claude('exec_model')
 const OPUS = claude('judge_model')
 const FABLE = claude('security_model')
 const PLAN = claude('plan_model')
-// A share of runs launch implement, verify and security as codex (cli.ts splitPick). A rig sets the share
-// to 0 to turn the tier off. plan and review (design and review) go to codex only when a rig sets
-// codex_judge_share; check and incident never do.
-const codex = (model: string) => `{codex} -m '{${model}}'`
-const CODEX_EXEC = codex('codex_exec_model')
-const CODEX_SECURITY = codex('codex_security_model')
-const CODEX_JUDGE = codex('codex_judge_model')
+// A share of runs launch a station as codex (cli.ts splitPick). A rig sets the share to 0 to turn the station off.
+// Each codex station has its own params: codex_<station>_model, codex_<station>_effort and a share (by default
+// codex_<station>_share). plan and review go to codex only when a rig sets codex_judge_share. check, rollback and
+// incident never go to codex: they read or change production with the laptop's kubectl.
+const codexAt = (station: string, share = `codex_${station}_share`) => ({
+  agent: `{codex} -m '{codex_${station}_model}' -c model_reasoning_effort='{codex_${station}_effort}'`,
+  share,
+})
 // A grok split goes first at the code and chore stations: its share picks first, then the codex split
 const grok = (station: string) => ({
   agent: `{grok} -m '{grok_${station}_model}'`,
@@ -108,12 +109,33 @@ export default {
     plan_model: 'claude-opus-5-5[1m]', // planning: Opus or Sonnet 5.5 (owner 2026-11-11)
     security_model: 'claude-fable-5-2', // security and architecture
     codex: 'codex --dangerously-bypass-approvals-and-sandbox', // the codex launcher (the deny hook stays on)
-    codex_exec_model: 'gpt-6.1-sol', // codex in place of exec_model
-    codex_security_model: 'gpt-6-astra', // codex in place of security_model
+    codex_exec_model: 'gpt-6.1-sol', // the model of codex_implement_model and codex_verify_model, unless a rig sets those
+    codex_judge_model: 'gpt-6-astra', // the model of codex_plan_model and codex_review_model, unless a rig sets those
     codex_share: '0.3', // share of runs whose implement and verify use codex; 0 turns it off
-    codex_security_share: '0.5', // share of runs whose security uses codex; 0 turns it off
-    codex_judge_model: 'gpt-6-astra', // codex in place of judge_model at plan and review
     codex_judge_share: '0', // share of runs whose plan and review use codex; off until a rig sets it
+    codex_security_share: '0.5', // share of runs whose security uses codex; 0 turns it off
+    codex_triage_model: 'gpt-6-luna', // codex at triage
+    codex_triage_effort: 'low', // reasoning effort of codex at triage
+    codex_triage_share: '0.4', // share of runs whose triage uses codex (after the grok split); 0 turns it off
+    codex_plan_model: '{codex_judge_model}', // codex at plan
+    codex_plan_effort: 'high', // reasoning effort of codex at plan
+    codex_baseline_model: 'gpt-6.1-terra', // codex at baseline
+    codex_baseline_effort: 'medium', // reasoning effort of codex at baseline
+    codex_baseline_share: '0.3', // share of runs whose baseline uses codex; 0 turns it off
+    codex_characterize_model: 'gpt-6.1-terra', // codex at characterize
+    codex_characterize_effort: 'medium', // reasoning effort of codex at characterize
+    codex_characterize_share: '0.3', // share of runs whose characterize uses codex; 0 turns it off
+    codex_implement_model: '{codex_exec_model}', // codex at implement
+    codex_implement_effort: 'medium', // reasoning effort of codex at implement
+    codex_verify_model: '{codex_exec_model}', // codex at verify
+    codex_verify_effort: 'low', // reasoning effort of codex at verify
+    codex_review_model: '{codex_judge_model}', // codex at review
+    codex_review_effort: 'high', // reasoning effort of codex at review
+    codex_security_model: 'gpt-6-astra', // codex at security
+    codex_security_effort: 'high', // reasoning effort of codex at security
+    codex_quick_model: 'gpt-6.1-sol', // codex at quick
+    codex_quick_effort: 'low', // reasoning effort of codex at quick
+    codex_quick_share: '0.4', // share of runs whose quick uses codex (after the grok split); 0 turns it off
     fast_check: '', // a rig's fast check command (format, lint, build-file lists); empty turns it off
     cursor: 'cursor-agent --force --trust', // the cursor launcher (the deny hook stays on); no station splits to it yet
     cursor_plan_model: 'grok-4.7-low', // cursor at plan
@@ -150,7 +172,7 @@ export default {
   nodes: {
     // ── intake ───────────────────────────────────────────────────────────────
     triage: {
-      split: grok('triage'),
+      split: [grok('triage'), codexAt('triage')],
       // parked on a PR, plain mail waits for the PR watch or the timer (claude-factory-ey90)
       holdMail: true,
       timeoutMin: 20,
@@ -184,7 +206,7 @@ Summary: the goal restated as a testable outcome, its constraints, and the files
     plan: {
       skills: ['asd-ste100', 'egm'],
       agent: PLAN,
-      split: { agent: CODEX_JUDGE, share: 'codex_judge_share' },
+      split: codexAt('plan', 'codex_judge_share'),
       timeoutMin: 45,
       prompt: `Write the spec every later station works from: your summary is that spec. Cover:
 1. Acceptance criteria, each one testable and numbered AC1, AC2, ... so verify and review can cite them. Each AC names the test or command that proves it, and its negative rows (the inputs that must stay denied or allowed). For a guard, validator or parser, define the class as one fail-closed rule, not as a list of forms, and name the forms that are out of scope. When the change adds a guard that parses another tool's input (a shell command, a Kustomize tree, a config file), specify a closed grammar: list each field and path form the guard reads, reject every other form before any render or run, and test that a rejection makes zero downstream calls.
@@ -201,6 +223,7 @@ When the plan cannot go on without a person's decision, put the question on the 
       next: { ready: 'implement', decision: { to: 'done', defer: { station: 'plan' } } },
     },
     baseline: {
+      split: codexAt('baseline'),
       runner: LAPTOP,
       timeoutMin: 60,
       prompt: `Measure before anyone optimizes. Build a reproducible measurement and commit it (a benchmark, a load script, a profiling recipe or a cost query):
@@ -210,6 +233,7 @@ Report measured with the baseline numbers, the command that reproduces them, the
       next: { measured: 'plan', 'nothing-to-gain': 'done' },
     },
     characterize: {
+      split: codexAt('characterize'),
       timeoutMin: 60,
       prompt: `Pin today's behavior before anything moves. Write characterization tests around the code to refactor (inputs, outputs, errors, side effects, the public API), make them pass against the code as it is, and commit them. Change no production code.
 Report pinned with the invariants the refactor must keep and the area's coverage.`,
@@ -219,7 +243,7 @@ Report pinned with the invariants the refactor must keep and the area's coverage
     // ── the inner loop: build it, prove it, review it ────────────────────────
     implement: {
       skills: ['asd-ste100'],
-      split: [grok('implement'), { agent: CODEX_EXEC, share: 'codex_share' }],
+      split: [grok('implement'), codexAt('implement', 'codex_share')],
       timeoutMin: 120,
       prompt: `Build what the plan in the journal specifies, one task at a time in dependency order (see Tracking), closing each with its commit. Each attempt must end with a pushed commit. Commit and push each finished task (its test and its fix) before you start the next. Never delete a test you wrote to fit a plan's 'one commit' rule: commit it as WIP and say so. Test first: write the failing test, watch it fail, make it pass. Failures and review findings come back as new tasks and in your inbox: fix every one and say how. A finding names an instance: grep for its siblings and fix the class, not the one line. ${siblingSites}
 Before you report ready, run this self-check at the final HEAD, after your last commit. Do what review would:
@@ -247,7 +271,7 @@ For a refactor: no behavior change; the characterization tests stay untouched an
       },
     },
     verify: {
-      split: [grok('verify'), { agent: CODEX_EXEC, share: 'codex_share' }],
+      split: [grok('verify'), codexAt('verify', 'codex_share')],
       timeoutMin: 75,
       prompt: `Check the branch independently; trust no earlier report and change no code.
 If your brief has a Fast check section, run its command first. If it exits non-zero, run nothing else: report red at once with the command, its exit code and at most 20 lines of its output, record one bug task, and end with the line \`Failing: fast check\`. A command that cannot start on this worker follows the local tool rule below.
@@ -262,7 +286,7 @@ ${notBlocked('green')}`,
     review: {
       skills: ['asd-ste100', 'code-review'],
       agent: OPUS,
-      split: { agent: CODEX_JUDGE, share: 'codex_judge_share' },
+      split: codexAt('review', 'codex_judge_share'),
       timeoutMin: 45,
       rounds: 3, // a fourth round of changes is held for the manager: the loop is not converging
       onRounds: 'plan', // a capped run re-plans with its findings instead of parking for a hand goto
@@ -277,7 +301,7 @@ Report approve; changes with a numbered list of everything to fix, found in one 
     security: {
       skills: ['asd-ste100'],
       agent: FABLE,
-      split: { agent: CODEX_SECURITY, share: 'codex_security_share' },
+      split: codexAt('security', 'codex_security_share'),
       timeoutMin: 45,
       rounds: 3, // security's own cap (review's does not count it): a fourth round of changes re-plans
       onRounds: 'plan', // a capped run re-plans with its findings instead of parking for a hand goto
@@ -300,7 +324,7 @@ Report approve, or changes with each finding, its severity and its fix, each als
     // ── the small route: a tiny, docs-only or test-only change skips plan and a separate review ──────
     quick: {
       skills: ['asd-ste100'],
-      split: grok('quick'),
+      split: [grok('quick'), codexAt('quick')],
       timeoutMin: 60,
       prompt: `Build what triage's summary in the journal says, with no plan. Test first when code changes. ${siblingSites} Merge origin/{base_branch}, run the formatter and the tests of what you touched, commit.
 Fix every finding check sends back and say how, closing each task check filed, with its commit (see Tracking), as implement does for review's findings.

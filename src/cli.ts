@@ -2889,14 +2889,21 @@ function resumeFile(run: Run, node: string, c: Ctx) {
   writeFileSync(file, resumeNote(run, node, c))
   return file
 }
-/** a factory's params: its defaults, under FACTORY_<NAME>, under the rig's own --param */
-export const paramsOf = (def: Pick<Factory, 'params'>, rig?: Pick<Rig, 'params'>, env = process.env) =>
-  Object.fromEntries(
+/**
+ * a factory's params: its defaults, under FACTORY_<NAME>, under the rig's own --param. A value that is only `{other}`
+ * takes the value of that param (one step), so codex_implement_model follows codex_exec_model until a rig sets its own.
+ */
+export const paramsOf = (def: Pick<Factory, 'params'>, rig?: Pick<Rig, 'params'>, env = process.env) => {
+  const own: Record<string, string> = Object.fromEntries(
     Object.entries(def.params ?? {}).map(([k, v]) => [
       k,
       rig?.params?.[k] ?? (env[`FACTORY_${k.toUpperCase()}`]?.trim() || v),
     ]),
   )
+  return Object.fromEntries(
+    Object.entries(own).map(([k, v]) => [k, own[/^\{([a-z][a-z0-9_]*)\}$/.exec(v)?.[1] ?? ''] ?? v]),
+  )
+}
 /**
  * Does this run take the split agent? The pick hashes the run id and the share's name, so one run picks the
  * same way every time, and two share params pick on their own. A bad share value (not a number from 0 to 1) is 0.

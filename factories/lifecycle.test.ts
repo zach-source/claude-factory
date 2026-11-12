@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { createActor } from 'xstate'
 import { join } from 'node:path'
 import { modelOf } from '../src/ax'
-import { loadFactory, ruleLines, workerSkills } from '../src/cli'
+import { loadFactory, paramsOf, ruleLines, workerSkills } from '../src/cli'
 import {
   compile,
   fill,
@@ -776,14 +776,54 @@ test('implement, verify, security, plan and review split to codex, and the exec 
     .flatMap(([id, n]) => splitsOf(n).map(sp => [id, sp.share, sp.agent]))
   expect(split).toEqual([
     ['triage', 'grok_triage_share', "{grok} -m '{grok_triage_model}'"],
-    ['plan', 'codex_judge_share', "{codex} -m '{codex_judge_model}'"],
+    [
+      'triage',
+      'codex_triage_share',
+      "{codex} -m '{codex_triage_model}' -c model_reasoning_effort='{codex_triage_effort}'",
+    ],
+    [
+      'plan',
+      'codex_judge_share',
+      "{codex} -m '{codex_plan_model}' -c model_reasoning_effort='{codex_plan_effort}'",
+    ],
+    [
+      'baseline',
+      'codex_baseline_share',
+      "{codex} -m '{codex_baseline_model}' -c model_reasoning_effort='{codex_baseline_effort}'",
+    ],
+    [
+      'characterize',
+      'codex_characterize_share',
+      "{codex} -m '{codex_characterize_model}' -c model_reasoning_effort='{codex_characterize_effort}'",
+    ],
     ['implement', 'grok_implement_share', "{grok} -m '{grok_implement_model}'"],
-    ['implement', 'codex_share', "{codex} -m '{codex_exec_model}'"],
+    [
+      'implement',
+      'codex_share',
+      "{codex} -m '{codex_implement_model}' -c model_reasoning_effort='{codex_implement_effort}'",
+    ],
     ['verify', 'grok_verify_share', "{grok} -m '{grok_verify_model}'"],
-    ['verify', 'codex_share', "{codex} -m '{codex_exec_model}'"],
-    ['review', 'codex_judge_share', "{codex} -m '{codex_judge_model}'"],
-    ['security', 'codex_security_share', "{codex} -m '{codex_security_model}'"],
+    [
+      'verify',
+      'codex_share',
+      "{codex} -m '{codex_verify_model}' -c model_reasoning_effort='{codex_verify_effort}'",
+    ],
+    [
+      'review',
+      'codex_judge_share',
+      "{codex} -m '{codex_review_model}' -c model_reasoning_effort='{codex_review_effort}'",
+    ],
+    [
+      'security',
+      'codex_security_share',
+      "{codex} -m '{codex_security_model}' -c model_reasoning_effort='{codex_security_effort}'",
+    ],
     ['quick', 'grok_quick_share', "{grok} -m '{grok_quick_model}'"],
+    [
+      'quick',
+      'codex_quick_share',
+      "{codex} -m '{codex_quick_model}' -c model_reasoning_effort='{codex_quick_effort}'",
+    ],
   ])
   for (const id of ['check', 'incident']) expect(lc.nodes[id]!.split).toBeUndefined()
   expect(lc.params!.codex_share).toBe('0.3')
@@ -813,7 +853,9 @@ test('every station model id of every factory resolves to a known id', async () 
     'claude-fable-5-2',
     'claude-fable-5-2[1m]',
     'gpt-6.1-sol',
+    'gpt-6.1-terra',
     'gpt-6-astra',
+    'gpt-6-luna',
     'grok-4.7',
   ]
   const rework = await loadFactory(join(import.meta.dir, 'rework.yaml'))
@@ -821,13 +863,13 @@ test('every station model id of every factory resolves to a known id', async () 
     for (const node of Object.values(def.nodes)) {
       for (const cmd of [node.agent ?? def.agent, ...splitsOf(node).map(sp => sp.agent)]) {
         if (!cmd) continue
-        expect(known).toContain(modelOf(fill(cmd, def.params ?? {}))!)
+        expect(known).toContain(modelOf(fill(cmd, paramsOf(def)))!)
       }
     }
   }
-  expect(modelOf(fill(splitsOf(lc.nodes.implement!)[1]!.agent, lc.params!))).toBe('gpt-6.1-sol')
+  expect(modelOf(fill(splitsOf(lc.nodes.implement!)[1]!.agent, paramsOf(lc)))).toBe('gpt-6.1-sol')
   expect(modelOf(fill(splitsOf(lc.nodes.security!)[0]!.agent, lc.params!))).toBe('gpt-6-astra')
-  expect(modelOf(fill(splitsOf(lc.nodes.review!)[0]!.agent, lc.params!))).toBe('gpt-6-astra')
+  expect(modelOf(fill(splitsOf(lc.nodes.review!)[0]!.agent, paramsOf(lc)))).toBe('gpt-6-astra')
 })
 
 test('claude-factory-0gww.4: review, security and check approve or request changes as the reviewer identity on the exact head, with a comment fallback', () => {
