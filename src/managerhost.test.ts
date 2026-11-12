@@ -9,6 +9,7 @@ import {
   lastSession,
   managerLine,
   restoreStep,
+  sessionLoop,
   warmMemory,
   withResume,
 } from './managerhost'
@@ -156,4 +157,33 @@ test('f4bwc: warmMemory builds the vector cache once when it is missing and logs
   rmSync(join(dir, 'memory', '.index.json'))
   warmMemory(dir, log, () => 1)
   expect(lines.at(-1)).toContain('failed')
+})
+
+test('gogxc.17: the session loop posts health each beat, restarts what is down, and touches no home', async () => {
+  const calls: string[] = []
+  const rows: { action: string; panes: number }[] = []
+  const panes = [2, 0, -1, 1]
+  let beat = 0
+  await sessionLoop({
+    bringUp: async () => void calls.push('up'),
+    startManager: () => void calls.push('manager'),
+    panes: () => panes[beat++]!,
+    health: r => rows.push(r),
+    sleep: async () => {},
+    log: m => calls.push(`log ${m}`),
+    stop: () => beat >= panes.length,
+  })
+  expect(rows.map(r => [r.action, r.panes])).toEqual([
+    ['none', 2],
+    ['start-manager', 0],
+    ['restart-all', 0],
+    ['none', 1],
+  ])
+  expect(calls).toEqual([
+    'up',
+    'log start-manager: herdr has no pane',
+    'manager',
+    'log restart-all: herdr is down',
+    'up',
+  ])
 })
