@@ -211,3 +211,45 @@ describe('factory cert person', () => {
     expect(existsSync(dir)).toBe(false)
   })
 })
+
+describe('port-call: the internal verb of childPort', () => {
+  const call = (home: string, name: string, file: string | undefined, cwd = home) =>
+    Bun.spawnSync([process.execPath, cli, 'port-call', name, ...(file ? ['--text-file', file] : [])], {
+      env: cleanEnv(home),
+      cwd,
+    })
+  const argsFile = (home: string, text: string) => {
+    mkdirSync(join(home, 'text'), { recursive: true })
+    const f = join(home, 'text', 'args.md')
+    writeFileSync(f, text)
+    return f
+  }
+  const lastLine = (r: { stdout: Buffer }) => r.stdout.toString().trim().split('\n').at(-1)!
+  test('planShowText answers one JSON line', () => {
+    const home = tmp()
+    const r = call(home, 'planShowText', argsFile(home, '[]'))
+    expect(r.exitCode).toBe(0)
+    const v = JSON.parse(lastLine(r))
+    expect(v.lines).toEqual([])
+    expect(v.value).toStartWith('no plan.json yet')
+  })
+  test('refreshMerges takes an args file over 100 KiB', () => {
+    const home = tmp()
+    const r = call(home, 'refreshMerges', argsFile(home, '[[]]' + ' '.repeat(200 * 1024)))
+    expect(r.exitCode).toBe(0)
+    expect(JSON.parse(lastLine(r)).value).toEqual([])
+  })
+  test('a name that is not a read, a missing file flag and a file outside the allowed dirs all fail', () => {
+    const home = tmp()
+    const f = argsFile(home, '[]')
+    const denied = call(home, 'decide', f)
+    expect(denied.exitCode).not.toBe(0)
+    expect(denied.stderr.toString()).toContain('port-call:')
+    const bare = call(home, 'planShowText', undefined)
+    expect(bare.exitCode).not.toBe(0)
+    expect(bare.stderr.toString()).toContain('usage: factory port-call')
+    const outside = join(mkdtempSync(join(tmpdir(), 'sapi-out-')), 'a.md')
+    writeFileSync(outside, '[]')
+    expect(call(home, 'planShowText', outside).exitCode).not.toBe(0)
+  })
+})
