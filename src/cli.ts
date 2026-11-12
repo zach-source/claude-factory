@@ -7405,7 +7405,7 @@ function removeRun(id: string): Run {
  *
  * It also removes the `<task>.memory.tgz` files of earlier tasks of any run, when they are 1 h old or more (claude-factory-sris).
  *
- * `--dry-run` prints the runs it would reap. It deletes nothing (claude-factory-503.1, claude-factory-lt4u).
+ * `--dry-run` prints the runs it would reap and the `would remove <id>/<name>` lines. It deletes nothing (claude-factory-503.1, claude-factory-lt4u).
  */
 function gcPass(days: number, dryRun: boolean, print: Print, error: Print) {
   const now = Date.now()
@@ -13744,7 +13744,8 @@ const usage = `factory — herdr software factories on xstate
   gc [--days N] [--dry-run]          done or aborted runs older than N days (default 7, FACTORY_GC_DAYS):
                                      remove the whole run as rm does (worktree, state; the branch stays,
                                      its record goes to metrics.jsonl; refusals go to gc.log) and a dead
-                                     launch script; --dry-run prints eligible runs without removal and can write gc.stamp (each tick
+                                     launch script; any run's memory.tgz of an earlier task, 1 h old or more;
+                                     --dry-run prints eligible runs without removal and can write gc.stamp (each tick
                                      starts one, at most hourly, FACTORY_GC_MS; FACTORY_GC=0 turns it off)
   gc --worktrees [--dry-run] [--rig NAME]   finished runs: drop a worktree, and its factory/* branch
                                      once it is merged, or its PR is closed and its bead is closed;
