@@ -3596,6 +3596,14 @@ test('launch gives codex and pi no Claude-only plugin dir from FACTORY_WORKER_PL
     join(cfg, 'plugins', 'installed_plugins.json'),
     JSON.stringify({ plugins: { 'egm@m': [{ installPath: egm }] } }),
   )
+  // a fake codex answers `features list`, so the test needs no codex binary (CI has none)
+  const bin = join(home, 'bin')
+  mkdirSync(bin)
+  writeFileSync(
+    join(bin, 'codex'),
+    "#!/bin/sh\nprintf 'hooks stable true\\n'\nfor x in unified_exec shell_snapshot multi_agent code_mode; do printf '%s stable false\\n' \"$x\"; done\n",
+    { mode: 0o755 },
+  )
   const script = `
     import { launch } from ${JSON.stringify(join(import.meta.dir, 'cli'))}
     const run = { id: 'r', ws: 'w', worktree: ${JSON.stringify(home)}, repo: ${JSON.stringify(home)}, branch: 'b' }
@@ -3611,8 +3619,10 @@ test('launch gives codex and pi no Claude-only plugin dir from FACTORY_WORKER_PL
       FACTORY_HOME: home,
       CLAUDE_CONFIG_DIR: cfg,
       FACTORY_WORKER_PLUGINS: 'egm',
+      PATH: `${bin}:${process.env.PATH}`,
     },
   })
+  expect(p.exitCode, p.stderr.toString()).toBe(0)
   const out = JSON.parse(p.stdout.toString()) as Record<string, string>
   expect(out.pi).not.toContain(egm)
   expect(out.codex).toContain('CODEX_HOME')
