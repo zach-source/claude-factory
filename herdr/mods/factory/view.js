@@ -278,7 +278,7 @@ export const GET_CACHE_MS = 3_000
  */
 export const snapshotWords = (view, maxAge) => ['snapshot', '--views', view, '--max-age', String(maxAge)]
 /** the board is at most this old (ms) on each beat; the first beat takes any cached board, so a screen opens at once */
-export const BOARD_MAX_AGE = 4_000
+export const BOARD_MAX_AGE = 6_000
 export const FIRST_MAX_AGE = 3_600_000
 /** the decisions are refreshed this often (ms) */
 export const DECISIONS_MS = 60_000
