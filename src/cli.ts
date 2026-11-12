@@ -6858,7 +6858,8 @@ function codexPassHome(
     return { refused: 'version' }
   }
   const auth = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'auth.json')
-  const protectedPaths = [homedir(), HOME, dir, auth].flatMap(pathForms)
+  // `dir` is inside HOME, so a root that covers HOME covers `dir` too
+  const protectedPaths =[homedir(), dir, auth].flatMap(pathForms)
   const tokenDirs = codexTokenDirs().flatMap(pathForms)
   const keys = new Map<string, 'read' | 'write'>()
   for (const [root, mode] of [
