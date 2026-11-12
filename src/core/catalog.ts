@@ -1037,6 +1037,60 @@ export const CATALOG: Op[] = makeCatalog([
             new OpError(422, 'the sweep name must be all: the pass runs the sweeps of every rig'),
           ),
   } as Op,
+  bridge(
+    {
+      name: 'memory.search',
+      summary: 'Search the memory notes.',
+      method: 'GET',
+      path: '/v1/memory/search',
+      inputs: [
+        f('query', 'text', true, 'the words to search for'),
+        f('rig', 'id', false),
+        f('from', 'text', false, 'the run and station that search, run/station'),
+        f('noCore', 'flag', false, 'leave out CORE.md'),
+      ],
+    },
+    i => [
+      'memory',
+      'search',
+      ...(i.rig ? ['--rig', i.rig as string] : []),
+      ...(i.from ? ['--from', i.from as string] : []),
+      ...(i.noCore ? ['--no-core'] : []),
+      i.query as string,
+    ],
+  ),
+  bridge(
+    {
+      name: 'memory.add',
+      summary: 'Add a note to the memory. The CLI checks the note.',
+      method: 'POST',
+      path: '/v1/memory',
+      inputs: [
+        // ponytail: the kinds repeat memory.NOTE_KINDS; the CLI gate is the check that counts
+        f('kind', 'enum', true, 'the note kind', ['fact', 'rule', 'recipe']),
+        f('summary', 'text', true, 'the one line summary'),
+        f('body', 'note', false, 'the note body'),
+        f('rig', 'id', false),
+        f('from', 'text', false, 'the run and station that add, run/station'),
+        f('until', 'text', false, 'a bead, owner/repo#N or YYYY-MM-DD'),
+        f('supersedes', 'text', false, 'the path of the older note that this note replaces'),
+        f('anyway', 'flag', false, 'add it even when a like note exists'),
+      ],
+    },
+    i => [
+      'memory',
+      'add',
+      '--kind',
+      i.kind as string,
+      ...(i.rig ? ['--rig', i.rig as string] : []),
+      ...(i.from ? ['--from', i.from as string] : []),
+      ...(i.until ? ['--until', i.until as string] : []),
+      ...(i.supersedes ? ['--supersedes', i.supersedes as string] : []),
+      ...(i.anyway ? ['--anyway'] : []),
+      i.summary as string,
+      ...(i.body ? [i.body as string] : []),
+    ],
+  ),
   local(
     {
       name: 'decisions.answer',

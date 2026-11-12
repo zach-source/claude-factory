@@ -376,6 +376,26 @@ describe('DELETE and PATCH routes', () => {
     expect((await post(t.h, '/v1/sweeps/x', {})).status).toBe(422)
     expect(t.calls).toEqual([{ argv: ['sweep'] }])
   })
+  test('GET /v1/memory/search runs memory search with the query as one word', async () => {
+    const t = setup()
+    const q = 'query=how%20to%20merge&rig=acme&from=r1%2Fplan&noCore=1'
+    expect((await get(t.h, `/v1/memory/search?${q}`)).status).toBe(200)
+    expect(t.calls).toEqual([
+      { argv: ['memory', 'search', '--rig', 'acme', '--from', 'r1/plan', '--no-core', 'how to merge'] },
+    ])
+  })
+  test('POST /v1/memory runs memory add; a kind that is not a kind gives 400 and no call', async () => {
+    const t = setup()
+    const r = await post(t.h, '/v1/memory', {
+      kind: 'rule',
+      summary: 'use bun',
+      body: 'not npm',
+      anyway: true,
+    })
+    expect(r.status).toBe(200)
+    expect((await post(t.h, '/v1/memory', { kind: 'joke', summary: 's' })).status).toBe(400)
+    expect(t.calls).toEqual([{ argv: ['memory', 'add', '--kind', 'rule', '--anyway', 'use bun', 'not npm'] }])
+  })
   test('POST on the DELETE path gives 404', async () => {
     expect((await post(setup().h, '/v1/runs/r1', {})).status).toBe(404)
   })

@@ -61,6 +61,8 @@ const NAMES = [
   'manager.log',
   'manager.say',
   'manager.show',
+  'memory.add',
+  'memory.search',
   'metrics.show',
   'plan.show',
   'prs.show',

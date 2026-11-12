@@ -171,10 +171,10 @@ describe('CATALOG', () => {
     ])
     expect(CATALOG.filter(o => o.route.path === '/v1/gc')).toHaveLength(1)
   })
-  test('has 44 operations: 23 GET, 19 POST, 1 DELETE and 1 PATCH', () => {
-    expect(CATALOG.length).toBe(44)
-    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(23)
-    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(19)
+  test('has 46 operations: 24 GET, 20 POST, 1 DELETE and 1 PATCH', () => {
+    expect(CATALOG.length).toBe(46)
+    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(24)
+    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(20)
     expect(CATALOG.filter(o => o.route.method === 'DELETE').map(o => o.name)).toEqual(['runs.remove'])
     expect(CATALOG.filter(o => o.route.method === 'PATCH').map(o => o.name)).toEqual(['rigs.set'])
     expect(CATALOG.filter(o => o.route.method === 'POST' && !o.mutates).map(o => o.name)).toEqual([
@@ -268,6 +268,8 @@ describe('CATALOG', () => {
       'manager.log POST /v1/manager/log/:kind',
       'manager.say POST /v1/manager/say',
       'manager.show GET /v1/manager',
+      'memory.add POST /v1/memory',
+      'memory.search GET /v1/memory/search',
       'metrics.show GET /v1/metrics',
       'plan.show GET /v1/plan',
       'prs.show GET /v1/prs',
