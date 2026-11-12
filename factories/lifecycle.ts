@@ -286,7 +286,7 @@ ${notBlocked('green')}`,
     review: {
       skills: ['asd-ste100', 'code-review'],
       agent: OPUS,
-      split: codexAt('plan', 'codex_judge_share'),
+      split: codexAt('review', 'codex_judge_share'),
       timeoutMin: 45,
       rounds: 3, // a fourth round of changes is held for the manager: the loop is not converging
       onRounds: 'plan', // a capped run re-plans with its findings instead of parking for a hand goto
