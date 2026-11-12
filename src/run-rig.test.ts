@@ -14,6 +14,8 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { rigPaths } from './security-route'
+
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
 const REPO = '/nonexistent/acme-widget'
 const tmp = mkdtempSync(join(realpathSync(tmpdir()), 'run-rig-'))
@@ -240,4 +242,16 @@ test('AC4: factory start writes the rig entry, or null when the repo is no rig',
   expect(start('acme-1')).toEqual(entry)
   writeFileSync(join(home, 'rigs.json'), '[]')
   expect(start('acme-2')).toBeNull()
+})
+
+test('a malformed sensitivePaths stays malformed, so the security route stays required', () => {
+  const bad = ['p1/', 5]
+  const rows: [unknown, unknown][] = [
+    [{ ...base, sensitivePaths: bad }, { ...base, sensitivePaths: ['p2/'] }],
+    [{ ...base, sensitivePaths: ['p1/'] }, { ...base, sensitivePaths: 'p2/' }],
+    [{ ...base, sensitivePaths: bad }, { ...base, sensitivePaths: bad }],
+  ]
+  for (const [snap, live] of rows) expect(rigPaths(run(snap, [live]).rig!.sensitivePaths)).toBeNull()
+  const ok = run({ ...base, sensitivePaths: ['p1/'] }, [{ ...base, sensitivePaths: ['p2/'] }])
+  expect(rigPaths(ok.rig!.sensitivePaths)).toEqual(['p1/', 'p2/'])
 })

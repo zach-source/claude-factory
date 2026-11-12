@@ -9730,6 +9730,9 @@ export function runRig(run: Pick<Run, 'id' | 'repo'>): Rig | undefined {
     if (all.length) out[k] = all
     else delete out[k]
   }
+  // a malformed sensitivePaths must stay malformed: the security route reads it as required
+  const bad = [base.sensitivePaths, live?.sensitivePaths].find(v => v !== undefined && rigPaths(v) === null)
+  if (bad !== undefined) out.sensitivePaths = bad as string[]
   delete out.mergeAuthority
   if (base.mergeAuthority === true && live?.mergeAuthority === true) out.mergeAuthority = true
   delete out.egress
