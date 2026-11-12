@@ -9,6 +9,7 @@ import { EXCLUDES, type BackupCfg } from './homebackup'
 import {
   clientHandler,
   clientListener,
+  childPort,
   cliRunner,
   workerHandler,
   workerKey,
@@ -389,7 +390,13 @@ export function main(
   const f = parseFlags(args)
   let s: ReturnType<typeof serve> | undefined
   const log = (l: string) => console.log(l)
-  const handle = clientHandler({ home, run: cliRunner(home), port, board: () => s?.board() ?? null, log })
+  const handle = clientHandler({
+    home,
+    run: cliRunner(home),
+    port: childPort(port, cliRunner(home, undefined, 50_000), log),
+    board: () => s?.board() ?? null,
+    log,
+  })
   const client = f.client && {
     port: f.client.port,
     cert: need(f.client.cert),

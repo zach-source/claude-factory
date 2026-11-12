@@ -410,6 +410,7 @@ const DENIED = [
   'wiki',
   'settings',
   'image',
+  'port-call',
 ]
 const switchCases = () => {
   const src = readFileSync(join(import.meta.dir, 'cli.ts'), 'utf8')

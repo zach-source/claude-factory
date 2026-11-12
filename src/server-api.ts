@@ -233,6 +233,95 @@ export function cliRunner(
   }
 }
 
+/** The Port reads that a GET op calls. `childPort` runs them in a child; `servePortCall` accepts only these names. */
+export const CHILD_READS = [
+  'show',
+  'screen',
+  'status',
+  'prs',
+  'backlog',
+  'decisionsList',
+  'planShowText',
+  'gateBriefFacts',
+  'records',
+  'refreshMerges',
+  'managerUsage',
+  'rigList',
+] as const
+type ChildRead = (typeof CHILD_READS)[number]
+/** The index of the `print` argument of a helper that prints lines. */
+const PRINT_AT: Partial<Record<ChildRead, number>> = { status: 1, rigList: 0 }
+const firstLine = (s: string, max: number) => (s.split('\n').find(l => l.trim()) ?? '').trim().slice(0, max)
+
+async function viaChild(
+  run: Runner,
+  log: (l: string) => void,
+  name: ChildRead,
+  args: unknown[],
+): Promise<unknown> {
+  // a function (the print callback) and undefined both travel as null
+  const r = await run(
+    ['port-call', name],
+    JSON.stringify(args.map(a => (typeof a === 'function' ? null : (a ?? null)))),
+  )
+  if (r.err.trim()) log(`port-call ${name}: ${firstLine(r.err, 300)}`)
+  if (r.timedOut) throw new Error(`port-call ${name}: timed out`)
+  if (r.code !== 0) throw new Error(`port-call ${name}: exit ${r.code}: ${firstLine(r.err, 200)}`)
+  let v: { value?: unknown; error?: unknown; lines?: unknown } | undefined
+  try {
+    const parsed: unknown = JSON.parse(
+      r.out
+        .split('\n')
+        .filter(l => l.trim())
+        .at(-1) ?? '',
+    )
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) v = parsed
+  } catch {}
+  if (!v) throw new Error(`port-call ${name}: bad answer`)
+  const at = PRINT_AT[name]
+  const print = at === undefined ? undefined : (args[at] as ((l: string) => void) | undefined)
+  if (Array.isArray(v.lines)) for (const l of v.lines) print?.(String(l))
+  if (typeof v.error === 'string') throw new Error(v.error)
+  return v.value
+}
+
+/** Give each read in CHILD_READS a version that runs in a child, so a blocking helper cannot stop the event loop. */
+export function childPort(port: Port, run: Runner, log: (l: string) => void = () => {}): Port {
+  const wrapped = {
+    ...port,
+    ...Object.fromEntries(CHILD_READS.map(n => [n, (...args: unknown[]) => viaChild(run, log, n, args)])),
+  } as Port
+  return wrapped
+}
+
+/** The child side of `childPort`: run one allowed read and answer one JSON line. Denies any other name or input shape. */
+export async function servePortCall(port: Port, name: string, text: string): Promise<string> {
+  if (!(CHILD_READS as readonly string[]).includes(name))
+    throw new Error(`port-call: ${JSON.stringify(name)} is not a read`)
+  let args: unknown
+  try {
+    args = JSON.parse(text)
+  } catch {
+    throw new Error('port-call: the args are not JSON')
+  }
+  if (!Array.isArray(args) || args.length > 3)
+    throw new Error('port-call: the args must be an array of 3 or fewer')
+  const lines: string[] = []
+  const a = args.map(x => (x === null ? undefined : x))
+  const at = PRINT_AT[name as ChildRead]
+  if (at !== undefined) a[at] = (l: string) => void lines.push(l)
+  try {
+    const value = await (port[name as ChildRead] as (...x: unknown[]) => unknown)(...a)
+    try {
+      return JSON.stringify({ value, lines })
+    } catch {
+      return JSON.stringify({ error: `port-call ${name}: the value is not JSON`, lines })
+    }
+  } catch (e) {
+    return JSON.stringify({ error: e instanceof Error ? e.message : String(e), lines })
+  }
+}
+
 const REFUSED_LOG_MS = 10_000
 const GET_MAX = 8
 const KEY = /^[A-Za-z0-9-]{8,128}$/

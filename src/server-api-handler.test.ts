@@ -15,7 +15,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Port } from './core/catalog'
-import { clientHandler, serveSocket, type RunResult } from './server-api'
+import { childPort, cliRunner, clientHandler, servePortCall, serveSocket, type RunResult } from './server-api'
 
 type Call = { argv: string[]; text?: string } | { port: string; args: unknown[] }
 let seq = 0
@@ -88,15 +88,21 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult>; imageFail?: bo
       print('{"ok":1}')
     ),
   }
-  const make = (over: Partial<Port> = {}, callTimeoutMs?: number) =>
-    clientHandler({
+  const make = (
+    over: Partial<Port> = {},
+    callTimeoutMs?: number,
+    wrap?: (p: Port, log: (l: string) => void) => Port,
+  ) => {
+    const merged = { ...port, ...over }
+    return clientHandler({
       home,
       run,
       callTimeoutMs,
-      port: { ...port, ...over },
+      port: wrap ? wrap(merged, l => logs.push(l)) : merged,
       board: () => (boardCalls++, o.board === undefined ? null : o.board),
       log: l => logs.push(l),
     })
+  }
   return { home, calls, files, logs, h: make(), make, env: () => lastEnv, boards: () => boardCalls }
 }
 type H = ReturnType<typeof setup>['h']
@@ -230,6 +236,17 @@ describe('read routes', () => {
     const t = setup()
     expect((await get(t.h, '/v1/metrics?rig=acme&since=7d&json=1&tokens=1')).status).toBe(200)
     expect(t.calls).toEqual([p('records'), p('refreshMerges', []), p('managerUsage', 'number')])
+  })
+  test('GET /v1/decisions and /v1/plan wait for a Promise from the port', async () => {
+    const t = setup()
+    const h = t.make({
+      decisionsList: () => Promise.resolve({ ok: 1 }),
+      planShowText: () => Promise.resolve('p'),
+    })
+    const d = await get(h, '/v1/decisions')
+    expect(d.status).toBe(200)
+    expect(await d.text()).toBe('{"ok":1}\n')
+    expect(await (await get(h, '/v1/plan')).text()).toBe('p\n')
   })
   test('GET /v1/lease calls no port function and answers the lease line', async () => {
     const t = setup()
@@ -1298,4 +1315,157 @@ describe('serveSocket idle timer after the reply', () => {
       srv.close()
     }
   })
+})
+
+describe('childPort: the reads run in a child', () => {
+  const loopRun =
+    (p: Port) =>
+    async (argv: string[], text?: string): Promise<RunResult> => ({
+      code: 0,
+      out: (await servePortCall(p, argv[1]!, text!)) + '\n',
+      err: '',
+    })
+  const viaLoop = (p: Port, log: (l: string) => void) => childPort(p, loopRun(p), log)
+  const viaRun = (r: RunResult) => (p: Port, log: (l: string) => void) => childPort(p, async () => r, log)
+  const refusal = async (r: Response) => JSON.parse(await r.text()).refused as string
+  const paths = [
+    '/v1/runs/r1',
+    '/v1/status',
+    '/v1/status?run=r1',
+    '/v1/prs',
+    '/v1/backlog',
+    '/v1/decisions',
+    '/v1/rigs',
+    '/v1/plan',
+    '/v1/runs/r1/brief',
+    '/v1/metrics',
+    '/v1/metrics?rig=acme&since=7d&json=1&tokens=1',
+    '/v1/manager/brief',
+    '/v1/snapshot?views=board,decisions',
+  ]
+  for (const path of paths)
+    test('GET ' + path + ' answers the same through a child', async () => {
+      const board = { manager: [{ m: 1 }] }
+      const direct = setup({ board })
+      const d = await get(direct.h, path)
+      const viaC = setup({ board })
+      const c = await get(viaC.make({}, undefined, viaLoop), path)
+      expect(c.status).toBe(d.status)
+      const name = (t: { home: string }) => t.home.split('/').at(-1)!
+      expect((await c.text()).replaceAll(name(viaC), 'H')).toBe(
+        (await d.text()).replaceAll(name(direct), 'H'),
+      )
+      expect(viaC.calls).toEqual(direct.calls)
+    })
+  test('a print helper keeps its lines, and its lines before an error', async () => {
+    const over: Partial<Port> = {
+      status: async (_id, print) => (print('a'), print('b'), print('c')),
+      rigList: async print => (print('x'), print('y')),
+    }
+    for (const [path, body] of [
+      ['/v1/status', 'a\nb\nc\n'],
+      ['/v1/rigs', 'x\ny\n'],
+    ] as const) {
+      const t = setup()
+      expect(await (await get(t.make(over, undefined, viaLoop), path)).text()).toBe(body)
+    }
+    const bad: Partial<Port> = {
+      status: async (_id, print) => {
+        print('a')
+        throw new Error('e')
+      },
+    }
+    const d = await get(setup().make(bad), '/v1/status')
+    const c = await get(setup().make(bad, undefined, viaLoop), '/v1/status')
+    expect(c.status).toBe(422)
+    expect(await refusal(c)).toBe(await refusal(d))
+  })
+  test('a helper error gives the same refusal as the direct port', async () => {
+    const over: Partial<Port> = {
+      decisionsList: () => {
+        throw new Error('bd down')
+      },
+    }
+    const d = await get(setup().make(over), '/v1/decisions')
+    const c = await get(setup().make(over, undefined, viaLoop), '/v1/decisions')
+    expect(c.status).toBe(422)
+    expect(await refusal(c)).toBe('factory: bd down\n')
+    expect(await refusal(d)).toBe('factory: bd down\n')
+  })
+  test('a child that exits non-zero is refused and its stderr is logged', async () => {
+    const t = setup()
+    const r = await get(t.make({}, undefined, viaRun({ code: 1, out: '', err: 'boom\n' })), '/v1/decisions')
+    expect(r.status).toBe(422)
+    expect(await refusal(r)).toContain('port-call decisionsList: exit 1: boom')
+    expect(t.logs).toContain('port-call decisionsList: boom')
+  })
+  test('a child that times out is refused', async () => {
+    const t = setup()
+    const run = viaRun({ code: 143, out: '', err: '', timedOut: true })
+    const r = await get(t.make({}, undefined, run), '/v1/decisions')
+    expect(r.status).toBe(422)
+    expect(await refusal(r)).toContain('port-call decisionsList: timed out')
+  })
+  for (const out of ['not json\n', '[1]\n', 'null\n', '']) {
+    test('a child answer ' + JSON.stringify(out) + ' is a bad answer', async () => {
+      const r = await get(setup().make({}, undefined, viaRun({ code: 0, out, err: '' })), '/v1/decisions')
+      expect(r.status).toBe(422)
+      expect(await refusal(r)).toContain('port-call decisionsList: bad answer')
+    })
+  }
+  test('servePortCall denies a name or an input before it calls a helper', async () => {
+    const calls: string[] = []
+    const spy = new Proxy({} as Port, {
+      get:
+        (_o, k) =>
+        (...a: unknown[]) =>
+          void calls.push(String(k) + a.length),
+    })
+    for (const name of [
+      'decide',
+      'mail',
+      'abort',
+      'flowData',
+      'say',
+      'constructor',
+      '__proto__',
+      'toString',
+      '',
+    ])
+      await expect(servePortCall(spy, name, '[]')).rejects.toThrow('port-call:')
+    for (const text of ['', '{}', '"x"', 'not json', '[1,2,3,4]'])
+      await expect(servePortCall(spy, 'planShowText', text)).rejects.toThrow('port-call:')
+    expect(calls).toEqual([])
+  })
+  test('servePortCall passes allowed args and turns null into undefined', async () => {
+    const got: unknown[][] = []
+    const port = {
+      planShowText: (...a: unknown[]) => (got.push(a), 'p'),
+      managerUsage: (...a: unknown[]) => (got.push(a), []),
+      show: (...a: unknown[]) => (got.push(a), { n: 1n }),
+    } as unknown as Port
+    expect(await servePortCall(port, 'planShowText', '[]')).toBe('{"value":"p","lines":[]}')
+    await servePortCall(port, 'managerUsage', '[5]')
+    expect(await servePortCall(port, 'show', '[null]')).toBe(
+      '{"error":"port-call show: the value is not JSON","lines":[]}',
+    )
+    expect(got).toEqual([[], [5], [undefined]])
+  })
+  test('a read helper that blocks 3 s in its child does not block a parallel GET', async () => {
+    const t = setup()
+    const fixture = join(t.home, 'fixture.ts')
+    writeFileSync(fixture, 'Bun.sleepSync(3000); console.log(JSON.stringify({ value: { ok: 1 } }))')
+    const h = t.make({ decisionsList: () => (Bun.sleepSync(3000), { ok: 1 }) }, undefined, (p, log) =>
+      childPort(p, cliRunner(t.home, fixture), log),
+    )
+    const t0 = performance.now()
+    const slow = get(h, '/v1/decisions')
+    const fast = await get(h, '/v1/catalog')
+    expect(fast.status).toBe(200)
+    expect(performance.now() - t0).toBeLessThan(1000)
+    const s = await slow
+    expect(s.status).toBe(200)
+    expect(await s.text()).toBe('{"ok":1}\n')
+    expect(performance.now() - t0).toBeGreaterThanOrEqual(2900)
+  }, 15000)
 })

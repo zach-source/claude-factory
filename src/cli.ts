@@ -256,7 +256,7 @@ import {
 } from './axrepos'
 import * as broker from './broker'
 import * as server from './server'
-import { managerCert, personCerts } from './server-api'
+import { managerCert, personCerts, servePortCall } from './server-api'
 import { AUTO_LABEL, autoPick, autoQueueOf, recentPicks, type AutoQueue } from './autoqueue'
 import * as pkggate from './pkggate'
 import { startUi, withBeads } from './ui'
@@ -602,8 +602,8 @@ function durable(path: string, text: string, flag: 'a') {
     closeSync(fd)
   }
 }
-export function writeJson(path: string, value: unknown) {
-  writeFresh(path, JSON.stringify(value, null, 2)) // atomic: a reader never sees half a snapshot
+export function writeJson(path: string, value: unknown, tmp?: string) {
+  writeFresh(path, JSON.stringify(value, null, 2), tmp) // atomic: a reader never sees half a snapshot
 }
 /** `factory manager --ax [args]`: run the manager as the long-lived AX task (claude-factory-192.2) */
 async function launchAxManager(args: string[]) {
@@ -985,7 +985,7 @@ function readTextFile(flag: string, path: string): string {
     return fail(
       `${flag} ${path} is ${size} bytes; the cap is ${worker.OUTBOX_MAX_BYTES} bytes (100 KiB): shorten it`,
     )
-  let text: string
+  let text = ''
   try {
     text = readFileSync(path, 'utf8')
   } catch {
@@ -13085,7 +13085,7 @@ async function prs() {
   for (const [id, file] of files) {
     if (sameFile(before.get(id) ?? { version: 1, prs: [] }, file)) continue // wyc.7: unchanged, skip the write
     try {
-      writeJson(prsFile(id), file)
+      writeJson(prsFile(id), file, `${prsFile(id)}.${process.pid}.tmp`) // pid name: parallel port-call children
     } catch {
       // the run was removed mid-pass: nothing to write back to
     }
@@ -13135,7 +13135,7 @@ function decisionsList() {
   // read again: a propose may have landed while the bd calls ran
   const fresh = proposals()
   for (const k of stale) delete fresh[k]
-  writeJson(decisionsFile(), fresh)
+  writeJson(decisionsFile(), fresh, `${decisionsFile()}.${process.pid}.tmp`) // pid name: parallel port-call children
   for (const k of stale) delete all[k]
   return { rigs: rows, proposals: all }
 }
@@ -13465,7 +13465,12 @@ async function refreshMerges(recs: RunRecord[]): Promise<RunRecord[]> {
     cache.rigs[name] = { checkedAt: now, from: covered ? Math.min(seen.from, reached) : reached }
     dirty = true
   }
-  if (dirty) writeFileSync(mergedFile(), JSON.stringify({ version: 1, ...cache }))
+  if (dirty)
+    writeFresh(
+      mergedFile(),
+      JSON.stringify({ version: 1, ...cache }),
+      mergedFile() + '.' + process.pid + '.tmp',
+    )
   return withMerges(recs)
 }
 
@@ -14191,6 +14196,24 @@ if (import.meta.main && !outboxCmd)
       case 'broker':
         broker.main(args)
         break
+      case 'port-call': {
+        // internal: `factory server` runs a Port read here (childPort). Only the server writes the args file.
+        refuseWorker('port-call', true)
+        if (args.length !== 3 || args[1] !== '--text-file')
+          fail('usage: factory port-call <name> --text-file <file>')
+        let text = ''
+        try {
+          text = readFileSync(textFilePath('--text-file', args[2]!), 'utf8')
+        } catch {
+          fail('port-call: cannot read the args file')
+        }
+        try {
+          console.log(await servePortCall(corePort, args[0]!, text))
+        } catch (e) {
+          fail((e as Error).message)
+        }
+        break
+      }
       case 'server':
         refuseWorker('server', true)
         if (args[0] === 'backup') {
