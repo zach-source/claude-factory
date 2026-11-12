@@ -29,7 +29,7 @@ test('a goto reaches each node, and its one outcome reaches done', () => {
 
 test('sweeps carries the same house rules and params as lifecycle', () => {
   expect(sweeps.rules).toBe(lifecycle.rules)
-  // the codex and cursor params belong to lifecycle's split stations, base_branch to its git stations, fast_check to its worker stations, plan_model to its plan station: sweeps has none
+  // the codex, cursor and grok params belong to lifecycle's split stations, base_branch to its git stations, fast_check to its worker stations, plan_model to its plan station: sweeps has none
   const claudeOnly = Object.fromEntries(
     Object.entries(lifecycle.params as Record<string, string>).filter(
       ([k]) =>
@@ -41,7 +41,13 @@ test('sweeps carries the same house rules and params as lifecycle', () => {
         k !== 'plan_model',
     ),
   )
-  expect(sweeps.params as object).toEqual(claudeOnly)
+  // maintain splits to grok, so sweeps adds the grok params for that station only
+  expect(sweeps.params as object).toEqual({
+    ...claudeOnly,
+    grok: lifecycle.params!.grok,
+    grok_maintain_model: 'grok-4.7',
+    grok_maintain_share: '0',
+  })
 })
 
 test('each prompt names its own sweep label, the daily cap and the auto-queue allowlist', () => {

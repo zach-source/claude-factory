@@ -78,6 +78,9 @@ export default {
     exec_model: 'claude-sonnet-5-5[1m]', // execution
     judge_model: 'claude-fable-5-2[1m]', // planning, judgment, review
     security_model: 'claude-fable-5-2', // security and architecture
+    grok: 'grok --permission-mode bypassPermissions --trust', // the grok launcher (the deny hook stays on)
+    grok_maintain_model: 'grok-4.7', // grok at maintain
+    grok_maintain_share: '0', // share of runs whose maintain uses grok; 0 turns it off
   },
   backoffSec: 60,
   maxSteps: 24,
@@ -141,6 +144,7 @@ Report filed with the resources you checked, what you filed and what you comment
       next: { filed: 'done' },
     },
     maintain: {
+      split: { agent: "{grok} -m '{grok_maintain_model}'", share: 'grok_maintain_share' },
       everyMin: 1440,
       timeoutMin: 60,
       prompt: `One pass of maintenance. Look for, most urgent first: deprecated APIs and end-of-life runtimes; dependency updates (patch and minor batched, majors one at a time); issues labeled \`factory\` in the tracker; docs that drifted from the code. The ci and flakes sweeps own red main-branch CI and flaky tests: do not file those.

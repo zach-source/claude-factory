@@ -1043,6 +1043,56 @@ test('a local split picks codex only when the host has the unified_exec pin file
   expect(pickAgent('run-1', splitDef, 'a', { agent: 'pi', params: {} }, 'herdr', {}, missing)).toBe('pi')
 })
 
+const listDef = {
+  name: 'x',
+  start: 'a',
+  agent: 'claude',
+  params: { grok: 'grok', codex: 'codex', grok_share: '0.6', codex_share: '0.3' },
+  nodes: {
+    a: {
+      prompt: '',
+      next: { ok: 'done' },
+      split: [
+        { agent: '{grok}', share: 'grok_share' },
+        { agent: '{codex}', share: 'codex_share' },
+      ],
+    },
+  },
+}
+const listCount = (env: Record<string, string> = {}, grokOk = () => true) => {
+  const n: Record<string, number> = {}
+  for (const id of ids) {
+    const a = pickAgent(id, listDef, 'a', undefined, 'herdr', env, import.meta.path, undefined, grokOk)
+    n[a] = (n[a] ?? 0) + 1
+  }
+  return n
+}
+
+test('a split list tries grok first and the codex split for the rest, one pick per run', () => {
+  const n = listCount()
+  expect(n.grok).toBeGreaterThan(5700)
+  expect(n.grok).toBeLessThan(6300)
+  // the rest fall through to codex at its own share (0.3 of the 0.4 left, about 1200)
+  expect(n.codex).toBeGreaterThan(1000)
+  expect(n.codex).toBeLessThan(1400)
+  expect(n.claude).toBeGreaterThan(0)
+  expect(listCount()).toEqual(n)
+  expect(listCount({ FACTORY_GROK_SHARE: '0' }).grok).toBeUndefined()
+  expect(listCount({ FACTORY_GROK_SHARE: '0' }).codex).toBeGreaterThan(2500)
+})
+
+test('a refused grok pick moves to the next agent in the order; the other runs still reach the codex split', () => {
+  const log = spyOn(console, 'error').mockImplementation(() => {})
+  try {
+    const n = listCount({}, () => false)
+    expect(n.grok).toBeUndefined()
+    expect(n.codex).toBeGreaterThan(1000) // runs that did not pick grok still reach the codex split
+    expect(n.codex! + n.claude!).toBe(10000)
+  } finally {
+    log.mockRestore()
+  }
+})
+
 test('the manager and the mod subagents name a full model id, never an alias', () => {
   const c = managerCommand()
   expect(c[c.indexOf('--model') + 1]).toBe('claude-fable-5-2')
