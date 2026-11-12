@@ -160,6 +160,7 @@ export const allowed = (rights: Op['rights'], who: Caller): boolean => who === '
 export function makeCatalog(ops: Op[]): Op[] {
   const names = new Set<string>()
   const routes = new Set<string>()
+  const seen: { method: string; path: string; segs: string[] }[] = []
   for (const o of ops) {
     const bad = (why: string): never => {
       throw new Error(`catalog: ${o.name}: ${why}`)
@@ -170,6 +171,13 @@ export function makeCatalog(ops: Op[]): Op[] {
     const key = routeKey(o)
     if (routes.has(key)) bad(`duplicate route ${key}`)
     routes.add(key)
+    const segs = o.route.path.split('/')
+    for (const r of seen) {
+      if (r.method !== o.route.method || r.segs.length !== segs.length) continue
+      if (r.segs.every((s, i) => s === segs[i] || s.startsWith(':') || segs[i]!.startsWith(':')))
+        bad(`route ${o.route.path} overlaps ${r.path}`)
+    }
+    seen.push({ method: o.route.method, path: o.route.path, segs })
     if (o.mutates && o.rights === 'read') bad('a mutating operation must not have read rights')
     if (o.mutates && o.route.method === 'GET') bad('a mutating operation must not use GET')
     if (!o.route.path.startsWith('/v1/')) bad('the path must start with /v1/')
