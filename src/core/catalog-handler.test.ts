@@ -56,6 +56,8 @@ const NAMES = [
   'gc.run',
   'guard.check',
   'image.build',
+  'interview.answer',
+  'interview.list',
   'lease.show',
   'mail.list',
   'manager.brief',

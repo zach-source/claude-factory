@@ -63,6 +63,8 @@ These operations come from the current CLI. The CLI command stays. It calls the 
 | `gates.brief` | `factory gate-brief facts` | `GET /v1/runs/:id/brief` |
 | `decisions.list` | `factory decisions` | `GET /v1/decisions` |
 | `decisions.answer` | `factory decisions answer` | `POST /v1/decisions/:rig/:bead/answer` |
+| `interview.list` | `factory interview` | `GET /v1/interview` |
+| `interview.answer` | `factory interview answer` | `POST /v1/interview/answer` |
 | `backlog.show` | `factory backlog` | `GET /v1/backlog` |
 | `prs.show` | `factory prs` | `GET /v1/prs` |
 | `plan.show` | `factory plan show` | `GET /v1/plan` |

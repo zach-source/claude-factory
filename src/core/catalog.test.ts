@@ -205,10 +205,10 @@ describe('CATALOG', () => {
     ])
     expect(CATALOG.filter(o => o.name === 'image.build')).toHaveLength(1)
   })
-  test('has 54 operations: 26 GET, 23 POST, 1 DELETE, 1 PATCH and 3 PUT', () => {
-    expect(CATALOG.length).toBe(54)
-    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(26)
-    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(23)
+  test('has 56 operations: 27 GET, 24 POST, 1 DELETE, 1 PATCH and 3 PUT', () => {
+    expect(CATALOG.length).toBe(56)
+    expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(27)
+    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(24)
     expect(CATALOG.filter(o => o.route.method === 'DELETE').map(o => o.name)).toEqual(['runs.remove'])
     expect(CATALOG.filter(o => o.route.method === 'PATCH').map(o => o.name)).toEqual(['rigs.set'])
     expect(CATALOG.filter(o => o.route.method === 'PUT').map(o => o.name)).toEqual([
@@ -234,6 +234,7 @@ describe('CATALOG', () => {
                 'manager.say',
                 'manager.image',
                 'manager.suspend',
+                'interview.answer',
               ].includes(o.name)
             ? 'owner'
             : 'manager',
@@ -310,6 +311,8 @@ describe('CATALOG', () => {
       'gc.run POST /v1/gc',
       'guard.check POST /v1/guard/check',
       'image.build POST /v1/image/build',
+      'interview.answer POST /v1/interview/answer',
+      'interview.list GET /v1/interview',
       'lease.show GET /v1/lease',
       'mail.list GET /v1/mail',
       'manager.brief GET /v1/manager/brief',

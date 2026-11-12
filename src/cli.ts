@@ -364,6 +364,7 @@ import type { Ctx as OpCtx, Env, Input as OpInput, Port, Print, RunResult as OpR
 import { slimBoard, snapFresh, snapshot as snapshotRun } from './core/catalog'
 import * as backlogOp from './core/ops/backlog'
 import * as decisionsOp from './core/ops/decisions'
+import * as interviewOp from './core/ops/interview'
 import * as gatesOp from './core/ops/gates'
 import * as gcOp from './core/ops/gc'
 import * as imageOp from './core/ops/image'
@@ -13732,6 +13733,8 @@ const usage = `factory — herdr software factories on xstate
   file-elsewhere <rig> --from <rig>:<bead> (--title <t> | --title-file <path>) (--description <d> | --description-file <path>)  file a bead in another rig; labels it factory unless the source is Linear
   ship <rig|repo>                    the rig's ship queue: the next PR to merge first, then the others
   show <run> | backlog | prs        JSON for the manager's views
+  interview [answer <item> [<choice> [<text...>]]]   JSON of the open questions for the person; answer one
+                                     (a gate is decided, a bead is answered, 'start now' starts an owner-only bead)
   decisions [answer <rig> <bead> '<text...>' | propose <key> '<question>' '<a | b>' | propose <key> --question-file <p> --options-file <p> [--context-file <p>]]   JSON of every rig's open
                                      bd decisions (human-flagged and owner-only beads); answer one, as the
                                      person, or let the manager propose options for an item that has none
@@ -14986,7 +14989,8 @@ if (import.meta.main && !outboxCmd)
         )
           fail('usage: factory snapshot --views a,b [--max-age ms]')
         const needBoard =
-          rest[1]!.split(',').includes('board') && !(maxAge && snapFresh(HOME, 'board', Number(maxAge)))
+          rest[1]!.split(',').some(v => v === 'board' || v === 'interview') &&
+          !(maxAge && snapFresh(HOME, 'board', Number(maxAge)))
         const board = needBoard
           ? await readOnlyBoard(leases.readLease(HOME) ?? { holder: 'none', kind: 'none', at: Date.now() })
           : null
@@ -15009,6 +15013,31 @@ if (import.meta.main && !outboxCmd)
       case 'prs':
         emit(await prsOp.show(cliCtx(), {}))
         break
+      case 'interview': {
+        // hpmc.35: the open questions for the person, and their answers; one core op for every front end
+        const [sub, item, choice, ...text] = args
+        const board = await readOnlyBoard(
+          leases.readLease(HOME) ?? { holder: 'none', kind: 'none', at: Date.now() },
+        )
+        const ctx = {
+          ...cliCtx(),
+          board: () => board,
+          cli: async (argv: string[]) => {
+            const p = Bun.spawn([CLI, ...argv], { env: process.env, stdout: 'pipe', stderr: 'pipe' })
+            const [out, err, code] = await Promise.all([
+              new Response(p.stdout).text(),
+              new Response(p.stderr).text(),
+              p.exited,
+            ])
+            return { code, out, err }
+          },
+        }
+        if (!sub || sub === 'list') emit(await interviewOp.list(ctx, {}))
+        else if (sub === 'answer' && item)
+          emit(await interviewOp.answer(ctx, defined({ item, choice, text: text.join(' ') || undefined })))
+        else fail('usage: factory interview [list | answer <item> [<choice> [<text...>]]]')
+        break
+      }
       case 'decisions': {
         const [sub, ...rest] = args
         if (!sub || sub === 'list') {

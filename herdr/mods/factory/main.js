@@ -146,7 +146,7 @@ export default class Factory extends View {
       const d = this.finished('decisions')
       if (d) {
         const s = parseSnapshot(d.code, d.out, d.err)
-        if (s.decisions) setShared('factory.decisions', s.decisions)
+        if (s.interview) setShared('factory.interview', s.interview)
       }
       const ctxJob = this.finished('context')
       if (ctxJob) setShared('factory.context', parseContext(ctxJob.code, ctxJob.out))
@@ -169,7 +169,7 @@ export default class Factory extends View {
       this.start('snapshot', snapshotWords('board', age))
       if (Date.now() - this.decisionsAt >= DECISIONS_MS && !this.jobs.decisions) {
         this.decisionsAt = Date.now()
-        this.start('decisions', snapshotWords('decisions', this.beats > 1 ? DECISIONS_MS : FIRST_MAX_AGE))
+        this.start('decisions', snapshotWords('interview', this.beats > 1 ? DECISIONS_MS : FIRST_MAX_AGE))
       }
       cx.notify()
     })
@@ -259,7 +259,7 @@ export default class Factory extends View {
         .text_size(13)
         .text_color(t.muted)
         .child('No factory config. Run: factory herdr install')
-    const items = interviewItems(runs, shared('factory.decisions'))
+    const items = interviewItems(shared('factory.interview'))
     const button = (id, label, onClick) =>
       h_flex()
         .id(id)
@@ -559,7 +559,7 @@ export default class Factory extends View {
   interview() {
     const t = theme()
     const state = shared('factory') ?? {}
-    const items = interviewItems(state.runs ?? [], shared('factory.decisions'))
+    const items = interviewItems(shared('factory.interview'))
     const answer = (item, option, cx) =>
       cx.spawn(async cx => {
         const cfg = parseConfig((await readTextFile(configPath())) ?? '')

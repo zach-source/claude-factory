@@ -53,34 +53,28 @@ test('blocked workers toast once', () => {
   expect(herdr.newlyBlocked(runs, herdr.agentsOf(runs))).toEqual([])
 })
 
-test('the Interview lists gates first, then beads; each answer is the right factory command', () => {
-  const decisions = {
-    rigs: [
-      {
-        rig: 'api',
-        factory: 'lifecycle',
-        beads: [
-          { id: 'api-1', title: 'Pick a DB', kind: 'bead' },
-          { id: 'api-2', title: 'Big change', kind: 'owned' },
-        ],
-      },
-    ],
-    proposals: {
-      'bd:api:api-1': { question: 'Which DB?', options: ['postgres: safe', 'sqlite: small'], at: 1 },
+// hpmc.35: the list comes from the core (openInterviews); the mod only adds labels and the answer words
+test('the Interview shows the core list; each answer is one `factory interview answer` command', () => {
+  const decisions = [
+    {
+      rig: 'api',
+      factory: 'lifecycle',
+      beads: [
+        { id: 'api-1', title: 'Pick a DB', kind: 'bead' },
+        { id: 'api-2', title: 'Big change', kind: 'owned' },
+      ],
     },
-  }
-  const items = herdr.interviewItems(runs, decisions)
-  expect(items.map((i: { key: string }) => i.key)).toEqual([
-    'gate:lifecycle-cccc3333',
-    'bd:api:api-1',
-    'own:api:api-2',
-  ])
-  expect(items[0].options).toEqual(['ok', 'no'])
-  expect(items[1].title).toBe('Which DB?')
-  expect(items[1].options).toEqual(['postgres', 'sqlite'])
-  expect(items[2].options).toEqual(['start now', 'not now'])
-  expect(herdr.answerArgs(items[0], 'ok')).toEqual(['decide', 'lifecycle-cccc3333', 'ok'])
-  expect(herdr.answerArgs(items[1], 'postgres')).toEqual(['decisions', 'answer', 'api', 'api-1', 'postgres'])
+  ]
+  const core = claude.openInterviews(runs as never, decisions as never)
+  const items = herdr.interviewItems(core)
+  expect(items.map((i: { key: string }) => i.key)).toEqual(core.map(i => i.key))
+  expect(items.map((i: { key: string }) => i.key)).toEqual(
+    expect.arrayContaining(['gate:lifecycle-cccc3333@3', 'bd:api:api-1', 'own:api:api-2']),
+  )
+  const own = items.find((i: { key: string }) => i.key === 'own:api:api-2')
+  expect(own.options).toEqual(['start now', 'not now'])
+  expect(herdr.answerArgs(own, 'start now')).toEqual(['interview', 'answer', 'own:api:api-2', 'start now'])
+  expect(herdr.interviewItems(undefined)).toEqual([])
 })
 
 test('parseTick reads a board, its lease and a failure', () => {
@@ -218,27 +212,8 @@ test('a remote job runs direct in the foreground: no detached shell that hc exec
   ])
 })
 
-test('interviewItems counts the beads of `factory decisions` once each, plus the live gates (claude-factory-hpmc.22)', () => {
-  const decisions = {
-    rigs: [
-      {
-        rig: 'a',
-        beads: [
-          { id: 'a-1', title: 't', kind: 'bead' },
-          { id: 'a-2', title: 't', kind: 'owned' },
-        ],
-      },
-      { rig: 'b', beads: [{ id: 'b-1', title: 't', kind: 'owned' }] },
-    ],
-  }
-  expect(herdr.interviewItems([], decisions)).toHaveLength(3)
-  expect(herdr.interviewItems(runs, decisions).length - 3).toBe(
-    runs.filter((r: { gate?: unknown }) => r.gate).length,
-  )
-})
-
-test('parseSnapshot splits one snapshot into the board result and the decisions (claude-factory-hpmc.23)', () => {
-  const out = JSON.stringify({ views: { board: { runs: [], manager: [] }, decisions: { rigs: [] } } })
+test('parseSnapshot splits one snapshot into the board result and the interview (claude-factory-hpmc.23)', () => {
+  const out = JSON.stringify({ views: { board: { runs: [], manager: [] }, interview: [] } })
   expect(herdr.parseSnapshot(0, out, '')).toEqual({
     tick: {
       runs: [],
@@ -247,10 +222,10 @@ test('parseSnapshot splits one snapshot into the board result and the decisions 
       managerLimited: null,
       managerCodexAuth: null,
     },
-    decisions: { rigs: [] },
+    interview: [],
   })
-  const bad = JSON.stringify({ views: { board: { error: 'no tick yet' }, decisions: { error: 'x' } } })
-  expect(herdr.parseSnapshot(0, bad, '')).toEqual({ tick: { error: 'no tick yet' }, decisions: undefined })
+  const bad = JSON.stringify({ views: { board: { error: 'no tick yet' }, interview: { error: 'x' } } })
+  expect(herdr.parseSnapshot(0, bad, '')).toEqual({ tick: { error: 'no tick yet' }, interview: undefined })
   expect(herdr.parseSnapshot(1, '', 'boom').tick.error).toBe('boom')
 })
 
