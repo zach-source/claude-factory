@@ -236,7 +236,7 @@ The full guide for each tab, with its keys and buttons, is in [console.md](conso
 | `factory goto <run> <node\|done>` | Queue a move of a run to a station. The next tick applies it. A goto also grants a fresh step budget. The command exits 1 in three cases. An earlier goto is still queued. Or the run is done. Or the move would revive an ended ship run beside another live ship run on the same repo. |
 | `factory abort <run>` | Abort a run. Its bead is deferred. |
 | `factory rm <run>` | Remove a finished run. Its branch stays. |
-| `factory gc [--days N] [--dry-run]` | Remove old files of finished runs, and a dead launch script. `--dry-run` only shows the bytes. |
+| `factory gc [--days N] [--dry-run]` | Remove old files of finished runs and a dead launch script. Also remove a stale memory snapshot of any run, active or finished. `--dry-run` only shows the bytes. |
 | `factory gc --worktrees [--dry-run] [--rig NAME]` | Remove a finished run's worktree, and its `factory/*` branch once it is merged, or its PR is closed and its bead is closed. Never touches a live run or an unmerged branch. `--dry-run` only shows what it would remove. |
 
 ### Stop and resume

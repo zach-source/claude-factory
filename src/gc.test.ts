@@ -5,6 +5,7 @@ import { expect, test } from 'bun:test'
 import {
   gcPlan,
   LAUNCH_MIN_AGE_MS,
+  MEMORY_MIN_AGE_MS,
   parsePrPages,
   scrubUrlUserinfo,
   worktreePlan,
@@ -76,6 +77,7 @@ test('a done run past the age cutoff loses its prompts/, briefs and backups; eve
     briefs: { bytes: 600, files: 2 },
     backups: { bytes: 100, files: 2 },
     launch: { bytes: 0, files: 0 },
+    memory: { bytes: 0, files: 0 },
     runs: 1,
   })
 })
@@ -612,4 +614,45 @@ test('u2: a run finished under an hour ago keeps its unregistered dir (claude-fa
   const p = planOf(rig, runs)
   expect(p.removeWorktrees).toEqual([])
   expect(p.keep).toContainEqual({ kind: 'worktree', runId: 'r1', name: '/wt/r1', reason: 'recent' })
+})
+
+const OLD_MEM = NOW - 2 * 3_600_000
+const snap = (name: string, mtimeMs: number | undefined = OLD_MEM, isDir = false): FileFact => ({
+  ...file(name, 100, isDir),
+  mtimeMs,
+})
+const memOf = (r: RunFact) => gcPlan([r], [], new Set(), NOW, 7).memory.map(m => m.name)
+
+test('sris AC3: gcPlan keeps the current, young, mtime-less and directory snapshots', () => {
+  const live = (task: string | undefined, entries: FileFact[]): RunFact => ({
+    ...run('r1', 'implement.working', NOW - 30 * DAY, entries),
+    task,
+  })
+  // current snapshot, however old
+  expect(memOf(live('f-r-3', [snap('f-r-3.memory.tgz')]))).toEqual([])
+  // active run with no task keeps all
+  expect(memOf(live(undefined, [snap('f-r-1.memory.tgz'), snap('f-r-2.memory.tgz')]))).toEqual([])
+  const young = snap('f-r-1.memory.tgz', NOW - MEMORY_MIN_AGE_MS + 1)
+  const none = { ...file('f-r-1.memory.tgz') }
+  const nan = snap('f-r-1.memory.tgz', NaN)
+  const future = snap('f-r-1.memory.tgz', NOW + 5)
+  for (const f of [young, none, nan, future, snap('x.memory.tgz', OLD_MEM, true)])
+    expect(memOf(live('f-r-3', [f]))).toEqual([])
+  for (const n of ['memory.tgz', 'f-x.memory.tgz.bak', 'f-x.memory.tgz.part', 'f-x.brief.md', 'state.json'])
+    expect(memOf(live('f-r-3', [snap(n)]))).toEqual([])
+  // positive control: exactly at the minimum age
+  expect(memOf(live('f-r-3', [snap('f-r-1.memory.tgz', NOW - MEMORY_MIN_AGE_MS)]))).toEqual([
+    'f-r-1.memory.tgz',
+  ])
+})
+
+test('sris: gcPlan plans earlier snapshots of a live run, and all of a done run under the age cutoff', () => {
+  const entries = [1, 2, 3].map(n => snap(`f-r-${n}.memory.tgz`))
+  const l: RunFact = { ...run('r1', 'implement.working', NOW, entries), task: 'f-r-3' }
+  const plan = gcPlan([l], [], new Set(), NOW, 7)
+  expect(plan.memory.map(m => m.name)).toEqual(['f-r-1.memory.tgz', 'f-r-2.memory.tgz'])
+  expect(plan.totals.memory).toEqual({ bytes: 200, files: 2 })
+  expect(plan.totals.runs).toBe(1)
+  expect(plan.reap).toEqual([])
+  expect(memOf(run('r2', 'done', NOW, entries))).toHaveLength(3)
 })

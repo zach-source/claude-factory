@@ -22,6 +22,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActor } from 'xstate'
+import { taskName } from './ax'
 import { compile, type Factory } from './machine'
 
 const CLI = join(import.meta.dir, '..', 'bin', 'factory')
@@ -1084,6 +1085,8 @@ mock.module('node:fs', () => ({
   ...fs,
   default: { ...fs },
   rmSync: (p: any, o: any) => {
+    const sfx = process.env.GC_FAIL_RM_SUFFIX
+    if (sfx && String(p).endsWith(sfx)) throw new Error('injected rm failure')
     log({ op: 'rm', path: String(p), recursive: !!o?.recursive })
     return fs.rmSync(p, o)
   },
@@ -1215,4 +1218,84 @@ test('lt4u.8 AC4: a failed top-level status after a clean submodule check keeps 
   expect(appends(out.calls)).toEqual([])
   expect(rmsUnder(out.calls, wt)).toEqual([])
   expect(rmsUnder(out.calls, d)).toEqual([])
+})
+
+// sris: gc removes the memory snapshots of earlier tasks (and of finished runs), 1 h old or more.
+const aged = (path: string, ageMs = 2 * 3_600_000) => {
+  writeFileSync(path, 'tgz')
+  const t = new Date(Date.now() - ageMs)
+  utimesSync(path, t, t)
+}
+const seqOf = (d: string): number =>
+  JSON.parse(readFileSync(join(d, 'state.json'), 'utf8')).snapshot.context.seq
+const tgz = (d: string) => readdirSync(d).filter(n => n.endsWith('.memory.tgz'))
+
+test('sris AC1: a live run with two failed launches keeps only the current snapshot after gc', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'working' })
+  const cur = `${taskName(id, seqOf(d))}.memory.tgz`
+  for (const n of ['f-a-1.memory.tgz', 'f-a-2.memory.tgz', cur]) aged(join(d, n))
+  const out = factory(['gc'])
+  expect(out.code).toBe(0)
+  expect(tgz(d)).toEqual([cur])
+})
+
+test('sris AC2: a finished run younger than the cutoff loses its old snapshots and keeps the rest', () => {
+  reset()
+  const a = freshId('ship')
+  const b = `shop-${(Date.now() - DAY).toString(36)}xx`
+  const da = writeRun(a, { outcome: 'done', finishedAt: Date.now() - DAY })
+  const db = writeRun(b, { outcome: 'aborted', finishedAt: Date.now() - DAY })
+  for (const d of [da, db]) for (const n of ['f-a-1.memory.tgz', 'f-a-2.memory.tgz']) aged(join(d, n))
+  const before = [da, db].map(d =>
+    readdirSync(d)
+      .filter(n => !n.endsWith('.memory.tgz'))
+      .sort(),
+  )
+  expect(factory(['gc']).code).toBe(0)
+  for (const [i, d] of [da, db].entries()) {
+    expect(tgz(d)).toEqual([])
+    expect(readdirSync(d).sort()).toEqual(before[i]!)
+  }
+})
+
+test('sris AC4: --dry-run counts old snapshots and removes none', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'working' })
+  aged(join(d, 'f-a-1.memory.tgz'))
+  const out = factory(['gc', '--dry-run'])
+  expect(out.code).toBe(0)
+  expect(out.out).toMatch(/memory: 1 files?,/)
+  expect(out.out).toMatch(/total: 1 files?,.*across 1 run/)
+  expect(out.out).toContain(`would remove ${id}/f-a-1.memory.tgz`)
+  expect(tgz(d)).toEqual(['f-a-1.memory.tgz'])
+})
+
+test('sris AC5: gc.log names each removed snapshot', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'working' })
+  aged(join(d, 'f-a-1.memory.tgz'))
+  const out = factory(['gc'])
+  const line = `removed memory snapshot ${id}/f-a-1.memory.tgz`
+  expect(out.out).toContain(line)
+  expect(readFileSync(join(home, 'gc.log'), 'utf8')).toContain(line)
+})
+
+test('sris AC5: a snapshot that cannot be removed does not stop the pass', () => {
+  reset()
+  const id = freshId('ship')
+  const d = writeRun(id, { outcome: 'working' })
+  aged(join(d, 'f-boom.memory.tgz'))
+  aged(join(d, 'f-ok.memory.tgz'))
+  const old = `shop-${(Date.now() - 10 * DAY).toString(36)}xx`
+  const dold = writeRun(old, { outcome: 'done', finishedAt: Date.now() - 10 * DAY, real: true })
+  const out = traced(['gc'], { GC_FAIL_RM_SUFFIX: 'f-boom.memory.tgz' })
+  expect(out.code).toBe(0)
+  expect(out.out).toContain(`cannot remove memory snapshot ${id}/f-boom.memory.tgz: injected rm failure`)
+  expect(out.out).toContain(`removed memory snapshot ${id}/f-ok.memory.tgz`)
+  expect(tgz(d)).toEqual(['f-boom.memory.tgz'])
+  expect(existsSync(dold)).toBe(false)
 })

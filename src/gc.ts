@@ -1,4 +1,5 @@
 // `factory gc` removes the old files of a finished run.
+// One exception: it also removes the stale memory snapshots of any run, active or finished.
 // It also removes a dead launch script. A launch script can hold MCP env or headers (claude-factory-503.1).
 //
 // This module is pure. It takes these plain facts as input: a run's node, its finish time, the size of
@@ -9,12 +10,13 @@
 
 /** This is one top-level entry under a run's directory. The caller sizes each entry before it passes the entry to this module.
  * For a directory, the caller sums its bytes and files into its own recursive total. */
-export type FileFact = { name: string; isDir: boolean; bytes: number; files: number }
+export type FileFact = { name: string; isDir: boolean; bytes: number; files: number; mtimeMs?: number }
 
-/** This is one run, as gc sees it. gc removes files from this run only when its node is 'done' or 'aborted'.
+/** This is one run, as gc sees it. gc removes files from this run only when its node is 'done' or 'aborted'. The exception is a stale memory snapshot.
+ * `task` is the name of the current task. It is absent for a finished run.
  * The finish time is the `at` of the last journal entry. If the journal has no entry, the finish time is the creation time of the run.
  * Do not use the mtime of a file, because tick rewrites state.json each time tick writes it. The entries are the top-level entries of the run's directory. */
-export type RunFact = { id: string; node: string; finishedAt: number; entries: FileFact[] }
+export type RunFact = { id: string; node: string; finishedAt: number; entries: FileFact[]; task?: string }
 
 /** This is one launch script at HOME/launch/<pane>.sh. */
 export type LaunchFact = { pane: string; bytes: number; mtimeMs: number }
@@ -32,6 +34,8 @@ export type GcPlan = {
   runs: RunGc[]
   /** These are the ids of every finished run old enough to reap whole, with or without files to prune. */
   reap: string[]
+  /** These are the stale memory snapshots (`<task>.memory.tgz`) of earlier tasks, of any run. */
+  memory: { id: string; name: string }[]
   /** These are the panes whose launch script this plan removes. */
   launch: string[]
   totals: {
@@ -39,7 +43,8 @@ export type GcPlan = {
     briefs: KindTotal
     backups: KindTotal
     launch: KindTotal
-    /** These are the runs that have at least one file to prune. */
+    memory: KindTotal
+    /** These are the runs that have at least one file or memory snapshot to prune. */
     runs: number
   }
 }
@@ -48,6 +53,10 @@ export type GcPlan = {
  * In the first case, a pane closed recently. In the second case, a new pane's script exists before the pane appears in `herdr pane list`.
  * One pass alone never catches such a pane. */
 export const LAUNCH_MIN_AGE_MS = 3_600_000
+
+/** A memory snapshot survives this long, so a task that a tick launched after gc read the state keeps its file. */
+export const MEMORY_MIN_AGE_MS = 3_600_000
+const MEMORY_SUFFIX = '.memory.tgz'
 
 const isBrief = (name: string) => /^f-.*\.brief\.md$/.test(name)
 const isBackup = (name: string) => /\.(before|pre)-/.test(name)
@@ -61,6 +70,9 @@ const zero = (): KindTotal => ({ bytes: 0, files: 0 })
  *
  * A run is eligible only when its node is 'done' or 'aborted' and `now - finishedAt >= days`.
  * gc never touches a run that is still active, even when its finishedAt value looks old.
+ * The one exception is a memory snapshot: gc removes a non-directory `*.memory.tgz` entry, at least
+ * MEMORY_MIN_AGE_MS old, of any run that is done or aborted, or whose `task` is another name.
+ * An active run with no `task` keeps all its snapshots.
  *
  * `livePanes` is the result of the strict herdr read. It is null when gc cannot trust the result: herdr is missing,
  * its call failed, or it answered with no `result.panes`. When `livePanes` is null, gc removes no launch script at all.
@@ -76,6 +88,21 @@ export function gcPlan(
   const cutoff = days * 24 * 3_600_000
   const runPlans: RunGc[] = []
   const reap: string[] = []
+  const memory: { id: string; name: string }[] = []
+  const memTotal = zero()
+  const memRuns = new Set<string>()
+  for (const r of runs) {
+    const finished = ['done', 'aborted'].includes(r.node)
+    for (const f of r.entries) {
+      if (f.isDir || !f.name.endsWith(MEMORY_SUFFIX)) continue
+      if (!finished && (r.task === undefined || f.name === `${r.task}${MEMORY_SUFFIX}`)) continue
+      if (!(now - (f.mtimeMs ?? NaN) >= MEMORY_MIN_AGE_MS)) continue // a missing, NaN or future mtime keeps the file
+      memory.push({ id: r.id, name: f.name })
+      memTotal.bytes += f.bytes
+      memTotal.files++
+      memRuns.add(r.id)
+    }
+  }
   for (const r of runs) {
     if (!['done', 'aborted'].includes(r.node)) continue
     if (!Number.isFinite(r.finishedAt) || !(now - r.finishedAt >= cutoff)) continue // a nonfinite or future time keeps the run
@@ -101,13 +128,15 @@ export function gcPlan(
   return {
     runs: runPlans,
     reap,
+    memory,
     launch: launchPlan.map(l => l.pane),
     totals: {
       prompts: sum(r => r.kinds.prompts),
       briefs: sum(r => r.kinds.briefs),
       backups: sum(r => r.kinds.backups),
       launch: { bytes: launchPlan.reduce((a, l) => a + l.bytes, 0), files: launchPlan.length },
-      runs: runPlans.length,
+      memory: memTotal,
+      runs: new Set([...runPlans.map(r => r.id), ...memRuns]).size,
     },
   }
 }
