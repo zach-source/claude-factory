@@ -114,6 +114,8 @@ export type Launch = {
   privatePatterns?: string
   /** a codex worker logs in with an API key (placeholder env keys) or with ChatGPT (auth.json, no key in the env) */
   codexAuth?: 'apikey' | 'chatgpt'
+  /** a grok worker's login: session sends the plan's token to the chat proxy, key sends XAI_API_KEY to api.x.ai (cli.ts grokAuth) */
+  grokAuth?: 'session' | 'key'
   /** a cursor worker's hooks.json text (cli.ts vmCursorHooks); serve writes it to ~/.cursor before each turn */
   cursorHooks?: string
   /** a grok worker's hook file text (cli.ts vmGrokHooks); serve writes it to $GROK_HOME/hooks before each turn */
@@ -698,8 +700,14 @@ export const launch = (l: Launch) => {
         l.codexAuth !== 'chatgpt' && { OPENAI_API_KEY: 'placeholder', CODEX_API_KEY: 'placeholder' }),
       // cursor-agent swaps this key for an access token at api2.cursor.sh; the rig's cursor rule injects the real one there
       ...(l.harness === 'cursor' && { CURSOR_API_KEY: 'placeholder' }),
-      // grok sends this key as a bearer token to api.x.ai; the rig's grok rule injects the real one there
-      ...(l.harness === 'grok' && { XAI_API_KEY: 'placeholder' }),
+      // grok key mode: the CLI sends this key as a bearer token to api.x.ai; the rig's grok rule injects the real one there
+      ...(l.harness === 'grok' && l.grokAuth === 'key' && { XAI_API_KEY: 'placeholder' }),
+      // grok session mode: the CLI asks this command for its token, then sends it to the chat proxy; the gateway swaps in the real one
+      ...(l.harness === 'grok' &&
+        l.grokAuth !== 'key' && {
+          GROK_AUTH_PROVIDER_COMMAND: 'echo placeholder',
+          GROK_AUTH_TOKEN_TTL: '3600',
+        }),
       GH_TOKEN: 'placeholder',
       // git's config from the env, so every git in the VM sends the header
       GIT_CONFIG_COUNT: l.gitlabHost ? '2' : '1',
@@ -943,9 +951,9 @@ export const resume = (task: string) => must(['resume', 'task', task])
  * the task (its actor's egress policy goes with it) and its workspace; gone already is fine. Both deletes always run.
  * Returns undefined when each worked or was gone, else the failure text (200 characters at most for each delete).
  */
-export function remove(task: string) {
+export function remove(task: string, kinds: readonly ('task' | 'workspace')[] = ['task', 'workspace']) {
   const fails: string[] = []
-  for (const kind of ['task', 'workspace'] as const) {
+  for (const kind of kinds) {
     const r = ax(['delete', kind, task])
     if (!r.ok && !missing(r.err, kind, task))
       fails.push(`delete ${kind}: ${(r.err || r.out.trim()).slice(0, 200)}`)
@@ -1201,11 +1209,12 @@ export const OPENAI_RULE: Egress = {
 /**
  * The devenv build in the VM (buildctl) fetches its own ghcr.io registry token: the VM sends a placeholder Basic login
  * to ghcr.io/token and the gateway puts the real login there (claude-factory-kraoa). Only /token gets the key.
+ * GHCR_PULL holds base64(username:credential) of a classic token: an App installation token cannot pull from ghcr.
  */
 export const GHCR_TOKEN_RULE: Egress = {
   hosts: ['ghcr.io'],
   pathPrefixes: ['/token'],
-  key: 'GITHUB_BASIC_MANAGER',
+  key: 'GHCR_PULL',
   header: 'Authorization',
   prefix: 'Basic ',
 }
@@ -1293,6 +1302,27 @@ export const managerGithubKey = (env: Record<string, string | undefined> = proce
   env.FACTORY_AX_BACKUP_REMOTE ? 'GITHUB_BASIC_MANAGER' : 'GITHUB_BASIC'
 
 /**
+ * The env of the session-only manager task (gogxc.19): managerEnv without a home and without the backup and
+ * migration knobs, since the pod owns the state, plus the pod address. Throws when the pod address is not set.
+ */
+export function sessionEnv(env: Record<string, string | undefined> = process.env) {
+  const server = env.FACTORY_SERVER_MANAGER_URL
+  if (!server)
+    throw new Error('FACTORY_SERVER_MANAGER_URL is not set: the manager task needs the pod address')
+  const rest: Record<string, string | undefined> = { ...managerEnv(env) }
+  for (const k of [
+    'FACTORY_HOME',
+    'FACTORY_AX_BACKUP_REMOTE',
+    'FACTORY_AX_BACKUP_BRANCH',
+    'FACTORY_AX_BACKUP_EVERY',
+    'FACTORY_AX_FRESH',
+    'FACTORY_AX_MANAGER_DRY',
+  ])
+    delete rest[k]
+  return { ...rest, FACTORY_SERVER: server }
+}
+
+/**
  * apply the manager task (`factory manager host <args>` from `image`) and its egress policy. The actor appears
  * a moment after apply, and no tick comes after this to retry, so this retries; false when it never appeared
  */
@@ -1300,12 +1330,17 @@ export async function launchManager(
   image: string,
   args: string[],
   rigs: Parameters<typeof managerEgress>[1] = [],
-  { tries = 24, waitMs = 5000, launch: id }: { tries?: number; waitMs?: number; launch?: string } = {},
+  {
+    tries = 24,
+    waitMs = 5000,
+    launch: id,
+    session = false,
+  }: { tries?: number; waitMs?: number; launch?: string; session?: boolean } = {},
 ) {
   const name = managerTask()
   // the host trusts only a .migrated with this id (managerhost.markerOk)
-  const env = { ...managerEnv(), ...(id && { FACTORY_AX_LAUNCH_ID: id }) }
-  launch({ name, image, command: ['factory', 'manager', 'host', ...args], env })
+  const env = { ...(session ? sessionEnv() : managerEnv()), ...(id && { FACTORY_AX_LAUNCH_ID: id }) }
+  launch({ name, image, command: ['factory', 'manager', session ? 'session' : 'host', ...args], env })
   for (let i = 0; i < tries; i++) {
     if (
       createPolicy(

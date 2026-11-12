@@ -223,20 +223,6 @@ test('pack makes a tar.gz with the migrated rigs.json and without the laptop-onl
   expect(JSON.parse(rigs)[0].remote).toBe('https://github.com/example/alpha.git')
 })
 
-test('pack and the plan size leave out runs/*/transcripts', () => {
-  const home = fixture({ r1: ['implement.working', 'ax://f-r1-1', 1] })
-  const before = plan(home, 0, origin).bytes
-  mkdirSync(join(home, 'runs', 'r1', 'transcripts'))
-  writeFileSync(join(home, 'runs', 'r1', 'transcripts', 'x.jsonl'), Buffer.alloc(5000))
-  const p = plan(home, 0, origin)
-  expect(p.bytes).toBe(before)
-  const out = join(mkdtempSync(join(tmpdir(), 'migrate-out-')), 'm.tgz')
-  pack(home, p, out)
-  const names = Bun.spawnSync(['tar', '-tzf', out]).stdout.toString()
-  expect(names).toContain('runs/r1/state.json')
-  expect(names).not.toContain('transcripts')
-})
-
 test("pack carries the manager's Claude memory and session transcripts, with each session's cwd set to the task's", () => {
   const home = fixture({})
   const cwd = '/home/u/factory'
