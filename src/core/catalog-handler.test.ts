@@ -55,6 +55,7 @@ const NAMES = [
   'gates.setbrief',
   'gc.run',
   'guard.check',
+  'image.build',
   'lease.show',
   'mail.list',
   'manager.brief',

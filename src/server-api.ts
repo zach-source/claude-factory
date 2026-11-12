@@ -384,7 +384,7 @@ export function clientHandler(o: ClientOpts) {
       const r = await Promise.race([op.run(ctx, input), limit])
       if (r.timedOut) return refuse(504, 'the command timed out')
       if (r.code !== 0) return refuse(422, r.err.slice(0, 500))
-      if (op.name === 'gc.run') return reply(200, JSON.stringify(r), true)
+      if (op.name === 'gc.run' || op.name === 'image.build') return reply(200, JSON.stringify(r), true)
       return reply(200, r.out, op.output === 'json' || looksJson(r.out))
     } catch (e) {
       if (e instanceof OpError) return refuse(e.status, e.message)

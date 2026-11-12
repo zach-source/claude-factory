@@ -364,6 +364,7 @@ import * as backlogOp from './core/ops/backlog'
 import * as decisionsOp from './core/ops/decisions'
 import * as gatesOp from './core/ops/gates'
 import * as gcOp from './core/ops/gc'
+import * as imageOp from './core/ops/image'
 import * as leaseOp from './core/ops/lease'
 import { flowMermaid, flowTable, type FlowGraph, type FlowRun } from './flows'
 import * as flowsOp from './core/ops/flows'
@@ -13931,6 +13932,26 @@ export const corePort: Port = {
   gcRigs: () => rigs().map(r => r.name),
   gcHold: hold,
   gcStamp: name => writeFileSync(join(HOME, name), ''),
+  imageBuild: async (target, error) => {
+    const head = Bun.spawnSync(['git', '-C', ROOT, 'rev-parse', '--short', 'HEAD'])
+    if (head.exitCode !== 0) throw new Error(`cannot read the HEAD of ${ROOT}`)
+    const ref = await buildImage({
+      target,
+      settingsFile: join(HOME, 'settings.json'),
+      root: ROOT,
+      sha: head.stdout.toString().trim(),
+      env: BOOT_ENV,
+      // fd 2: the docker stdout goes to the stderr of this process, so stdout holds only the ref
+      run: argv => Bun.spawn(['docker', ...argv], { stdio: ['inherit', 2, 'inherit'] }).exited,
+    })
+    const key = IMAGE_KEY[target]
+    const name = SETTING_KEYS.find(k => k.key === key)?.env
+    if (name && BOOT_ENV[name] !== undefined)
+      error(
+        `factory: ${name} is set in the environment and overrides the stored ${key}; unset it to use the new image`,
+      )
+    return ref
+  },
   show,
   status,
   backlog,
@@ -15275,38 +15296,7 @@ if (import.meta.main && !outboxCmd)
         break
       }
       case 'image': {
-        refuseWorker('image build', true)
-        const usage = 'usage: factory image build [--target worker|manager]'
-        const t = args[2]
-        const ok =
-          args[0] === 'build' &&
-          (args.length === 1 ||
-            (args.length === 3 && args[1] === '--target' && (t === 'worker' || t === 'manager')))
-        if (!ok) fail(usage)
-        const target: Target = args.length === 3 ? (t as Target) : 'worker'
-        const head = Bun.spawnSync(['git', '-C', ROOT, 'rev-parse', '--short', 'HEAD'])
-        if (head.exitCode !== 0) fail(`cannot read the HEAD of ${ROOT}`)
-        let ref: string
-        try {
-          ref = await buildImage({
-            target,
-            settingsFile: join(HOME, 'settings.json'),
-            root: ROOT,
-            sha: head.stdout.toString().trim(),
-            env: BOOT_ENV,
-            // fd 2: the docker stdout goes to the stderr of this command, so stdout holds only the ref
-            run: argv => Bun.spawn(['docker', ...argv], { stdio: ['inherit', 2, 'inherit'] }).exited,
-          })
-        } catch (e) {
-          fail((e as Error).message)
-        }
-        const key = IMAGE_KEY[target]
-        const name = SETTING_KEYS.find(k => k.key === key)?.env
-        if (name && BOOT_ENV[name] !== undefined)
-          console.error(
-            `factory: ${name} is set in the environment and overrides the stored ${key}; unset it to use the new image`,
-          )
-        console.log(ref!)
+        emit(await imageOp.run(cliCtx(), imageOp.argsInput(args)))
         break
       }
       case 'rig': {
