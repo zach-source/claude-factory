@@ -766,18 +766,38 @@ format, lint, build-file lists. Do not use the full test suite. Set it for each 
 global `FACTORY_FAST_CHECK`: an env value applies to every rig with no value of its own. Example:
 `factory rig set acme --param fast_check='bunx prettier --check .'`.
 
-Lifecycle sends a share of runs to Codex. Three share params set it: `codex_share` for `implement` and
-`verify` (default `0.3`), `codex_security_share` for `security` (default `0.3`), and `codex_judge_share` for
-`plan` and `review` (default `0`, so off). `check` and `incident` never go to Codex. A hash of the run id
-picks the harness, so one run keeps its harness at every station and attempt. Three params set the
-Codex models: `codex_exec_model` (default `gpt-6.1-sol`), `codex_security_model` (default
-`gpt-6-astra`) and `codex_judge_model` (default `gpt-6-astra`). Set a share to `0` with `--param codex_share=0`, or `FACTORY_CODEX_SHARE=0`, to turn
+A share of runs goes to Codex at many stations of the lifecycle, sweeps, rework and ship factories. Each station has
+three params: `codex_<station>_model`, `codex_<station>_effort` (the `model_reasoning_effort` that the launcher passes
+with `codex -c`) and a share. The share is `codex_<station>_share`, with these exceptions that older rigs use:
+`codex_share` for `implement` and `verify` (default `0.3`), `codex_judge_share` for `plan` and `review` (default
+`0`, so off) and `codex_security_share` for `security` (default `0.5`). `codex_exec_model` is the default model of
+`codex_implement_model` and `codex_verify_model`, and `codex_judge_model` is the default model of `codex_plan_model`
+and `codex_review_model`, so a rig that sets an old name keeps its meaning. A param whose value is only `{other}` takes
+the value of the param `other`. These stations have no Codex split because they read or change production with the
+laptop's kubectl: `check`, `rollback`, `incident`, `deploy`, `soak` and `monitor`. `hygiene` starts no worker.
+
+| Station | Factory | Model | Effort | Default share |
+| --- | --- | --- | --- | --- |
+| `triage`, `quick` | lifecycle | `gpt-6-luna` (`quick`: `gpt-6.1-sol`) | `low` | `0.4` |
+| `plan`, `review` | lifecycle | `gpt-6-astra` | `high` | `0` (`codex_judge_share`) |
+| `baseline`, `characterize` | lifecycle | `gpt-6.1-terra` | `medium` | `0.3` |
+| `implement` | lifecycle | `gpt-6.1-sol` | `medium` | `0.3` (`codex_share`) |
+| `verify` | lifecycle | `gpt-6.1-sol` | `low` | `0.3` (`codex_share`) |
+| `security` | lifecycle | `gpt-6-astra` | `high` | `0.5` |
+| `maintain`, `drift`, `advisories`, `improve` | sweeps | `gpt-6.1-terra` | `medium` | `0.4` |
+| `ci`, `flakes` | sweeps | `gpt-6.1-sol` | `medium` | `0.4` |
+| `resolve` | rework | `gpt-6.1-sol` | `medium` | `0.4` |
+| `queue`, `release` | ship | `gpt-6-luna` | `low` | `0.4` |
+| `postmortem` | ship | `gpt-6-astra` | `medium` | `0.3` |
+
+A hash of the run id and the share's name picks the harness, so one run keeps its harness at every attempt of a
+station. Set a share to `0` with `--param codex_share=0`, or `FACTORY_CODEX_SHARE=0`, to turn
 that tier off. A share that is not a number from 0 to 1 counts as `0`. A rig with `--agent` never gets Codex. A station on the `ax` runner gets the split only with
 `FACTORY_AX_CODEX=1`. There Codex logs in with a ChatGPT subscription by default (the gateway holds
 the token, see `docs/remote-runner.md`). It uses an API key when the rig names `api.openai.com`. `factory metrics` shows the launches for each station by
 harness and model.
 
-A station can list more than one split. The runner tries them in order and uses the first one whose share picks the run. `implement`, `verify`, `triage`, `quick`, `maintain` and `resolve` try Grok first, with `grok_<station>_share` (default `0`, so off) and `grok_<station>_model` (default `grok-4.7`). The Codex split takes the runs that Grok does not.
+A station can list more than one split. The runner tries them in order and uses the first one whose share picks the run. `implement`, `verify`, `triage`, `quick`, `maintain` and `resolve` try Grok first, with `grok_<station>_share` (default `0`, so off) and `grok_<station>_model` (default `grok-4.7`). The Codex split takes a share of the runs that Grok does not: its hash is independent of the Grok hash, so the Codex runs are `codex share × (1 − grok share)` of all runs.
 
 Codex keeps `unified_exec` on under `--disable` and `-c`. Its `write_stdin` tool runs a command with no deny
 hook. Only a managed pin turns `unified_exec` off. The factory does not start Codex unless

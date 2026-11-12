@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import { coreRun } from './core-fake'
 
 // raises the kit's 5000ms default: under high shared-host load the first `$` call in each of
 // this file's tests (the plugin's own startup) can outlast 5000ms (claude-factory-abm)
@@ -35,16 +36,19 @@ test(
     on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
     for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
       on(event, () => ({ value: undefined }) as never)
-    on('process.run', ($, e) => {
-      ran.push([...e.argv])
-      return {
-        value: {
-          exitCode: 0,
-          stdout: e.argv.includes('tick') ? JSON.stringify(TICK) : '',
-          stderr: '',
-        } as never,
-      }
-    })
+    on(
+      'process.run',
+      coreRun(($, e) => {
+        ran.push([...e.argv])
+        return {
+          value: {
+            exitCode: 0,
+            stdout: e.argv.includes('tick') ? JSON.stringify(TICK) : '',
+            stderr: '',
+          } as never,
+        }
+      }),
+    )
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
     await $.command.run({ command: 'factory', args: 'interview' } as never)
@@ -132,21 +136,24 @@ test(
     on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
     for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
       on(event, () => ({ value: undefined }) as never)
-    on('process.run', ($, e) => {
-      ran.push([...e.argv])
-      if (e.argv.includes('decide')) {
-        const [run, outcome] = e.argv.slice(e.argv.indexOf('decide') + 1)
-        runs = runs.map(r => (r.id === run ? { ...r, gate: undefined, agent: `${outcome} decided` } : r))
-      }
-      const out = e.argv.includes('tick')
-        ? JSON.stringify({ ...GATE_TICK, runs })
-        : e.argv.includes('decisions') && e.argv.includes('answer')
-          ? 'answered api-7'
-          : e.argv.includes('decisions')
-            ? JSON.stringify(DECISIONS)
-            : ''
-      return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
-    })
+    on(
+      'process.run',
+      coreRun(($, e) => {
+        ran.push([...e.argv])
+        if (e.argv.includes('decide')) {
+          const [run, outcome] = e.argv.slice(e.argv.indexOf('decide') + 1)
+          runs = runs.map(r => (r.id === run ? { ...r, gate: undefined, agent: `${outcome} decided` } : r))
+        }
+        const out = e.argv.includes('tick')
+          ? JSON.stringify({ ...GATE_TICK, runs })
+          : e.argv.includes('decisions') && e.argv.includes('answer')
+            ? 'answered api-7'
+            : e.argv.includes('decisions')
+              ? JSON.stringify(DECISIONS)
+              : ''
+        return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
+      }),
+    )
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
     await $.command.run({ command: 'factory', args: 'interview' } as never)
@@ -158,8 +165,8 @@ test(
       props: { bodyColumns: 100, placement: 'dock' } as never,
       viewport: { columns: 100, rows: 60 },
     })
-    // the gate alone, nothing swept yet
-    expect(JSON.stringify(await ui.drawn())).toContain('questions (1)')
+    // opening the tab reads the core list: the gate and the bead
+    expect(JSON.stringify(await ui.drawn())).toContain('questions (2)')
 
     await ui.press({ key: 'iv-sweep' })
     await clock.settle()
@@ -201,30 +208,33 @@ test(
     on('ui.status', (_, e) => (status.push(e), { value: undefined }) as never)
     for (const event of ['ui.open', 'ui.toast'] as const) on(event, () => ({ value: undefined }) as never)
     let decisionsOk = true
-    on('process.run', ($, e) => {
-      if (e.argv.includes('tick'))
-        return {
-          value: {
-            exitCode: 0,
-            stdout: JSON.stringify({ manager: [], rigs: [], runs: [] }),
-            stderr: '',
-          } as never,
-        }
-      if (e.argv.includes('decisions'))
-        return decisionsOk
-          ? {
-              value: {
-                exitCode: 0,
-                stdout: JSON.stringify({
-                  rigs: [{ rig: 'api', factory: 'lifecycle', beads: [], error: 'boom: bd ready failed' }],
-                  proposals: {},
-                }),
-                stderr: '',
-              } as never,
-            }
-          : { value: { exitCode: 1, stdout: '', stderr: 'bd: connection refused' } as never }
-      return { value: { exitCode: 0, stdout: '', stderr: '' } as never }
-    })
+    on(
+      'process.run',
+      coreRun(($, e) => {
+        if (e.argv.includes('tick'))
+          return {
+            value: {
+              exitCode: 0,
+              stdout: JSON.stringify({ manager: [], rigs: [], runs: [] }),
+              stderr: '',
+            } as never,
+          }
+        if (e.argv.includes('decisions'))
+          return decisionsOk
+            ? {
+                value: {
+                  exitCode: 0,
+                  stdout: JSON.stringify({
+                    rigs: [{ rig: 'api', factory: 'lifecycle', beads: [], error: 'boom: bd ready failed' }],
+                    proposals: {},
+                  }),
+                  stderr: '',
+                } as never,
+              }
+            : { value: { exitCode: 1, stdout: '', stderr: 'bd: connection refused' } as never }
+        return { value: { exitCode: 0, stdout: '', stderr: '' } as never }
+      }),
+    )
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
     await $.command.run({ command: 'factory', args: 'interview' } as never)
@@ -270,17 +280,20 @@ test(
     on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
     for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
       on(event, () => ({ value: undefined }) as never)
-    on('process.run', ($, e) => {
-      ran.push([...e.argv])
-      const out = e.argv.includes('tick')
-        ? JSON.stringify({ manager: [], rigs: [], runs: [] })
-        : e.argv.includes('decisions') && e.argv.includes('answer')
-          ? 'answered api-9'
-          : e.argv.includes('decisions')
-            ? JSON.stringify(OWNED_DECISIONS)
-            : ''
-      return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
-    })
+    on(
+      'process.run',
+      coreRun(($, e) => {
+        ran.push([...e.argv])
+        const out = e.argv.includes('tick')
+          ? JSON.stringify({ manager: [], rigs: [], runs: [] })
+          : e.argv.includes('decisions') && e.argv.includes('answer')
+            ? 'answered api-9'
+            : e.argv.includes('decisions')
+              ? JSON.stringify(OWNED_DECISIONS)
+              : ''
+        return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
+      }),
+    )
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
     await $.command.run({ command: 'factory', args: 'interview' } as never)
@@ -314,19 +327,22 @@ test(
     on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
     for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
       on(event, () => ({ value: undefined }) as never)
-    on('process.run', ($, e) => {
-      ran.push([...e.argv])
-      const out = e.argv.includes('tick')
-        ? JSON.stringify({ manager: [], rigs: [], runs: [] })
-        : e.argv.includes('decisions') && e.argv.includes('answer')
-          ? 'answered api-9'
-          : e.argv.includes('decisions')
-            ? JSON.stringify(OWNED_DECISIONS)
-            : e.argv.includes('start')
-              ? 'started lifecycle-xyz'
-              : ''
-      return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
-    })
+    on(
+      'process.run',
+      coreRun(($, e) => {
+        ran.push([...e.argv])
+        const out = e.argv.includes('tick')
+          ? JSON.stringify({ manager: [], rigs: [], runs: [] })
+          : e.argv.includes('decisions') && e.argv.includes('answer')
+            ? 'answered api-9'
+            : e.argv.includes('decisions')
+              ? JSON.stringify(OWNED_DECISIONS)
+              : e.argv.includes('start')
+                ? 'started lifecycle-xyz'
+                : ''
+        return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
+      }),
+    )
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
     await $.command.run({ command: 'factory', args: 'interview' } as never)
@@ -365,19 +381,22 @@ test(
     on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
     for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
       on(event, () => ({ value: undefined }) as never)
-    on('process.run', ($, e) => {
-      ran.push([...e.argv])
-      if (e.argv.includes('start'))
-        return { value: { exitCode: 1, stdout: '', stderr: 'no room on the rig' } as never }
-      const out = e.argv.includes('tick')
-        ? JSON.stringify({ manager: [], rigs: [], runs: [] })
-        : e.argv.includes('decisions') && e.argv.includes('answer')
-          ? 'answered api-9'
-          : e.argv.includes('decisions')
-            ? JSON.stringify(OWNED_DECISIONS)
-            : ''
-      return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
-    })
+    on(
+      'process.run',
+      coreRun(($, e) => {
+        ran.push([...e.argv])
+        if (e.argv.includes('start'))
+          return { value: { exitCode: 1, stdout: '', stderr: 'no room on the rig' } as never }
+        const out = e.argv.includes('tick')
+          ? JSON.stringify({ manager: [], rigs: [], runs: [] })
+          : e.argv.includes('decisions') && e.argv.includes('answer')
+            ? 'answered api-9'
+            : e.argv.includes('decisions')
+              ? JSON.stringify(OWNED_DECISIONS)
+              : ''
+        return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
+      }),
+    )
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
     await $.command.run({ command: 'factory', args: 'interview' } as never)
@@ -426,50 +445,44 @@ const DECISIONS_WITH_PROPOSAL = {
   },
 }
 
-test(
-  "the sweep merges the manager's proposed options into a bare item already open from the tick",
-  SLOW,
-  async ($, on) => {
-    const clock = mock.clock(on)
-    on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
-    for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
-      on(event, () => ({ value: undefined }) as never)
-    on('process.run', ($, e) => {
+test("the core list merges the manager's proposed options into a stuck run's item", SLOW, async ($, on) => {
+  const clock = mock.clock(on)
+  on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
+  for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
+    on(event, () => ({ value: undefined }) as never)
+  on(
+    'process.run',
+    coreRun(($, e) => {
       const out = e.argv.includes('tick')
         ? JSON.stringify(STUCK_TICK)
         : e.argv.includes('decisions')
           ? JSON.stringify(DECISIONS_WITH_PROPOSAL)
           : ''
       return { value: { exitCode: 0, stdout: out, stderr: '' } as never }
-    })
-    await $.command.run({ command: 'factory', args: 'status' } as never)
-    await clock.settle()
-    await $.command.run({ command: 'factory', args: 'interview' } as never)
-    const ui = await $.ui.mount({
-      plugin: 'factory',
-      surface: 'terminal',
-      component: 'Pane',
-      requestId: 'factory',
-      props: { bodyColumns: 100, placement: 'dock' } as never,
-      viewport: { columns: 100, rows: 60 },
-    })
-    // the stuck run is open from the tick alone, with no options of its own yet
-    const before = JSON.stringify(await ui.drawn())
-    expect(before).toContain('questions (1)')
-    expect(before).not.toContain('retry it')
+    }),
+  )
+  await $.command.run({ command: 'factory', args: 'status' } as never)
+  await clock.settle()
+  await $.command.run({ command: 'factory', args: 'interview' } as never)
+  const ui = await $.ui.mount({
+    plugin: 'factory',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'factory',
+    props: { bodyColumns: 100, placement: 'dock' } as never,
+    viewport: { columns: 100, rows: 60 },
+  })
+  // opening the tab reads the core list: the stuck run already carries the manager's proposed options
+  const swept = JSON.stringify(await ui.drawn())
+  expect(swept).toContain('questions (1)')
+  expect(swept).toContain('retry it')
+  expect(swept).toContain('escalate to the person')
 
-    await ui.press({ key: 'iv-sweep' })
-    await clock.settle()
-    const swept = JSON.stringify(await ui.drawn())
-    expect(swept).toContain('retry it')
-    expect(swept).toContain('escalate to the person')
-
-    await ui.press({ key: 'iv-opt-iv:s1@5-0' }) // 'retry it'
-    await clock.settle()
-    expect(JSON.stringify(await ui.drawn())).toContain('answered (1)')
-    await ui.unmount()
-  },
-)
+  await ui.press({ key: 'iv-opt-iv:s1@5-0' }) // 'retry it'
+  await clock.settle()
+  expect(JSON.stringify(await ui.drawn())).toContain('answered (1)')
+  await ui.unmount()
+})
 
 // two runs parked on the same bead, from two different stations: mergeSame folds them into one open item
 const SAME_BEAD_TICK = {
@@ -516,16 +529,19 @@ test(
     on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
     for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
       on(event, () => ({ value: undefined }) as never)
-    on('process.run', ($, e) => {
-      ran.push([...e.argv])
-      return {
-        value: {
-          exitCode: 0,
-          stdout: e.argv.includes('tick') ? JSON.stringify(SAME_BEAD_TICK) : '',
-          stderr: '',
-        } as never,
-      }
-    })
+    on(
+      'process.run',
+      coreRun(($, e) => {
+        ran.push([...e.argv])
+        return {
+          value: {
+            exitCode: 0,
+            stdout: e.argv.includes('tick') ? JSON.stringify(SAME_BEAD_TICK) : '',
+            stderr: '',
+          } as never,
+        }
+      }),
+    )
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
     await $.command.run({ command: 'factory', args: 'interview' } as never)
@@ -567,19 +583,22 @@ test(
     on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
     for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
       on(event, () => ({ value: undefined }) as never)
-    on('process.run', ($, e) => {
-      ran.push([...e.argv])
-      // 'ra' mails fine; 'rb' fails, as a station gone from the board between tick and send would
-      if (e.argv.includes('mail') && e.argv.includes('rb'))
-        return { value: { exitCode: 1, stdout: '', stderr: 'rb: no such run' } as never }
-      return {
-        value: {
-          exitCode: 0,
-          stdout: e.argv.includes('tick') ? JSON.stringify(SAME_BEAD_TICK) : '',
-          stderr: '',
-        } as never,
-      }
-    })
+    on(
+      'process.run',
+      coreRun(($, e) => {
+        ran.push([...e.argv])
+        // 'ra' mails fine; 'rb' fails, as a station gone from the board between tick and send would
+        if (e.argv.includes('mail') && e.argv.includes('rb'))
+          return { value: { exitCode: 1, stdout: '', stderr: 'rb: no such run' } as never }
+        return {
+          value: {
+            exitCode: 0,
+            stdout: e.argv.includes('tick') ? JSON.stringify(SAME_BEAD_TICK) : '',
+            stderr: '',
+          } as never,
+        }
+      }),
+    )
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
     await $.command.run({ command: 'factory', args: 'interview' } as never)
@@ -611,17 +630,20 @@ test(
     on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
     for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
       on(event, () => ({ value: undefined }) as never)
-    on('process.run', ($, e) => {
-      if (e.argv.includes('mail') && e.argv.includes('rb'))
-        return { value: { exitCode: 1, stdout: '', stderr: 'rb: no such run' } as never }
-      return {
-        value: {
-          exitCode: 0,
-          stdout: e.argv.includes('tick') ? JSON.stringify(SAME_BEAD_TICK) : '',
-          stderr: '',
-        } as never,
-      }
-    })
+    on(
+      'process.run',
+      coreRun(($, e) => {
+        if (e.argv.includes('mail') && e.argv.includes('rb'))
+          return { value: { exitCode: 1, stdout: '', stderr: 'rb: no such run' } as never }
+        return {
+          value: {
+            exitCode: 0,
+            stdout: e.argv.includes('tick') ? JSON.stringify(SAME_BEAD_TICK) : '',
+            stderr: '',
+          } as never,
+        }
+      }),
+    )
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
     await $.command.run({ command: 'factory', args: 'interview' } as never)
@@ -652,17 +674,20 @@ test(
     on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
     for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
       on(event, () => ({ value: undefined }) as never)
-    on('process.run', ($, e) => {
-      if (e.argv.includes('mail') && e.argv.includes('rb'))
-        return { value: { exitCode: 1, stdout: '', stderr: 'rb: no such run' } as never }
-      return {
-        value: {
-          exitCode: 0,
-          stdout: e.argv.includes('tick') ? JSON.stringify(SAME_BEAD_TICK) : '',
-          stderr: '',
-        } as never,
-      }
-    })
+    on(
+      'process.run',
+      coreRun(($, e) => {
+        if (e.argv.includes('mail') && e.argv.includes('rb'))
+          return { value: { exitCode: 1, stdout: '', stderr: 'rb: no such run' } as never }
+        return {
+          value: {
+            exitCode: 0,
+            stdout: e.argv.includes('tick') ? JSON.stringify(SAME_BEAD_TICK) : '',
+            stderr: '',
+          } as never,
+        }
+      }),
+    )
     // the test keeps the plugin's state itself, so it can read the draft the plugin wrote
     type Ref = { plugin: string; key: string; id?: string }
     const stored = new Map<string, { value: unknown; version: number }>()
@@ -726,17 +751,20 @@ async function failedMergedRow(
   for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
     on(event, () => ({ value: undefined }) as never)
   let down = failing
-  on('process.run', ($, e) => {
-    if (e.argv.includes('mail') && e.argv.includes(down))
-      return { value: { exitCode: 1, stdout: '', stderr: `${down}: no such run` } as never }
-    return {
-      value: {
-        exitCode: 0,
-        stdout: e.argv.includes('tick') ? JSON.stringify(tick) : '',
-        stderr: '',
-      } as never,
-    }
-  })
+  on(
+    'process.run',
+    coreRun(($, e) => {
+      if (e.argv.includes('mail') && e.argv.includes(down))
+        return { value: { exitCode: 1, stdout: '', stderr: `${down}: no such run` } as never }
+      return {
+        value: {
+          exitCode: 0,
+          stdout: e.argv.includes('tick') ? JSON.stringify(tick) : '',
+          stderr: '',
+        } as never,
+      }
+    }),
+  )
   await $.command.run({ command: 'factory', args: 'status' } as never)
   await clock.settle()
   await $.command.run({ command: 'factory', args: 'interview' } as never)
@@ -795,19 +823,22 @@ test(
     on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
     for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
       on(event, () => ({ value: undefined }) as never)
-    on('process.run', ($, e) => {
-      ran.push([...e.argv])
-      // the station is gone from the board between tick and send, as a real mail failure would be
-      if (e.argv.includes('mail'))
-        return { value: { exitCode: 1, stdout: '', stderr: 'no such run' } as never }
-      return {
-        value: {
-          exitCode: 0,
-          stdout: e.argv.includes('tick') ? JSON.stringify(TICK) : '',
-          stderr: '',
-        } as never,
-      }
-    })
+    on(
+      'process.run',
+      coreRun(($, e) => {
+        ran.push([...e.argv])
+        // the station is gone from the board between tick and send, as a real mail failure would be
+        if (e.argv.includes('mail'))
+          return { value: { exitCode: 1, stdout: '', stderr: 'no such run' } as never }
+        return {
+          value: {
+            exitCode: 0,
+            stdout: e.argv.includes('tick') ? JSON.stringify(TICK) : '',
+            stderr: '',
+          } as never,
+        }
+      }),
+    )
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
     await $.command.run({ command: 'factory', args: 'interview' } as never)
@@ -868,16 +899,19 @@ test(
     on('fs.stat', () => ({ value: { realPath: '/repo/mod' } }) as never)
     for (const event of ['ui.open', 'ui.status', 'ui.toast'] as const)
       on(event, () => ({ value: undefined }) as never)
-    on('process.run', ($, e) => {
-      ran.push([...e.argv])
-      return {
-        value: {
-          exitCode: 0,
-          stdout: e.argv.includes('tick') ? JSON.stringify(STEPS_TICK) : '',
-          stderr: '',
-        } as never,
-      }
-    })
+    on(
+      'process.run',
+      coreRun(($, e) => {
+        ran.push([...e.argv])
+        return {
+          value: {
+            exitCode: 0,
+            stdout: e.argv.includes('tick') ? JSON.stringify(STEPS_TICK) : '',
+            stderr: '',
+          } as never,
+        }
+      }),
+    )
     await $.command.run({ command: 'factory', args: 'status' } as never)
     await clock.settle()
     await $.command.run({ command: 'factory', args: 'interview' } as never)

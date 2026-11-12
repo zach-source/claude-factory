@@ -11,6 +11,7 @@ import * as chat from './chat'
 import { check, type Role } from './guards'
 import * as backlogOps from './ops/backlog'
 import * as decisionsOps from './ops/decisions'
+import * as interviewOps from './ops/interview'
 import * as gatesOps from './ops/gates'
 import * as gcOps from './ops/gc'
 import * as imageOps from './ops/image'
@@ -51,14 +52,14 @@ export type Port = {
   status: (id: string | undefined, print: Print) => Promise<void>
   backlog: () => Promise<unknown>
   prs: () => Promise<unknown>
-  decisionsList: () => unknown
-  planShowText: () => string
+  decisionsList: () => unknown | Promise<unknown>
+  planShowText: () => string | Promise<string>
   gateBriefFacts: (id: string | undefined) => Promise<unknown>
-  records: () => RunRecord[]
+  records: () => RunRecord[] | Promise<RunRecord[]>
   /** the factory (default lifecycle) and its runs, for flows.show */
   flowData: (factory: string | undefined) => Promise<{ def: Factory; runs: FlowRun[] }>
   refreshMerges: (recs: RunRecord[]) => Promise<RunRecord[]>
-  managerUsage: (since: number) => ManagerUsage[]
+  managerUsage: (since: number) => ManagerUsage[] | Promise<ManagerUsage[]>
   rigList: (print: Print) => Promise<void>
   decide: (id: string | undefined, outcome: string | undefined, note: string, print: Print) => Promise<void>
   decisionsAnswer: (rig: string, bead: string, text: string, print: Print) => void
@@ -76,6 +77,9 @@ export type Port = {
   }) => Promise<{ code: number; out: string }>
   /** type text and Enter into the manager pane (ax.say) */
   say: (text: string) => unknown
+  /** the pod's manager task: a new image (delete and apply), and suspend or resume (managersup) */
+  managerImage: (image: string) => Promise<void>
+  managerSuspend: (on: boolean) => Promise<void>
   mail: (
     m: { id: string | undefined; to: string | undefined; text: string; wake: boolean },
     who: { env: Env; cwd: string },
@@ -385,11 +389,14 @@ export function slimBoard(b: unknown): unknown {
   return { ...o, runs, ...(rigs ? { rigs } : {}) }
 }
 
-/** the view names of `snapshot`: the group of each read op that has no required input */
+/**
+ * the view names of `snapshot`: the group of each read op that has no required input, or one full op name
+ * (`manager.context`) when a group has several such ops and the first is not the one wanted
+ */
 const viewOp = (view: string): Op | undefined =>
   CATALOG.find(
     o =>
-      o.name.split('.')[0] === view &&
+      (view.includes('.') ? o.name === view : o.name.split('.')[0] === view) &&
       o.name !== 'snapshot.show' &&
       o.route.method === 'GET' &&
       o.rights === 'read' &&
@@ -709,6 +716,16 @@ export const CATALOG: Op[] = makeCatalog([
     'text',
     (c, i) => decisionsOps.list(c, i),
   ),
+  local(
+    {
+      name: 'interview.list',
+      summary: 'List the open questions for the person: gates, parked and stuck runs, and bead decisions.',
+      method: 'GET',
+      path: '/v1/interview',
+    },
+    'json',
+    (c, i) => interviewOps.list(c, i),
+  ),
   local({ name: 'plan.show', summary: 'Show the plan.', method: 'GET', path: '/v1/plan' }, 'text', (c, i) =>
     planOps.show(c, i),
   ),
@@ -798,6 +815,31 @@ export const CATALOG: Op[] = makeCatalog([
     },
     'text',
     (c, i) => managerOps.log(c, i),
+  ),
+  local(
+    {
+      name: 'manager.image',
+      summary:
+        'Set the image of the manager task. The pod deletes the task and its workspace, then applies it.',
+      method: 'POST',
+      path: '/v1/manager/image',
+      rights: 'owner',
+      inputs: [f('image', 'text', true, 'the image reference')],
+    },
+    'text',
+    (c, i) => managerOps.image(c, i),
+  ),
+  local(
+    {
+      name: 'manager.suspend',
+      summary: 'Suspend the manager task, or resume it. The pod keeps ticking.',
+      method: 'POST',
+      path: '/v1/manager/suspend',
+      rights: 'owner',
+      inputs: [f('resume', 'flag', false, 'resume the task instead')],
+    },
+    'text',
+    (c, i) => managerOps.suspend(c, i),
   ),
   local(
     {
@@ -1230,5 +1272,18 @@ export const CATALOG: Op[] = makeCatalog([
     },
     'text',
     (c, i) => decisionsOps.answer(c, i),
+  ),
+  local(
+    {
+      name: 'interview.answer',
+      summary:
+        'Answer an open question: decide a gate, answer a bead, start an owner-only bead, or mail a run.',
+      method: 'POST',
+      path: '/v1/interview/answer',
+      rights: 'owner',
+      inputs: [id('item'), f('choice', 'text'), f('text', 'note')],
+    },
+    'text',
+    (c, i) => interviewOps.answer(c, i),
   ),
 ])

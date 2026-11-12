@@ -951,9 +951,9 @@ export const resume = (task: string) => must(['resume', 'task', task])
  * the task (its actor's egress policy goes with it) and its workspace; gone already is fine. Both deletes always run.
  * Returns undefined when each worked or was gone, else the failure text (200 characters at most for each delete).
  */
-export function remove(task: string) {
+export function remove(task: string, kinds: readonly ('task' | 'workspace')[] = ['task', 'workspace']) {
   const fails: string[] = []
-  for (const kind of ['task', 'workspace'] as const) {
+  for (const kind of kinds) {
     const r = ax(['delete', kind, task])
     if (!r.ok && !missing(r.err, kind, task))
       fails.push(`delete ${kind}: ${(r.err || r.out.trim()).slice(0, 200)}`)
@@ -1302,6 +1302,27 @@ export const managerGithubKey = (env: Record<string, string | undefined> = proce
   env.FACTORY_AX_BACKUP_REMOTE ? 'GITHUB_BASIC_MANAGER' : 'GITHUB_BASIC'
 
 /**
+ * The env of the session-only manager task (gogxc.19): managerEnv without a home and without the backup and
+ * migration knobs, since the pod owns the state, plus the pod address. Throws when the pod address is not set.
+ */
+export function sessionEnv(env: Record<string, string | undefined> = process.env) {
+  const server = env.FACTORY_SERVER_MANAGER_URL
+  if (!server)
+    throw new Error('FACTORY_SERVER_MANAGER_URL is not set: the manager task needs the pod address')
+  const rest: Record<string, string | undefined> = { ...managerEnv(env) }
+  for (const k of [
+    'FACTORY_HOME',
+    'FACTORY_AX_BACKUP_REMOTE',
+    'FACTORY_AX_BACKUP_BRANCH',
+    'FACTORY_AX_BACKUP_EVERY',
+    'FACTORY_AX_FRESH',
+    'FACTORY_AX_MANAGER_DRY',
+  ])
+    delete rest[k]
+  return { ...rest, FACTORY_SERVER: server }
+}
+
+/**
  * apply the manager task (`factory manager host <args>` from `image`) and its egress policy. The actor appears
  * a moment after apply, and no tick comes after this to retry, so this retries; false when it never appeared
  */
@@ -1309,12 +1330,17 @@ export async function launchManager(
   image: string,
   args: string[],
   rigs: Parameters<typeof managerEgress>[1] = [],
-  { tries = 24, waitMs = 5000, launch: id }: { tries?: number; waitMs?: number; launch?: string } = {},
+  {
+    tries = 24,
+    waitMs = 5000,
+    launch: id,
+    session = false,
+  }: { tries?: number; waitMs?: number; launch?: string; session?: boolean } = {},
 ) {
   const name = managerTask()
   // the host trusts only a .migrated with this id (managerhost.markerOk)
-  const env = { ...managerEnv(), ...(id && { FACTORY_AX_LAUNCH_ID: id }) }
-  launch({ name, image, command: ['factory', 'manager', 'host', ...args], env })
+  const env = { ...(session ? sessionEnv() : managerEnv()), ...(id && { FACTORY_AX_LAUNCH_ID: id }) }
+  launch({ name, image, command: ['factory', 'manager', session ? 'session' : 'host', ...args], env })
   for (let i = 0; i < tries; i++) {
     if (
       createPolicy(

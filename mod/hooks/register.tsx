@@ -46,7 +46,6 @@ import {
   isValidPlan,
   line,
   mailKey,
-  openInterviews,
   patrol,
   patrolsText,
   pmDue,
@@ -108,6 +107,8 @@ const decisions = atom(
   { plugin: 'factory', key: 'decisions' } as const,
   { rigs: [], proposals: {} } as FactoryDecisions,
 )
+/** the open questions for the person: the core list (`factory interview`), the same for every front end */
+const interviewList = atom({ plugin: 'factory', key: 'interviewList' } as const, [] as Interview[])
 /** runs holding a worker, one sample a tick: the header's sparkline */
 const history = atom({ plugin: 'factory', key: 'history' } as const, [] as number[])
 /** the last patrol's log entry, drawn in the pane header and band; null before any patrol wrote one */
@@ -1142,9 +1143,23 @@ async function refresh($: EngineInterface) {
  * with a status line instead of dropped silently, so the person knows the open list may be stale. */
 async function sweepDecisions($: EngineInterface) {
   rt.decisionsAt = await $.clock.now()
-  const { isOk, out } = await factory($, ['decisions'])
-  if (isOk) await update($, decisions, () => JSON.parse(out) as FactoryDecisions)
-  else $.ui.status(`factory decisions failed: ${cutText(out.split('\n')[0] ?? '', 80)}`)
+  // a failed call, or output that is not JSON, gets a status line: the open list may be stale
+  const told = (what: string, err: unknown) =>
+    $.ui.status(`factory ${what} failed: ${cutText((err as Error).message, 80)}`)
+  const dec = await factory($, ['decisions'])
+  try {
+    if (!dec.isOk) throw new Error(dec.out.split('\n')[0])
+    await update($, decisions, () => JSON.parse(dec.out) as FactoryDecisions)
+  } catch (err) {
+    told('decisions', err)
+  }
+  const iv = await factory($, ['interview'])
+  try {
+    if (!iv.isOk) throw new Error(iv.out.split('\n')[0])
+    await update($, interviewList, () => JSON.parse(iv.out) as Interview[])
+  } catch (err) {
+    told('interview', err)
+  }
 }
 
 /**
@@ -1159,10 +1174,7 @@ async function interviewMe($: EngineInterface) {
   await sweepDecisions($)
   if (rt.isInterviewing) return
   if (!(await isPaneSession($))) return
-  const [b, dec, d] = await Promise.all([read($, board), read($, decisions), read($, draft)])
-  const answered = Object.fromEntries((d.interviewed ?? []).map(x => [x.key, x.answer]))
-  const items = openInterviews(b.runs, dec.rigs, dec.proposals, answered)
-  const text = interviewPrompt(items)
+  const text = interviewPrompt(await read($, interviewList))
   if (!text) return
   rt.isInterviewing = true
   // not awaited: it resolves only once the session is idle and this round's turn starts, like a patrol
@@ -1180,6 +1192,8 @@ async function act($: EngineInterface, args: string[]) {
   const { isOk, out } = await factory($, args)
   $.ui.toast(out.split('\n').at(-1) || `${args.join(' ')}: queued`)
   rt.backlogAt = 0 // a queue or start changes the backlog: the next tick lists it again
+  // a decide or an answer changes the open list: read it from the core again
+  if (['decide', 'interview', 'decisions'].includes(args[0] ?? '')) await sweepDecisions($)
   void tick($)
   return isOk
 }
@@ -1192,6 +1206,7 @@ async function show($: EngineInterface, next: FactoryView, run?: string) {
     await update($, draft, d => ({ ...d, target: '', mail: '' }))
   }
   if (next === 'backlog') rt.backlogAt = 0 // opening the tab lists it now, not at the next throttle window
+  if (next === 'interview') rt.decisionsAt = -Infinity // the same: read the open list from the core now
   await update($, view, () => next)
   // columns: the dock's width beside a fullscreen transcript; rows: its height inline above the prompt
   await $.ui.open({ id: PANE, title: 'Factory', focus: true, rows: 40, columns: 100 })
@@ -1292,27 +1307,27 @@ async function interview($: EngineInterface, iv: Interview, choice?: string) {
         interviewed: [...(d.interviewed ?? []), ...entries].slice(-100),
       }
     })
-  for (const member of [iv, ...(iv.also ?? [])]) {
-    const text = interviewAnswer(member, choice, typed)
-    if (!text) {
-      await flush(false)
-      return $.ui.toast('factory: pick an option or type an answer')
-    }
-    if (member.kind === 'bead' || member.kind === 'owned') {
-      if (!(await act($, ['decisions', 'answer', member.rig!, member.bead!, text]))) return await flush(false)
-      if (member.kind === 'owned' && choice === 'start now') {
-        const row = (await read($, decisions)).rigs.find(r => r.rig === member.rig)
-        if (!(await act($, ['start', row?.factory ?? 'lifecycle', member.rig!, member.bead!, '--owned'])))
-          return await flush(false)
-      }
-    } else {
-      if (!(await act($, ['mail', member.run!, member.node!, '--wake', text]))) return await flush(false)
-      if (member.kind === 'stuck') await act($, [choice === 'abort' ? 'abort' : 'retry', member.run!])
-    }
+  if (!interviewAnswer(iv, choice, typed)) {
+    await flush(false)
+    return $.ui.toast('factory: pick an option or type an answer')
+  }
+  // hpmc.35: the core routes the answer (gate, bead, start now, mail, retry); `''` is no choice
+  const isOk = await act($, [
+    'interview',
+    'answer',
+    iv.key,
+    choice ?? '',
+    ...(typed.trim() ? [typed.trim()] : []),
+  ])
+  // a member that the core answered is no longer open (act read the list again); one that it did not stays
+  const stillOpen = new Set(
+    (await read($, interviewList)).flatMap(m => [m, ...(m.also ?? [])]).map(m => m.key),
+  )
+  for (const member of [iv, ...(iv.also ?? [])].filter(m => !stillOpen.has(m.key))) {
     rt.unsent.push({
       run: member.run ?? member.bead ?? member.key,
       from: 'person',
-      text: `answered ${member.node ?? member.rig ?? member.kind}'s question in the console: ${text}`,
+      text: `answered ${member.node ?? member.rig ?? member.kind}'s question in the console: ${interviewAnswer(member, choice, typed)}`,
       at,
     })
     // not named answer: the mod loader takes any second `answer` in the file for a redeclared hook function
@@ -1327,7 +1342,7 @@ async function interview($: EngineInterface, iv: Interview, choice?: string) {
       at,
     })
   }
-  await flush(true)
+  await flush(isOk)
 }
 
 /** herdr focuses the worker's pane: the person takes over that terminal */
@@ -1948,7 +1963,7 @@ export const register: Register = (on, options) => {
     const ui = $.ui.resolve(e) as unknown as UI
     const { Box } = ui
     // nothing here may be named h: JSX compiles to calls of the global h
-    const [b, rawShown, d, tail, bl, bt, pr, samples, dr, dec, now, sel, lp, pl] = await Promise.all([
+    const [b, rawShown, d, tail, bl, bt, pr, samples, dr, dec, ivs, now, sel, lp, pl] = await Promise.all([
       read($, board),
       read($, view),
       read($, detail),
@@ -1959,6 +1974,7 @@ export const register: Register = (on, options) => {
       read($, history),
       read($, draft),
       read($, decisions),
+      read($, interviewList),
       $.clock.now(),
       read($, selected),
       read($, lastPatrol),
@@ -1984,7 +2000,7 @@ export const register: Register = (on, options) => {
             : shown === 'rigs'
               ? rigsView(p, b, pl, rt.pmBlocked, rt.patrolFallback)
               : shown === 'interview'
-                ? interviewView(p, b, dr, dec)
+                ? interviewView(p, b, dr, dec, ivs)
                 : shown === 'runners'
                   ? runnersView(p, b)
                   : boardView(p, b, dr, sel, d, tail)

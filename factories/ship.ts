@@ -63,6 +63,12 @@ const SONNET = claude('exec_model')
 const OPUS = claude('judge_model')
 // stations that read or change production need the laptop's kubectl, cluster access and network
 const LAPTOP = 'herdr'
+// A share of a station's runs launch as codex (cli.ts splitPick). Params: codex_<station>_model, _effort and _share.
+// deploy, soak and rollback change or read production, so they have no codex split.
+const codexAt = (station: string) => ({
+  agent: `{codex} -m '{codex_${station}_model}' -c model_reasoning_effort='{codex_${station}_effort}'`,
+  share: `codex_${station}_share`,
+})
 
 const rules = `- Read the repo's CLAUDE.md, AGENTS.md or CONTRIBUTING first; its conventions, toolchain and commands win over your habits.
 - Small commits whose messages say why. Run the formatter and linters on what you touch. Never skip, disable or weaken a test to get green.
@@ -100,12 +106,23 @@ export default {
     exec_model: 'claude-sonnet-5-5[1m]', // execution
     judge_model: 'claude-fable-5-2[1m]', // planning, judgment, review
     security_model: 'claude-fable-5-2', // security and architecture
+    codex: 'codex --dangerously-bypass-approvals-and-sandbox', // the codex launcher (the deny hook stays on)
+    codex_queue_model: 'gpt-6-luna', // codex at queue
+    codex_queue_effort: 'low', // reasoning effort of codex at queue
+    codex_queue_share: '0.4', // share of runs whose queue uses codex; 0 turns it off
+    codex_release_model: 'gpt-6-luna', // codex at release
+    codex_release_effort: 'low', // reasoning effort of codex at release
+    codex_release_share: '0.4', // share of runs whose release uses codex; 0 turns it off
+    codex_postmortem_model: 'gpt-6-astra', // codex at postmortem
+    codex_postmortem_effort: 'medium', // reasoning effort of codex at postmortem
+    codex_postmortem_share: '0.3', // share of runs whose postmortem uses codex; 0 turns it off
   },
   backoffSec: 60,
   maxSteps: 24,
   rules,
   nodes: {
     queue: {
+      split: codexAt('queue'),
       runner: LAPTOP,
       timeoutMin: 75,
       prompt: `You own this rig's ship queue. Read it first: \`factory ship <rig>\` prints the open beads labeled ship, oldest handoff first, with the pull request, the run and the age of each. The first line is the next pull request to merge. Each bead's metadata holds ship_pr and ship_branch. Change nothing before you have read it all.
@@ -115,6 +132,7 @@ Report ready when at least one queued pull request is current with origin/{base_
       next: { ready: 'release', again: 'queue', empty: 'done' },
     },
     release: {
+      split: codexAt('release'),
       holdMail: true,
       timeoutMin: 60,
       prompt: `Every child task of the bead must be closed (bd children <bead>). If one is open, report changes and name it. ${reviewedHead} ${worseGate} Prepare the release of every queued pull request that the queue reported as current with origin/{base_branch} and free of conflict, in merge order. For each one, make the pull request title one good changelog line (retitle it with \`gh pr edit <n> -R <repo> --title\` when it is not), add the version bump the repo's conventions call for, update the pull request description (\`gh pr edit <n> -R <repo> --body-file <path>\`) with the plan's summary, the verification evidence and a rollback plan, and mark it ready with \`gh pr ready\` if it is still a draft (the station that approved it usually did). Right after you mark it, read \`gh pr view <n> --json headRefOid\` again. If it is not the head you checked against the Reviewed head, run \`gh pr ready <n> --undo\` at once. Do the same if the read fails. Then report changes with the new SHAs. If the undo fails, report blocked with the pull request link. Do not edit CHANGELOG.md in a pull request. The repo's release step writes the changelog at release (tag) time from the merged pull request titles. Wait for CI and read every failing check. Do not mark a pull request ready when it has a conflict or a red check: list it on its own with the reason.
@@ -179,6 +197,7 @@ Report recovered with what you did, the evidence of recovery, the revert pull re
       next: { recovered: 'postmortem' },
     },
     postmortem: {
+      split: codexAt('postmortem'),
       agent: OPUS,
       timeoutMin: 45,
       prompt: `Write the blameless postmortem from the journal: impact, timeline, root cause, contributing factors, what went well, and the action items. File each action item that needs work (missing tests, alerts, runbooks, guardrails) as separate work for a person to prioritize. When the factory itself let this happen (a station that missed it, a prompt, a rule, a gate), file the change to .factory/ the same way, for a person to prioritize.

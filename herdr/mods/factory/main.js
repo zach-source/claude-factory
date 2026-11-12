@@ -28,6 +28,7 @@ import {
 } from 'herdr'
 import {
   agentsOf,
+  headerText,
   answerArgs,
   board,
   interviewItems,
@@ -36,7 +37,6 @@ import {
   newlyBlocked,
   parseConfig,
   shortId,
-  statusText,
   actionWords,
   snapshotWords,
   serverCall,
@@ -57,10 +57,8 @@ import {
   FLOW_WINDOWS,
   flowJobWords,
   flowLayout,
-  managerLimitText,
-  managerContextText,
   parseContext,
-  managerCodexAuthText,
+  contextProblem,
   parseFlows,
   recentMovers,
 } from './view.js'
@@ -74,12 +72,12 @@ const configPath = () => `${appHome()}/mods/factory/config.json`
 export default class Factory extends View {
   init(_props, cx) {
     this.cfg = null
+    this.cx = cx
     this.getCache = {} // GET path -> { at, r }
     this.jobs = {} // name -> { at, result? }
     this.selected = null
     this.screen = ''
     this.before = {}
-    this.mailSeen = 0
     this.tab = 'board' // 'board' | 'flow'
     this.lens = 'live'
     this.flowWindow = '24h'
@@ -92,11 +90,7 @@ export default class Factory extends View {
     if (p.band || p.dialog) return // only the panel copy polls
     cx.spawn(async cx => {
       const text = await readTextFile(configPath()) // the config is on this machine
-      try {
-        this.cfg = parseConfig(text)
-      } catch {
-        this.cfg = null
-      }
+      this.cfg = parseConfig(text) // null for a missing or bad file
       cx.notify()
       if (!this.cfg) return
       cx.timer.every(TICK_MS, cx => this.beat(cx))
@@ -133,6 +127,36 @@ export default class Factory extends View {
     )
       .then(r => (mine.result = { code: r.code, out: r.stdout, err: r.stderr }))
       .catch(e => (mine.result = { code: 1, out: '', err: String(e) }))
+      .then(() => this.apply(name)) // draw when the call ends, not at the next beat
+  }
+
+  /** shares the result of a finished call with the tabs */
+  apply(name) {
+    const r = this.finished(name)
+    if (!r) return
+    if (name === 'snapshot' || name === 'decisions') {
+      const s = parseSnapshot(r.code, r.out, r.err)
+      if (name === 'snapshot') this.onTick(s.tick)
+      // server mode: the snapshot call holds the interview view too
+      if (s.interview) setShared('factory.interview', s.interview)
+      if (name === 'decisions' || this.cfg.server)
+        this.problem('interview', r.code !== 0 ? s.tick.error : s.interviewError)
+    } else if (name === 'context') {
+      setShared('factory.context', parseContext(r.code, r.out))
+      this.problem('context', contextProblem(r.code, r.out, r.err))
+    } else if (name === 'flows') {
+      this.flow = parseFlows(r.code, r.out, r.err)
+      if (this.flow.graph) this.flowCache[this.flowKey()] = this.flow
+    }
+    this.cx.notify()
+  }
+
+  /** sets or clears the red line of one failed read (key: interview, context, screen) */
+  problem(key, text) {
+    const all = { ...(shared('factory.problems') ?? {}) }
+    if (text) all[key] = text
+    else delete all[key]
+    setShared('factory.problems', all)
   }
 
   /** the result of a finished call, or null while it runs */
@@ -145,27 +169,9 @@ export default class Factory extends View {
 
   beat(cx) {
     cx.spawn(async cx => {
-      const r = this.finished('snapshot')
-      if (r) {
-        const s = parseSnapshot(r.code, r.out, r.err)
-        this.onTick(s.tick)
-        if (s.decisions) setShared('factory.decisions', s.decisions) // server mode: one call holds both views
-      }
-      const d = this.finished('decisions')
-      if (d) {
-        const s = parseSnapshot(d.code, d.out, d.err)
-        if (s.decisions) setShared('factory.decisions', s.decisions)
-      }
-      const ctxJob = this.finished('context')
-      if (ctxJob) setShared('factory.context', parseContext(ctxJob.code, ctxJob.out))
-      const fl = this.finished('flows')
-      if (fl) {
-        this.flow = parseFlows(fl.code, fl.out, fl.err)
-        if (this.flow.graph) this.flowCache[this.flowKey()] = this.flow
-      }
       // the Flow tab asks for the graph while it is shown
       if (this.tab === 'flow') this.start('flows', flowJobWords(this.flowFactory, this.flowWindow))
-      // the first beat takes any cached board; later beats take one at most BOARD_MAX_AGE old
+      // the first beat takes any cached board; later beats take one at most BOARD_MAX_AGE old (over the beat)
       // the manager's model and context use: one read of its transcript, so each turn shows by the next beat
       const age = this.beats++ ? BOARD_MAX_AGE : FIRST_MAX_AGE
       if (this.cfg.server) {
@@ -173,11 +179,11 @@ export default class Factory extends View {
         this.start('snapshot', null, ['GET', snapshotPath(age)])
         return cx.notify()
       }
-      this.start('context', snapshotWords('manager', BOARD_MAX_AGE))
+      this.start('context', snapshotWords('manager.context', BOARD_MAX_AGE))
       this.start('snapshot', snapshotWords('board', age))
       if (Date.now() - this.decisionsAt >= DECISIONS_MS && !this.jobs.decisions) {
         this.decisionsAt = Date.now()
-        this.start('decisions', snapshotWords('decisions', this.beats > 1 ? DECISIONS_MS : FIRST_MAX_AGE))
+        this.start('decisions', snapshotWords('interview', this.beats > 1 ? DECISIONS_MS : FIRST_MAX_AGE))
       }
       cx.notify()
     })
@@ -188,7 +194,6 @@ export default class Factory extends View {
   }
 
   onTick(res) {
-    if (res.busy) return
     const prev = shared('factory') ?? {}
     if (res.error) {
       setShared('factory', { ...prev, error: res.error, staleSince: prev.staleSince ?? Date.now() })
@@ -201,16 +206,13 @@ export default class Factory extends View {
         level: 'warning',
       })
     this.before = agentsOf(res.runs)
-    if (res.manager.length)
-      notify({ title: 'factory', body: `${res.manager.length} message(s) for the manager`, level: 'info' })
     setShared('factory', {
       runs: res.runs,
       halt: res.halt,
-      readOnly: res.readOnly,
+      lease: res.lease,
       managerLimited: res.managerLimited ?? null,
       managerCodexAuth: res.managerCodexAuth ?? null,
       at: Date.now(),
-      mail: [...(prev.mail ?? []), ...res.manager].slice(-50),
     })
   }
 
@@ -224,6 +226,7 @@ export default class Factory extends View {
       cx.spawn(async cx => {
         const p = await exec(cmd, args).catch(() => null)
         this.screen = (p && (p.stdout || p.stderr).trimEnd()) || 'no worker screen' // the pod text as it is
+        this.problem('screen', p?.code === 0 ? '' : `worker screen: ${line(this.screen, 200)}`)
         cx.notify()
       })
       return
@@ -243,6 +246,10 @@ export default class Factory extends View {
         '14',
       ]).catch(() => null)
       this.screen = p && p.code === 0 ? p.stdout.trimEnd() : 'no worker screen'
+      this.problem(
+        'screen',
+        p?.code === 0 ? '' : `worker screen: ${line(p?.stderr || 'pane read failed', 200)}`,
+      )
       cx.notify()
     })
   }
@@ -253,18 +260,7 @@ export default class Factory extends View {
     const t = theme()
     const state = shared('factory') ?? {}
     const runs = state.runs ?? []
-    const head = state.readOnly
-      ? `read-only: ${state.readOnly}`
-      : state.error
-        ? `tick failed: ${state.error}`
-        : [
-            statusText(runs) || 'no live runs',
-            managerLimitText(state.managerLimited),
-            managerContextText(shared('factory.context')),
-            managerCodexAuthText(state.managerCodexAuth),
-          ]
-            .filter(Boolean)
-            .join(' · ')
+    const head = headerText(state, shared('factory.context'))
     if (p.band)
       return h_flex()
         .size_full()
@@ -272,7 +268,7 @@ export default class Factory extends View {
         .items_center()
         .bg(t.chrome)
         .text_size(12)
-        .text_color(state.readOnly || state.error ? t.blocked : t.muted)
+        .text_color(state.error ? t.blocked : t.muted)
         .child(div().truncate().child(`factory · ${head}`))
     if (!this.cfg)
       return v_flex()
@@ -282,7 +278,7 @@ export default class Factory extends View {
         .text_size(13)
         .text_color(t.muted)
         .child('No factory config. Run: factory herdr install')
-    const items = interviewItems(runs, shared('factory.decisions'))
+    const items = interviewItems(shared('factory.interview'))
     const button = (id, label, onClick) =>
       h_flex()
         .id(id)
@@ -349,9 +345,14 @@ export default class Factory extends View {
                 .flex_1()
                 .min_w(0)
                 .truncate()
-                .text_color(state.readOnly || state.error ? t.blocked : t.muted)
+                .text_color(state.error ? t.blocked : t.muted)
                 .child(head),
             ),
+        )
+        .children(
+          Object.values(shared('factory.problems') ?? {}).map(text =>
+            div().text_size(12).text_color(t.blocked).child(text),
+          ),
         )
         // the buttons wrap to a new line when the panel is narrow, so none is cut off
         .child(
@@ -571,8 +572,10 @@ export default class Factory extends View {
             ),
           ]
         : []),
-      button('stop', 'Stop', () => this.act('stop')),
-      button('resume', 'Resume', () => this.act('resume')),
+      // a halted factory offers Resume only; a running one offers Stop only
+      shared('factory')?.halt
+        ? button('resume', 'Resume', () => this.act('resume'))
+        : button('stop', 'Stop', () => this.act('stop')),
       button('unhold', 'Unhold ax', () => this.act('unhold', 'ax')),
       ...(this.selected ? [button('abort', 'Abort run', () => this.act('abort', this.selected))] : []),
     ]
@@ -582,7 +585,7 @@ export default class Factory extends View {
   interview() {
     const t = theme()
     const state = shared('factory') ?? {}
-    const items = interviewItems(state.runs ?? [], shared('factory.decisions'))
+    const items = interviewItems(shared('factory.interview'))
     const answer = (item, option, cx) =>
       cx.spawn(async cx => {
         const cfg = parseConfig((await readTextFile(configPath())) ?? '')

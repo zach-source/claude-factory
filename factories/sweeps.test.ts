@@ -47,7 +47,12 @@ test('sweeps carries the same house rules and params as lifecycle', () => {
     grok: lifecycle.params!.grok,
     grok_maintain_model: 'grok-4.7',
     grok_maintain_share: '0',
+    ...Object.fromEntries(Object.entries(sweeps.params!).filter(([k]) => k.startsWith('codex'))),
   })
+  // each sweep that starts a worker has a codex model, an effort and a share (hygiene runs in code, monitor reads production)
+  for (const st of ['maintain', 'flakes', 'ci', 'drift', 'advisories', 'improve'])
+    for (const k of ['model', 'effort', 'share'])
+      expect((sweeps.params as Record<string, string>)[`codex_${st}_${k}`]).toBeTruthy()
 })
 
 test('each prompt names its own sweep label, the daily cap and the auto-queue allowlist', () => {

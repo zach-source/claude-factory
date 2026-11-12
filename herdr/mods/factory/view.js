@@ -82,62 +82,73 @@ export const newlyBlocked = (runs, before) =>
 /** the run id -> agent state map for the next newlyBlocked call */
 export const agentsOf = runs => Object.fromEntries(runs.map(r => [r.id, r.agent ?? null]))
 
-/** the gates and decisions the Interview dialog shows: gates first, oldest first */
-export function interviewItems(runs, decisions) {
-  const gates = runs
-    .filter(r => r.gate && isLive(r))
-    .sort((a, b) => (a.since ?? 0) - (b.since ?? 0))
-    .map(r => ({
-      kind: 'gate',
-      key: `gate:${r.id}`,
-      run: r.id,
-      title: r.gate.question || `${r.id} waits at ${r.node}`,
-      detail: r.gate.brief ?? line(r.goal ?? '', 300),
-      options: r.gate.outcomes,
-    }))
-  const beads = (decisions?.rigs ?? []).flatMap(d =>
-    d.beads.map(b => {
-      const key = `${b.kind === 'bead' ? 'bd' : 'own'}:${d.rig}:${b.id}`
-      const p = decisions.proposals?.[key]
-      return {
-        kind: b.kind,
-        key,
-        rig: d.rig,
-        bead: b.id,
-        title: p?.question ?? b.title,
-        detail: p?.context ?? line(b.description ?? '', 300),
-        // an owner-only bead keeps its two fixed answers
-        options:
-          b.kind === 'owned' ? ['start now', 'not now'] : (p?.options ?? []).map(o => o.split(':')[0].trim()),
-      }
-    }),
-  )
-  return [...gates, ...beads]
-}
+/** the open questions the Interview dialog shows: the core list (`factory interview`), one button for each option */
+export const interviewItems = items =>
+  (items ?? []).map(iv => ({
+    ...iv,
+    detail: iv.context || line(iv.details ?? '', 300),
+    options: iv.options.map(o => o.label),
+  }))
 
-/** the shell words for one answer: `decide` for a gate, `decisions answer` for a bead */
-export const answerArgs = (item, option) =>
-  item.kind === 'gate' ? ['decide', item.run, option] : ['decisions', 'answer', item.rig, item.bead, option]
+/** the shell words for one answer: the core routes it (gate, bead, start now, mail) */
+export const answerArgs = (item, option) => ['interview', 'answer', item.key, option]
 
-/** the result of `factory tick`, or why it failed. A read-only tick names the lease holder. */
+/** the board of a snapshot as the state the tabs share, or why it failed */
 export function parseTick(code, out, err) {
-  if (code !== 0) return { error: line(err || out || `factory tick exited ${code}`, 300) }
+  if (code !== 0) return { error: line(err || out || `factory board exited ${code}`, 300) }
   try {
     const res = JSON.parse(out)
-    if (res.busy) return { busy: true }
     return {
       runs: res.runs ?? [],
-      manager: res.manager ?? [],
-      rigs: res.rigs ?? [],
       halt: res.halt,
-      readOnly: res.readOnly,
+      lease: res.lease ?? null,
       managerLimited: res.managerLimited ?? null,
       managerCodexAuth: res.managerCodexAuth ?? null,
     }
   } catch {
-    return { error: line(`factory tick printed no JSON: ${out || err}`, 300) }
+    return { error: line(`factory board printed no JSON: ${out || err}`, 300) }
   }
 }
+
+/** the halt state as the first part of the header: 'paused' or 'stopping', else '' */
+export const haltText = halt => (halt === 'paused' || halt === 'stopping' ? halt : '')
+
+/** the lease as one part of the header: 'lease: holder (kind)', or '' when no lease is on the board */
+export const leaseText = lease =>
+  lease?.holder ? `lease: ${lease.holder}${lease.kind ? ` (${lease.kind})` : ''}` : ''
+
+/**
+ * the header line of the board: the run counts, the limits, the manager context and the lease.
+ * The mod never ticks, so it is always a reader: no part of the line says "read-only".
+ */
+export function headerText(state, context) {
+  if (state.error)
+    return `board failed: ${state.error}${state.staleSince ? ` · stale since ${clock(state.staleSince)}` : ''}`
+  return [
+    haltText(state.halt),
+    statusText(state.runs ?? []) || 'no live runs',
+    managerLimitText(state.managerLimited),
+    managerContextText(context),
+    managerCodexAuthText(state.managerCodexAuth),
+    leaseText(state.lease),
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+/** the red line of a failed manager context read, or '' when it worked or shows nothing to read */
+export function contextProblem(code, out, err) {
+  if (code !== 0) return line(`manager context: ${err || out || `exit ${code}`}`, 300)
+  try {
+    const e = JSON.parse(out).views?.['manager.context']?.error
+    return e ? line(`manager context: ${e}`, 300) : ''
+  } catch {
+    return ''
+  }
+}
+
+/** the clock time of a stale board, 'HH:MM' */
+const clock = at => new Date(at).toTimeString().slice(0, 5)
 
 /** the board header when the manager's Claude is limited: 'manager: Claude limited until HH:MM', else '' */
 export function managerLimitText(limited) {
@@ -162,7 +173,7 @@ export function managerContextText(c) {
 export function parseContext(code, out) {
   if (code !== 0) return null
   try {
-    const c = JSON.parse(out).views?.manager
+    const c = (j => j.views?.['manager.context'] ?? j)(JSON.parse(out))
     return c && typeof c.model === 'string' ? c : null
   } catch {
     return null
@@ -187,8 +198,13 @@ export function parseSnapshot(code, out, err) {
   const tick = board?.error
     ? { error: line(board.error, 300) }
     : parseTick(0, JSON.stringify(board ?? {}), '')
-  const d = views?.decisions
-  return { tick, decisions: d && !d.error ? d : undefined }
+  const d = views?.interview
+  return {
+    tick,
+    interview: Array.isArray(d) ? d : undefined,
+    // a failed view keeps the old list; the panel draws this line in red
+    interviewError: d && !Array.isArray(d) && d.error ? line(`interview: ${d.error}`, 300) : undefined,
+  }
 }
 
 // Remote mode (claude-factory-hpmc.14): the manager runs on another machine, such as the AX task f-manager.
@@ -246,7 +262,7 @@ export function serverCall(conf, method, path, body, key = idemKey()) {
 }
 
 /** the one snapshot request of a beat */
-export const snapshotPath = maxAge => `/v1/snapshot?views=board,decisions,lease&maxAge=${maxAge}`
+export const snapshotPath = maxAge => `/v1/snapshot?views=board,interview,lease&maxAge=${maxAge}`
 
 /** the request of a control button, as [method, path, body] */
 export function actionReq(action, arg) {
@@ -282,7 +298,7 @@ export const GET_CACHE_MS = 3_000
  */
 export const snapshotWords = (view, maxAge) => ['snapshot', '--views', view, '--max-age', String(maxAge)]
 /** the board is at most this old (ms) on each beat; the first beat takes any cached board, so a screen opens at once */
-export const BOARD_MAX_AGE = 4_000
+export const BOARD_MAX_AGE = 6_000
 export const FIRST_MAX_AGE = 3_600_000
 /** the decisions are refreshed this often (ms) */
 export const DECISIONS_MS = 60_000

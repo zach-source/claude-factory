@@ -146,7 +146,8 @@ export function route(
       if (n === 2 && a === '--board' && b === '--slim') return { method: 'GET', path: '/v1/board?slim=1' }
       return n === 0 ? { method: 'GET', path: '/v1/board' } : bad
     case 'snapshot':
-      if (!((n === 2 || n === 4) && a === '--views' && /^[a-z]+(,[a-z]+)*$/.test(b!))) return bad
+      if (!((n === 2 || n === 4) && a === '--views' && /^[a-z]+(\.[a-z]+)?(,[a-z]+(\.[a-z]+)?)*$/.test(b!)))
+        return bad
       if (n === 2) return { method: 'GET', path: `/v1/snapshot?views=${b}` }
       return args[2] === '--max-age' && /^\d+$/.test(args[3]!)
         ? { method: 'GET', path: `/v1/snapshot?views=${b}&maxAge=${args[3]}` }
@@ -211,6 +212,9 @@ export function route(
     case 'manager':
       if (n === 1 && (a === 'show' || a === 'brief' || a === 'context'))
         return { method: 'GET', path: a === 'show' ? '/v1/manager' : `/v1/manager/${a}` }
+      if (a === 'image' && n === 2) return { method: 'POST', path: '/v1/manager/image', body: { image: b! } }
+      if (a === 'suspend' && (n === 1 || (n === 2 && b === '--resume')))
+        return { method: 'POST', path: '/v1/manager/suspend', body: n === 2 ? { resume: true } : {} }
       return a === 'log' && n >= 3 && seg(b)
         ? { method: 'POST', path: `/v1/manager/log/${b}`, body: { entry: args.slice(2).join(' ') } }
         : bad

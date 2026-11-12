@@ -232,6 +232,7 @@ import { REASON, boundedRun } from './screen'
 import * as client from './client'
 import { backupAge, backupError, backupWanted, secretFile } from './homebackup'
 import * as managerhost from './managerhost'
+import * as managersup from './managersup'
 import { drainHaltQueue, haltLine, runHaltCmd } from './halt-order'
 import * as leases from './lease'
 import * as herdrApp from './herdr-install'
@@ -255,7 +256,7 @@ import {
 } from './axrepos'
 import * as broker from './broker'
 import * as server from './server'
-import { managerCert, personCerts } from './server-api'
+import { managerCert, personCerts, servePortCall } from './server-api'
 import { AUTO_LABEL, autoPick, autoQueueOf, recentPicks, type AutoQueue } from './autoqueue'
 import * as pkggate from './pkggate'
 import { startUi, withBeads } from './ui'
@@ -363,6 +364,7 @@ import type { Ctx as OpCtx, Env, Input as OpInput, Port, Print, RunResult as OpR
 import { slimBoard, snapFresh, snapshot as snapshotRun } from './core/catalog'
 import * as backlogOp from './core/ops/backlog'
 import * as decisionsOp from './core/ops/decisions'
+import * as interviewOp from './core/ops/interview'
 import * as gatesOp from './core/ops/gates'
 import * as gcOp from './core/ops/gc'
 import * as imageOp from './core/ops/image'
@@ -600,8 +602,8 @@ function durable(path: string, text: string, flag: 'a') {
     closeSync(fd)
   }
 }
-export function writeJson(path: string, value: unknown) {
-  writeFresh(path, JSON.stringify(value, null, 2)) // atomic: a reader never sees half a snapshot
+export function writeJson(path: string, value: unknown, tmp?: string) {
+  writeFresh(path, JSON.stringify(value, null, 2), tmp) // atomic: a reader never sees half a snapshot
 }
 /** `factory manager --ax [args]`: run the manager as the long-lived AX task (claude-factory-192.2) */
 async function launchAxManager(args: string[]) {
@@ -662,6 +664,8 @@ async function readOnlyBoard(holder: leases.Lease) {
     }
   }
   return {
+    halt: halted()?.state,
+    haltAt: halted()?.at,
     readOnly: leases.leaseLine(holder, Date.now()),
     lease: holder,
     runs,
@@ -981,7 +985,7 @@ function readTextFile(flag: string, path: string): string {
     return fail(
       `${flag} ${path} is ${size} bytes; the cap is ${worker.OUTBOX_MAX_BYTES} bytes (100 KiB): shorten it`,
     )
-  let text: string
+  let text = ''
   try {
     text = readFileSync(path, 'utf8')
   } catch {
@@ -2887,14 +2891,21 @@ function resumeFile(run: Run, node: string, c: Ctx) {
   writeFileSync(file, resumeNote(run, node, c))
   return file
 }
-/** a factory's params: its defaults, under FACTORY_<NAME>, under the rig's own --param */
-export const paramsOf = (def: Pick<Factory, 'params'>, rig?: Pick<Rig, 'params'>, env = process.env) =>
-  Object.fromEntries(
+/**
+ * a factory's params: its defaults, under FACTORY_<NAME>, under the rig's own --param. A value that is only `{other}`
+ * takes the value of that param (one step), so codex_implement_model follows codex_exec_model until a rig sets its own.
+ */
+export const paramsOf = (def: Pick<Factory, 'params'>, rig?: Pick<Rig, 'params'>, env = process.env) => {
+  const own: Record<string, string> = Object.fromEntries(
     Object.entries(def.params ?? {}).map(([k, v]) => [
       k,
       rig?.params?.[k] ?? (env[`FACTORY_${k.toUpperCase()}`]?.trim() || v),
     ]),
   )
+  return Object.fromEntries(
+    Object.entries(own).map(([k, v]) => [k, own[/^\{([a-z][a-z0-9_]*)\}$/.exec(v)?.[1] ?? ''] ?? v]),
+  )
+}
 /**
  * Does this run take the split agent? The pick hashes the run id and the share's name, so one run picks the
  * same way every time, and two share params pick on their own. A bad share value (not a number from 0 to 1) is 0.
@@ -12527,6 +12538,23 @@ function stdinValue(what: string): string {
   return v
 }
 
+/**
+ * the params a rig's `--param` can name: its factory's, and those of the factories it also runs (its sweeps, rework
+ * and ship). The rig's own factory wins when two share a name. A factory that fails to load adds none.
+ */
+async function rigParamDef(
+  def: Awaited<ReturnType<typeof loadFactory>>,
+  repo: string,
+  sweepsFactory?: string,
+) {
+  const others = await Promise.all(
+    [sweepsFactory ?? 'sweeps', 'rework', 'ship'].map(n =>
+      loadFactory(factorySource(n, repo)).catch(() => undefined),
+    ),
+  )
+  return { ...def, params: Object.assign({}, ...others.map(d => d?.params), def.params) }
+}
+
 /** Check `--param name=value` pairs against the factory's params. A value `-` is read from stdin. Return them merged over `base`, or `base`. */
 function checkParams(
   def: Awaited<ReturnType<typeof loadFactory>>,
@@ -12664,7 +12692,11 @@ async function defineRig(
   } else if (linearProjects !== undefined || linearLabels !== undefined) {
     fail('--linear-projects and --linear-labels need --linear <team_id[,team_id]> too')
   }
-  const merged = checkParams(def, params ?? [], rig.params)
+  const merged = checkParams(
+    params?.length ? await rigParamDef(def, rig.repo, rig.sweepsFactory) : def,
+    params ?? [],
+    rig.params,
+  )
   if (merged) rig.params = merged
   return rig
 }
@@ -13246,7 +13278,7 @@ async function prs() {
   for (const [id, file] of files) {
     if (sameFile(before.get(id) ?? { version: 1, prs: [] }, file)) continue // wyc.7: unchanged, skip the write
     try {
-      writeJson(prsFile(id), file)
+      writeJson(prsFile(id), file, `${prsFile(id)}.${process.pid}.tmp`) // pid name: parallel port-call children
     } catch {
       // the run was removed mid-pass: nothing to write back to
     }
@@ -13296,7 +13328,7 @@ function decisionsList() {
   // read again: a propose may have landed while the bd calls ran
   const fresh = proposals()
   for (const k of stale) delete fresh[k]
-  writeJson(decisionsFile(), fresh)
+  writeJson(decisionsFile(), fresh, `${decisionsFile()}.${process.pid}.tmp`) // pid name: parallel port-call children
   for (const k of stale) delete all[k]
   return { rigs: rows, proposals: all }
 }
@@ -13626,7 +13658,12 @@ async function refreshMerges(recs: RunRecord[]): Promise<RunRecord[]> {
     cache.rigs[name] = { checkedAt: now, from: covered ? Math.min(seen.from, reached) : reached }
     dirty = true
   }
-  if (dirty) writeFileSync(mergedFile(), JSON.stringify({ version: 1, ...cache }))
+  if (dirty)
+    writeFresh(
+      mergedFile(),
+      JSON.stringify({ version: 1, ...cache }),
+      mergedFile() + '.' + process.pid + '.tmp',
+    )
   return withMerges(recs)
 }
 
@@ -13903,6 +13940,8 @@ const usage = `factory — herdr software factories on xstate
   file-elsewhere <rig> --from <rig>:<bead> (--title <t> | --title-file <path>) (--description <d> | --description-file <path>)  file a bead in another rig; labels it factory unless the source is Linear
   ship <rig|repo>                    the rig's ship queue: the next PR to merge first, then the others
   show <run> | backlog | prs        JSON for the manager's views
+  interview [answer <item> [<choice> [<text...>]]]   JSON of the open questions for the person; answer one
+                                     (a gate is decided, a bead is answered, 'start now' starts an owner-only bead)
   decisions [answer <rig> <bead> '<text...>' | propose <key> '<question>' '<a | b>' | propose <key> --question-file <p> --options-file <p> [--context-file <p>]]   JSON of every rig's open
                                      bd decisions (human-flagged and owner-only beads); answer one, as the
                                      person, or let the manager propose options for an item that has none
@@ -14113,6 +14152,30 @@ if (import.meta.main && !outboxCmd && client.serverMode(process.env)) {
   if (sent !== null) process.exit(sent)
 }
 
+/** the pod's supervisor of the manager task; it needs the pod address for the task (FACTORY_SERVER_MANAGER_URL) */
+const podSupervisor = (() => {
+  let s: ReturnType<typeof managersup.supervisor> | undefined
+  return () => {
+    if (!inServer() || !process.env.FACTORY_SERVER_MANAGER_URL)
+      throw new Error('this factory does not run a manager task: set FACTORY_SERVER_MANAGER_URL on the pod')
+    const task = ax.managerTask()
+    const apply = (image: string) =>
+      ax.launchManager(image, [], rawRigs(), { session: true, launch: crypto.randomUUID() })
+    return (s ??= managersup.supervisor({
+      home: HOME,
+      image: process.env.FACTORY_AX_MANAGER_IMAGE,
+      log: m => console.log(m),
+      ax: {
+        phase: () => ax.read(task).phase,
+        apply,
+        remove: ws => ax.remove(task, ws ? undefined : ['task']),
+        suspend: () => ax.suspend(task),
+        resume: () => ax.resume(task),
+      },
+    }))
+  }
+})()
+
 /** the helpers of this file that the catalog operations call (src/core/ops) */
 export const corePort: Port = {
   gcPass,
@@ -14159,6 +14222,8 @@ export const corePort: Port = {
   screen: screenRun,
   mail: mailRun,
   say: ax.say,
+  managerImage: image => podSupervisor().setImage(image),
+  managerSuspend: on => podSupervisor().suspend(on),
   chatModel: runModelAsync,
   chatRun: runApproved,
 }
@@ -14324,6 +14389,24 @@ if (import.meta.main && !outboxCmd)
       case 'broker':
         broker.main(args)
         break
+      case 'port-call': {
+        // internal: `factory server` runs a Port read here (childPort). Only the server writes the args file.
+        refuseWorker('port-call', true)
+        if (args.length !== 3 || args[1] !== '--text-file')
+          fail('usage: factory port-call <name> --text-file <file>')
+        let text = ''
+        try {
+          text = readFileSync(textFilePath('--text-file', args[2]!), 'utf8')
+        } catch {
+          fail('port-call: cannot read the args file')
+        }
+        try {
+          console.log(await servePortCall(corePort, args[0]!, text))
+        } catch (e) {
+          fail((e as Error).message)
+        }
+        break
+      }
       case 'server':
         refuseWorker('server', true)
         if (args[0] === 'backup') {
@@ -14348,7 +14431,14 @@ if (import.meta.main && !outboxCmd)
           if (other) throw new Error(`no tick: ${leases.leaseLine(other, Date.now())}`)
           return tick()
         }
-        server.main(args, HOME, podTick, corePort, backup)
+        server.main(
+          args,
+          HOME,
+          podTick,
+          corePort,
+          backup,
+          process.env.FACTORY_SERVER_MANAGER_URL ? () => podSupervisor().check() : undefined,
+        )
         break
       case 'cert': {
         refuseWorker('cert', true)
@@ -15124,7 +15214,8 @@ if (import.meta.main && !outboxCmd)
         )
           fail('usage: factory snapshot --views a,b [--max-age ms]')
         const needBoard =
-          rest[1]!.split(',').includes('board') && !(maxAge && snapFresh(HOME, 'board', Number(maxAge)))
+          rest[1]!.split(',').some(v => v === 'board' || v === 'interview') &&
+          !(maxAge && snapFresh(HOME, 'board', Number(maxAge)))
         const board = needBoard
           ? await readOnlyBoard(leases.readLease(HOME) ?? { holder: 'none', kind: 'none', at: Date.now() })
           : null
@@ -15147,6 +15238,31 @@ if (import.meta.main && !outboxCmd)
       case 'prs':
         emit(await prsOp.show(cliCtx(), {}))
         break
+      case 'interview': {
+        // hpmc.35: the open questions for the person, and their answers; one core op for every front end
+        const [sub, item, choice, ...text] = args
+        const board = await readOnlyBoard(
+          leases.readLease(HOME) ?? { holder: 'none', kind: 'none', at: Date.now() },
+        )
+        const ctx = {
+          ...cliCtx(),
+          board: () => board,
+          cli: async (argv: string[]) => {
+            const p = Bun.spawn([CLI, ...argv], { env: process.env, stdout: 'pipe', stderr: 'pipe' })
+            const [out, err, code] = await Promise.all([
+              new Response(p.stdout).text(),
+              new Response(p.stderr).text(),
+              p.exited,
+            ])
+            return { code, out, err }
+          },
+        }
+        if (!sub || sub === 'list') emit(await interviewOp.list(ctx, {}))
+        else if (sub === 'answer' && item)
+          emit(await interviewOp.answer(ctx, defined({ item, choice, text: text.join(' ') || undefined })))
+        else fail('usage: factory interview [list | answer <item> [<choice> [<text...>]]]')
+        break
+      }
       case 'decisions': {
         const [sub, ...rest] = args
         if (!sub || sub === 'list') {
@@ -15705,7 +15821,11 @@ if (import.meta.main && !outboxCmd)
           }
           if (params.length) {
             const def = await loadFactory(factorySource(target!.factory, target!.repo))
-            set.params = checkParams(def, params, target!.params)
+            set.params = checkParams(
+              await rigParamDef(def, target!.repo, target!.sweepsFactory),
+              params,
+              target!.params,
+            )
           }
           if (!Object.keys(set).length && !unset.length) fail(usage)
           edit(list =>
