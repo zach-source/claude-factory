@@ -2403,14 +2403,28 @@ export function axGrokRefused(agent: string, env = process.env) {
   if (harnessOf(agent) === 'grok' && !axGrok(env))
     fail('the ax runner runs grok only with FACTORY_AX_GROK=1: set it with an image that has grok')
 }
+/** how a grok worker signs in: `session` (default) uses the SuperGrok plan, `key` uses the paid xAI API (setting grok.auth) */
+export const grokAuth = (env = process.env): 'session' | 'key' =>
+  env.FACTORY_GROK_AUTH?.trim() === 'key' ? 'key' : 'session'
 /**
- * a grok worker in a VM: the CLI sends XAI_API_KEY as a bearer token to api.x.ai, the only host it needs (the feedback and
- * trace host stays shut). The VM holds a placeholder key; the gateway injects the vault key XAI_API_KEY on every path, as the API is plain bearer.
+ * a grok worker in a VM. Session mode (default): the CLI gets a placeholder token from GROK_AUTH_PROVIDER_COMMAND and sends it
+ * as a bearer token to cli-chat-proxy.grok.com, the only host that gets a key; the gateway injects the vault key GROK_SESSION there.
+ * Key mode: the CLI sends XAI_API_KEY to api.x.ai, and the gateway injects the vault key XAI_API_KEY. The feedback and trace host stays shut.
  */
-export const grokEgress = (egress: Egress[] = []) =>
-  egress.some(e => e.hosts.includes('api.x.ai'))
+export const grokEgress = (egress: Egress[] = [], auth: 'session' | 'key' = 'session') => {
+  const host = auth === 'key' ? 'api.x.ai' : 'cli-chat-proxy.grok.com'
+  return egress.some(e => e.hosts.includes(host))
     ? egress
-    : [...egress, { hosts: ['api.x.ai'], key: 'XAI_API_KEY', header: 'Authorization', prefix: 'Bearer ' }]
+    : [
+        ...egress,
+        {
+          hosts: [host],
+          key: auth === 'key' ? 'XAI_API_KEY' : 'GROK_SESSION',
+          header: 'Authorization',
+          prefix: 'Bearer ',
+        },
+      ]
+}
 /**
  * a cursor worker in a VM: cursor-agent posts its API key to api2.cursor.sh/auth/ and uses the access token it gets back.
  * The VM holds a placeholder key; the gateway injects the vault key CURSOR_API_KEY on that path only. The other hosts pass as they are.
@@ -2474,7 +2488,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
       : harness === 'cursor'
         ? cursorEgress(rig?.egress)
         : harness === 'grok'
-          ? grokEgress(rig?.egress)
+          ? grokEgress(rig?.egress, grokAuth())
           : rig?.egress,
     hasRunBeads ? rig : undefined,
   )
@@ -2599,6 +2613,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
           )
         : undefined,
     codexAuth: harness === 'codex' ? codexAuth(rig?.egress) : undefined,
+    grokAuth: harness === 'grok' ? grokAuth() : undefined,
     cursorHooks:
       harness === 'cursor'
         ? vmCursorHooks(personOnlyContexts(rig), protectedBranches(rig), mergeAuthority(rig))
@@ -2952,6 +2967,7 @@ export const cursorAllowed = (
 ) => stickyGate('cursor', runId, node, now, home, () => cursorVerdict(cursorMeter(home, now), cursorCap(env)))
 /** grok starts while the week's spend is under the budget (setting grok.weeklyBudgetUsd); with no budget it always does */
 export const grokAllowed = (runId: string, node: string, env = process.env, now = Date.now(), home = HOME) =>
+  grokAuth(env) === 'session' || // the plan's own limits are the cap: no dollar gate
   grokBudget(env) === undefined ||
   stickyGate('grok', runId, node, now, home, () => grokVerdict(grokSpent(home, now), grokBudget(env)))
 

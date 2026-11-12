@@ -1515,10 +1515,14 @@ export function grokLimit(out: string, at = Date.now()) {
     try {
       const e = JSON.parse(line)
       if (e.type !== 'error' && e.type !== 'end') continue
-      return e.type === 'error' &&
-        /\b(402|429)\b|credits|rate.?limit|quota|resource_exhausted/i.test(String(e.message))
-        ? { at, kind: 'usage', resetsAt: 0 }
-        : null
+      if (e.type !== 'error') return null
+      const text = String(e.message)
+      if (/\b(402|429)\b|credits|rate.?limit|usage.?limit|quota|resource_exhausted/i.test(text))
+        return { at, kind: 'usage', resetsAt: 0 }
+      // a refused session token (plan login): the station falls back to the next harness
+      if (/\b401\b|unauthori[sz]ed|not signed in|(invalid|expired).{0,20}(token|session)/i.test(text))
+        return { at, kind: 'auth', resetsAt: 0 }
+      return null
     } catch {
       // not a JSON line: the cut first line of the tail
     }

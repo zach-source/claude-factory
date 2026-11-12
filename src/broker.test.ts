@@ -771,6 +771,7 @@ test('a pinned vault key on another host is refused', async () => {
     'GITHUB_ZS_BASIC',
     'ANTHROPIC',
     'XAI_API_KEY',
+    'GROK_SESSION',
     'CURSOR_API_KEY',
     'CODEX_CHATGPT',
     'CODEX_CHATGPT_ACCOUNT',
