@@ -171,11 +171,12 @@ describe('CATALOG', () => {
     ])
     expect(CATALOG.filter(o => o.route.path === '/v1/gc')).toHaveLength(1)
   })
-  test('has 42 operations: 23 GET, 18 POST and 1 DELETE', () => {
-    expect(CATALOG.length).toBe(42)
+  test('has 44 operations: 23 GET, 19 POST, 1 DELETE and 1 PATCH', () => {
+    expect(CATALOG.length).toBe(44)
     expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(23)
-    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(18)
+    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(19)
     expect(CATALOG.filter(o => o.route.method === 'DELETE').map(o => o.name)).toEqual(['runs.remove'])
+    expect(CATALOG.filter(o => o.route.method === 'PATCH').map(o => o.name)).toEqual(['rigs.set'])
     expect(CATALOG.filter(o => o.route.method === 'POST' && !o.mutates).map(o => o.name)).toEqual([
       'guard.check',
     ])
@@ -272,6 +273,7 @@ describe('CATALOG', () => {
       'prs.show GET /v1/prs',
       'rigs.adopt POST /v1/adopt',
       'rigs.list GET /v1/rigs',
+      'rigs.set PATCH /v1/rigs/:rig',
       'rigs.unhold POST /v1/rigs/:rig/unhold',
       'runners.show GET /v1/runners',
       'runs.abort POST /v1/runs/:id/abort',
@@ -287,6 +289,7 @@ describe('CATALOG', () => {
       'runs.status GET /v1/status',
       'snapshot.show GET /v1/snapshot',
       'steps.reports GET /v1/steps',
+      'sweeps.run POST /v1/sweeps/:name',
     ])
   })
 })
