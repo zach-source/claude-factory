@@ -19,7 +19,7 @@ import { clientHandler, serveSocket, type RunResult } from './server-api'
 
 type Call = { argv: string[]; text?: string } | { port: string; args: unknown[] }
 let seq = 0
-const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
+const setup = (o: { board?: unknown; result?: Partial<RunResult>; imageFail?: boolean } = {}) => {
   const home = mkdtempSync(join(tmpdir(), 'sapi-h-'))
   const calls: Call[] = []
   const files: string[] = []
@@ -42,6 +42,12 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
     gcRigs: () => [],
     gcHold: () => () => {},
     gcStamp: () => {},
+    imageBuild: async (target, error) => {
+      log('imageBuild', [target])
+      if (o.imageFail) throw new Error('docker: not found')
+      error('warn')
+      return 'ref'
+    },
     show: async id => (log('show', [id]), { ok: 1 }),
     status: async (id, print) => (log('status', [id]), print('{"ok":1}')),
     backlog: async () => (log('backlog', []), { ok: 1 }),
@@ -278,6 +284,41 @@ describe('read routes', () => {
     expect((await status('manager')).status).toBe(200)
     expect((await status('person')).status).toBe(200)
     expect((await halt('person')).status).toBe(200)
+  })
+  test('kq1a AC5 image.build: the manager gets 403, the person gets the JSON reply, bad input gets 400', async () => {
+    const t = setup()
+    let n = 0
+    const build = (who: 'person' | 'manager', body: unknown, method = 'POST', key = `kq1a-${++n}-aaaaaaaa`) =>
+      t.h(
+        new Request('http://x/v1/image/build', {
+          method,
+          headers: { 'content-type': 'application/json', 'idempotency-key': key },
+          body: method === 'POST' ? JSON.stringify(body) : undefined,
+        }),
+        '1.2.3.4',
+        who,
+      )
+    const refused = await build('manager', {})
+    expect(refused.status).toBe(403)
+    expect(await refused.text()).toContain('manager role cannot call image.build')
+    expect(t.calls).toEqual([])
+    const ok = await build('person', {})
+    expect(ok.status).toBe(200)
+    expect(ok.headers.get('content-type')).toContain('application/json')
+    expect(JSON.parse(await ok.text())).toEqual({ code: 0, out: 'ref\n', err: 'warn\n' })
+    expect(t.calls).toEqual([{ port: 'imageBuild', args: ['worker'] }])
+    const again = await build('person', {}, 'POST', 'kq1a-2-aaaaaaaa')
+    expect(again.status).toBe(200)
+    expect(t.calls).toHaveLength(1)
+    for (const body of [{ target: 'x' }, { target: 'worker', extra: 1 }])
+      expect((await build('person', body)).status).toBe(400)
+    expect(t.calls).toHaveLength(1)
+    expect((await build('person', {}, 'GET')).status).toBe(404)
+    expect(t.calls).toHaveLength(1)
+    const u = setup({ imageFail: true })
+    const failed = await post(u.h, '/v1/image/build', {})
+    expect(failed.status).toBe(422)
+    expect(await failed.text()).toContain('docker: not found')
   })
   test('a non-zero exit gives 422 with the stderr, a timeout gives 504', async () => {
     const t = setup({ result: { code: 1, out: '', err: 'x'.repeat(900) } })
