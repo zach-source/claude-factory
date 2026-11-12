@@ -248,6 +248,17 @@ describe('port-call: the internal verb of childPort', () => {
     const bare = call(home, 'planShowText', undefined)
     expect(bare.exitCode).not.toBe(0)
     expect(bare.stderr.toString()).toContain('usage: factory port-call')
+    for (const argv of [
+      ['planShowText', '--text-file', f, 'extra'],
+      ['planShowText', '--summary-file', f],
+    ]) {
+      const r = Bun.spawnSync([process.execPath, cli, 'port-call', ...argv], {
+        env: cleanEnv(home),
+        cwd: home,
+      })
+      expect(r.exitCode).not.toBe(0)
+      expect(r.stderr.toString()).toContain('usage: factory port-call')
+    }
     const outside = join(mkdtempSync(join(tmpdir(), 'sapi-out-')), 'a.md')
     writeFileSync(outside, '[]')
     expect(call(home, 'planShowText', outside).exitCode).not.toBe(0)
