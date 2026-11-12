@@ -58,6 +58,7 @@ import {
   flowJobWords,
   flowLayout,
   parseContext,
+  contextProblem,
   parseFlows,
   recentMovers,
 } from './view.js'
@@ -136,14 +137,26 @@ export default class Factory extends View {
     if (name === 'snapshot' || name === 'decisions') {
       const s = parseSnapshot(r.code, r.out, r.err)
       if (name === 'snapshot') this.onTick(s.tick)
-      if (name === 'snapshot' && s.decisions) setShared('factory.decisions', s.decisions) // server mode: one call holds both views
-      if (name === 'decisions' && s.interview) setShared('factory.interview', s.interview)
-    } else if (name === 'context') setShared('factory.context', parseContext(r.code, r.out))
-    else if (name === 'flows') {
+      // server mode: the snapshot call holds the interview view too
+      if (s.interview) setShared('factory.interview', s.interview)
+      if (name === 'decisions' || this.cfg.server)
+        this.problem('interview', r.code !== 0 ? s.tick.error : s.interviewError)
+    } else if (name === 'context') {
+      setShared('factory.context', parseContext(r.code, r.out))
+      this.problem('context', contextProblem(r.code, r.out, r.err))
+    } else if (name === 'flows') {
       this.flow = parseFlows(r.code, r.out, r.err)
       if (this.flow.graph) this.flowCache[this.flowKey()] = this.flow
     }
     this.cx.notify()
+  }
+
+  /** sets or clears the red line of one failed read (key: interview, context, screen) */
+  problem(key, text) {
+    const all = { ...(shared('factory.problems') ?? {}) }
+    if (text) all[key] = text
+    else delete all[key]
+    setShared('factory.problems', all)
   }
 
   /** the result of a finished call, or null while it runs */
@@ -213,6 +226,7 @@ export default class Factory extends View {
       cx.spawn(async cx => {
         const p = await exec(cmd, args).catch(() => null)
         this.screen = (p && (p.stdout || p.stderr).trimEnd()) || 'no worker screen' // the pod text as it is
+        this.problem('screen', p?.code === 0 ? '' : `worker screen: ${line(this.screen, 200)}`)
         cx.notify()
       })
       return
@@ -232,6 +246,10 @@ export default class Factory extends View {
         '14',
       ]).catch(() => null)
       this.screen = p && p.code === 0 ? p.stdout.trimEnd() : 'no worker screen'
+      this.problem(
+        'screen',
+        p?.code === 0 ? '' : `worker screen: ${line(p?.stderr || 'pane read failed', 200)}`,
+      )
       cx.notify()
     })
   }
@@ -330,6 +348,11 @@ export default class Factory extends View {
                 .text_color(state.error ? t.blocked : t.muted)
                 .child(head),
             ),
+        )
+        .children(
+          Object.values(shared('factory.problems') ?? {}).map(text =>
+            div().text_size(12).text_color(t.blocked).child(text),
+          ),
         )
         // the buttons wrap to a new line when the panel is narrow, so none is cut off
         .child(

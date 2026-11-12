@@ -225,7 +225,11 @@ test('parseSnapshot splits one snapshot into the board result and the interview 
     interview: [],
   })
   const bad = JSON.stringify({ views: { board: { error: 'no tick yet' }, interview: { error: 'x' } } })
-  expect(herdr.parseSnapshot(0, bad, '')).toEqual({ tick: { error: 'no tick yet' }, interview: undefined })
+  expect(herdr.parseSnapshot(0, bad, '')).toEqual({
+    tick: { error: 'no tick yet' },
+    interview: undefined,
+    interviewError: 'interview: x',
+  })
   expect(herdr.parseSnapshot(1, '', 'boom').tick.error).toBe('boom')
 })
 
@@ -395,7 +399,7 @@ test('server mode config: all four keys, and never both modes', () => {
 test('server mode: one snapshot GET with maxAge, actions with an Idempotency-Key', () => {
   const [cmd, args] = herdr.serverCall(srvCfg, 'GET', herdr.snapshotPath(4000))
   expect(cmd).toBe('curl')
-  expect(args.at(-1)).toBe('https://pod.example:8444/v1/snapshot?views=board,decisions,lease&maxAge=4000')
+  expect(args.at(-1)).toBe('https://pod.example:8444/v1/snapshot?views=board,interview,lease&maxAge=4000')
   expect(args).toContain('--cert')
   expect(args).not.toContain('Idempotency-Key')
   const [, post] = herdr.serverCall(srvCfg, ...herdr.actionReq('stop'), 'abcd1234')
@@ -497,4 +501,47 @@ test('the board max age is over the beat, and a result is applied when its call 
   expect(herdr.BOARD_MAX_AGE).toBeGreaterThan(beat)
   expect(main).toMatch(/\.then\(\(\) => this\.apply\(name\)\)/)
   expect(main.slice(main.indexOf('  beat(cx)'), main.indexOf('  flowKey()'))).not.toContain('this.finished(')
+})
+
+// claude-factory-hpmc.37: a failed read draws a line; it does not keep the old list in silence
+test('a failed interview or context read gives a problem line (claude-factory-hpmc.37)', () => {
+  const bad = JSON.stringify({ views: { board: { runs: [] }, interview: { error: 'bd: no database' } } })
+  const s = herdr.parseSnapshot(0, bad, '')
+  expect(s.interview).toBeUndefined()
+  expect(s.interviewError).toBe('interview: bd: no database')
+  expect(herdr.parseSnapshot(1, '', 'boom').tick.error).toBe('boom')
+  const ok = JSON.stringify({ views: { board: { runs: [] }, interview: [] } })
+  expect(herdr.parseSnapshot(0, ok, '').interviewError).toBeUndefined()
+  expect(herdr.contextProblem(0, JSON.stringify({ views: { 'manager.context': { error: 'x' } } }), '')).toBe(
+    'manager context: x',
+  )
+  expect(herdr.contextProblem(1, '', 'down')).toBe('manager context: down')
+  expect(herdr.contextProblem(0, JSON.stringify({ views: { 'manager.context': null } }), '')).toBe('')
+})
+
+test('a stale board names the time, and the server snapshot asks for the interview view (claude-factory-hpmc.37)', () => {
+  const at = new Date(2026, 10, 12, 9, 5).getTime()
+  expect(herdr.headerText({ error: 'down', staleSince: at }, null)).toBe(
+    'board failed: down · stale since 09:05',
+  )
+  expect(herdr.headerText({ error: 'down' }, null)).toBe('board failed: down')
+  expect(herdr.snapshotPath(6000)).toContain('views=board,interview,lease')
+})
+
+test('the real interview view is a list, so it gives no problem line (claude-factory-hpmc.37)', () => {
+  const env = {
+    ...process.env,
+    FACTORY_HOME: join(dir, 'iv-home'),
+    FACTORY_SELF_UPDATE: '0',
+    FACTORY_NO_KICK: '1',
+  }
+  const p = Bun.spawnSync(
+    [join(import.meta.dir, '..', 'bin', 'factory'), 'snapshot', '--views', 'board,interview'],
+    {
+      env,
+    },
+  )
+  const s = herdr.parseSnapshot(p.exitCode, p.stdout.toString(), p.stderr.toString())
+  expect(Array.isArray(s.interview)).toBe(true)
+  expect(s.interviewError).toBeUndefined()
 })

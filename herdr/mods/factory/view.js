@@ -122,7 +122,8 @@ export const leaseText = lease =>
  * The mod never ticks, so it is always a reader: no part of the line says "read-only".
  */
 export function headerText(state, context) {
-  if (state.error) return `board failed: ${state.error}`
+  if (state.error)
+    return `board failed: ${state.error}${state.staleSince ? ` · stale since ${clock(state.staleSince)}` : ''}`
   return [
     haltText(state.halt),
     statusText(state.runs ?? []) || 'no live runs',
@@ -134,6 +135,20 @@ export function headerText(state, context) {
     .filter(Boolean)
     .join(' · ')
 }
+
+/** the red line of a failed manager context read, or '' when it worked or shows nothing to read */
+export function contextProblem(code, out, err) {
+  if (code !== 0) return line(`manager context: ${err || out || `exit ${code}`}`, 300)
+  try {
+    const e = JSON.parse(out).views?.['manager.context']?.error
+    return e ? line(`manager context: ${e}`, 300) : ''
+  } catch {
+    return ''
+  }
+}
+
+/** the clock time of a stale board, 'HH:MM' */
+const clock = at => new Date(at).toTimeString().slice(0, 5)
 
 /** the board header when the manager's Claude is limited: 'manager: Claude limited until HH:MM', else '' */
 export function managerLimitText(limited) {
@@ -184,7 +199,12 @@ export function parseSnapshot(code, out, err) {
     ? { error: line(board.error, 300) }
     : parseTick(0, JSON.stringify(board ?? {}), '')
   const d = views?.interview
-  return { tick, interview: Array.isArray(d) ? d : undefined }
+  return {
+    tick,
+    interview: Array.isArray(d) ? d : undefined,
+    // a failed view keeps the old list; the panel draws this line in red
+    interviewError: d && !Array.isArray(d) && d.error ? line(`interview: ${d.error}`, 300) : undefined,
+  }
 }
 
 // Remote mode (claude-factory-hpmc.14): the manager runs on another machine, such as the AX task f-manager.
@@ -242,7 +262,7 @@ export function serverCall(conf, method, path, body, key = idemKey()) {
 }
 
 /** the one snapshot request of a beat */
-export const snapshotPath = maxAge => `/v1/snapshot?views=board,decisions,lease&maxAge=${maxAge}`
+export const snapshotPath = maxAge => `/v1/snapshot?views=board,interview,lease&maxAge=${maxAge}`
 
 /** the request of a control button, as [method, path, body] */
 export function actionReq(action, arg) {
