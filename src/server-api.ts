@@ -177,6 +177,7 @@ export function cliRunner(
   home: string,
   cli = join(import.meta.dir, 'cli.ts'),
   timeoutMs = 60_000,
+  killMs = 5_000,
 ): (argv: string[], text?: string, env?: Record<string, string>) => Promise<RunResult> {
   return async (argv, text, env) => {
     let file: string | undefined
@@ -202,19 +203,29 @@ export function cliRunner(
         },
       )
       let timedOut = false as boolean
+      let killTimer: ReturnType<typeof setTimeout> | undefined
+      // After SIGKILL the call returns at once. A grandchild (bd, git) can hold the pipes open, so the output is not awaited.
+      const killed = new Promise<RunResult>(res => {
+        killTimer = setTimeout(() => {
+          proc.kill('SIGKILL')
+          res({ code: 137, out: '', err: '', timedOut: true })
+        }, timeoutMs + killMs)
+      })
       const timer = setTimeout(() => {
         timedOut = true
         proc.kill()
       }, timeoutMs)
       try {
-        const [out, err, code] = await Promise.all([
+        const all = Promise.all([
           new Response(proc.stdout).text(),
           new Response(proc.stderr).text(),
           proc.exited,
-        ])
-        return { code, out, err, ...(timedOut ? { timedOut } : {}) }
+        ]).then(([out, err, code]): RunResult => ({ code, out, err, ...(timedOut ? { timedOut } : {}) }))
+        all.catch(() => {})
+        return await Promise.race([all, killed])
       } finally {
         clearTimeout(timer)
+        clearTimeout(killTimer)
       }
     } finally {
       if (file) rmSync(file, { force: true })
@@ -222,6 +233,8 @@ export function cliRunner(
   }
 }
 
+const REFUSED_LOG_MS = 10_000
+const GET_MAX = 8
 const KEY = /^[A-Za-z0-9-]{8,128}$/
 const MAX_BODY = 128 * 1024
 const DAY = 24 * 3600_000
@@ -291,6 +304,9 @@ export function clientHandler(o: ClientOpts) {
   const storeFile = join(o.home, 'client-idempotency.json')
   const auditFile = join(o.home, 'client-actions.jsonl')
   let chain: Promise<unknown> = Promise.resolve()
+  // GET operations that wait for call(). The slot is free when call answers, also at its 504.
+  // ponytail: a hung read keeps its work after the 504 (no cancel). So 8 hung reads start in each callTimeoutMs. Upgrade path: an AbortSignal in the port.
+  let gets = 0
   // The ring of board changes. ponytail: volatile, 256 events, the ids restart with the process. Upgrade path: a durable log.
   let lastJson = 'null'
   let lastId = 0n
@@ -400,10 +416,14 @@ export function clientHandler(o: ClientOpts) {
     if (!allowed(op.rights, who))
       return refuse(403, `the ${who} role cannot call ${op.name}: it is for the person only`)
     if (op.route.method === 'GET') {
+      if (gets >= GET_MAX) return refuse(503, 'too many reads at once; retry')
+      gets++
       try {
         return await call(op, q)
       } catch (e) {
         return refuse(500, `internal error: ${String((e as Error)?.message ?? e).slice(0, 200)}`)
+      } finally {
+        gets--
       }
     }
 
@@ -843,6 +863,9 @@ export function serveSocket(
       sock.end(out)
     } catch {
       if (!sock.destroyed) bad(500, 'internal error')
+    } finally {
+      // the reply is out: a client that never closes must not keep the socket
+      sock.setTimeout(idleMs, () => sock.destroy())
     }
   }
   sock.on('data', (chunk: Buffer) => {
@@ -912,10 +935,12 @@ export function clientListener(o: {
   ca: string
   handle: (req: Request, ip: string, who: Caller) => Promise<Response>
   idleMs?: number
+  log?: (line: string) => void
 }) {
   return listen({
     port: o.port,
     label: 'client',
+    log: o.log,
     tls: {
       cert: o.cert,
       key: o.key,
@@ -942,10 +967,12 @@ export function workerListener(o: {
   key: string
   handle: (req: Request, ip: string) => Promise<Response>
   idleMs?: number
+  log?: (line: string) => void
 }) {
   return listen({
     port: o.port,
     label: 'worker',
+    log: o.log,
     tls: { cert: o.cert, key: o.key, minVersion: 'TLSv1.2' },
     authorize: () => true,
     handle: o.handle,
@@ -960,15 +987,35 @@ function listen(o: {
   authorize: (s: TLSSocket) => boolean
   handle: (req: Request, ip: string, sock: TLSSocket) => Promise<Response>
   idleMs: number
+  log?: (line: string) => void
 }) {
+  // a fixed window: the first refusal writes at once, later ones in the window only count
+  let last = -Infinity
+  let skipped = 0
+  const refused = (ip: string | undefined, why: string) => {
+    const now = Date.now()
+    if (now - last < REFUSED_LOG_MS) {
+      skipped++
+      return
+    }
+    last = now
+    const more = skipped > 0 ? ` (${skipped} more not logged)` : ''
+    skipped = 0
+    o.log?.(`${o.label} handshake refused from ${ip ?? 'unknown'}: ${why.slice(0, 200)}${more}`)
+  }
   const open = new Set<Socket>()
   const srv = createTlsServer(o.tls, sock => {
-    if (!o.authorize(sock)) return sock.destroy()
+    if (!o.authorize(sock)) {
+      refused(sock.remoteAddress, String(sock.authorizationError ?? 'not authorized'))
+      return sock.destroy()
+    }
     open.add(sock)
     sock.on('close', () => open.delete(sock))
     serveSocket(sock, (req, ip) => o.handle(req, ip, sock), o.idleMs)
   })
-  srv.on('tlsClientError', () => {})
+  srv.on('tlsClientError', (err, s) =>
+    refused(s?.remoteAddress, (err as NodeJS.ErrnoException).code ?? err.message),
+  )
   srv.on('error', () => {})
   srv.listen(o.port)
   const addr = srv.address()

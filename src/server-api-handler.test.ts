@@ -1179,3 +1179,80 @@ describe('web page', () => {
       expect(CATALOG.some(o => o.route.method === 'GET' && o.route.path === p)).toBe(true)
   })
 })
+
+describe('GET cap of 8 reads', () => {
+  const waiting = () => {
+    let release!: () => void
+    const gate = new Promise<void>(r => (release = r))
+    let started = 0
+    const status = (async (_id: unknown, print: (l: string) => void) => {
+      started++
+      await gate
+      print('{"ok":1}')
+    }) as Port['status']
+    return { release, status, started: () => started }
+  }
+  test('the 9th read gets 503 while 8 wait, then reads work again', async () => {
+    const t = setup()
+    const w = waiting()
+    const h = t.make({ status: w.status })
+    const eight = Array.from({ length: 8 }, () => get(h, '/v1/status'))
+    await Bun.sleep(50)
+    const ninth = await get(h, '/v1/status')
+    expect(ninth.status).toBe(503)
+    expect(w.started()).toBe(8)
+    // a POST that does not mutate is not counted
+    const g = await post(h, '/v1/guard/check', { command: 'factory status', role: 'manager' })
+    expect(g.status).toBe(200)
+    w.release()
+    for (const r of await Promise.all(eight)) expect(r.status).toBe(200)
+    expect((await get(h, '/v1/status')).status).toBe(200)
+  })
+  test('a read that throws frees its slot', async () => {
+    const t = setup()
+    let boom = true
+    const h = t.make({
+      status: (async (_id: unknown, print: (l: string) => void) => {
+        if (boom) throw 'x'
+        print('{"ok":1}')
+      }) as Port['status'],
+    })
+    for (let i = 0; i < 9; i++) expect((await get(h, '/v1/status')).status).toBe(500)
+    boom = false
+    expect((await get(h, '/v1/status')).status).toBe(200)
+  })
+  test('a read that returns early frees its slot', async () => {
+    const t = setup()
+    for (let i = 0; i < 9; i++) expect((await get(t.h, '/v1/metrics?since=0d')).status).toBe(422)
+    expect((await get(t.h, '/v1/status')).status).toBe(200)
+  })
+})
+
+describe('serveSocket idle timer after the reply', () => {
+  test('a client that never closes is destroyed after the reply', async () => {
+    const { createServer, connect } = await import('node:net')
+    let closed: Promise<void> | undefined
+    const srv = createServer(s => {
+      closed = new Promise<void>(r => s.once('close', () => r()))
+      serveSocket(s as never, async () => new Response('ok'), 200)
+    })
+    await new Promise<void>(r => srv.listen(0, '127.0.0.1', () => r()))
+    const c = connect({
+      port: (srv.address() as { port: number }).port,
+      host: '127.0.0.1',
+      allowHalfOpen: true,
+    })
+    try {
+      let got = ''
+      c.on('data', d => (got += d))
+      c.write('GET /x HTTP/1.1\r\nhost: x\r\n\r\n')
+      for (let i = 0; i < 20 && !got.startsWith('HTTP/1.1 200'); i++) await Bun.sleep(50)
+      expect(got.startsWith('HTTP/1.1 200')).toBe(true)
+      const res = await Promise.race([closed!.then(() => 'closed'), Bun.sleep(1500).then(() => 'open')])
+      expect(res).toBe('closed')
+    } finally {
+      c.destroy()
+      srv.close()
+    }
+  })
+})
