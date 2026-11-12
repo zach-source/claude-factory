@@ -1544,16 +1544,16 @@ export const register: Register = (on, options) => {
 
     // the model's shell cd's into rigs to read them: its factory commands still work this factory.
     // claude-factory-72v.19: a subagent's prefix also carries FACTORY_PATROL=1. This is a second,
-    // CLI-side layer behind the gated-command regex deny below. A command can obfuscate the gated
-    // verb (a backslash inside it, a quoted argument). That can defeat the regex and still run a
-    // clean verb against the CLI. src/cli.ts refuses `decide`, `decisions answer`, `decisions
-    // propose` and an owner-only `start` whenever this var is set. It already refuses these the
-    // same way for a worker's FACTORY_FROM. One residual stays out of scope here: a command that
-    // both unsets this var and obfuscates the text still gets through. Fixing that needs the CLI
-    // to know the caller's identity on its own.
+    // CLI-side layer behind the gated-command deny below. src/cli.ts refuses `decide`, `decisions
+    // answer`, `decisions propose` and an owner-only `start` whenever this var is set, the same way
+    // it refuses them for a worker's FACTORY_FROM.
     // claude-factory-6g6ud: the main chat's prefix also sets FACTORY_MAIN_CHAT=1. Under it, src/cli.ts refuses
-    // each gated kind unless the person's Allow wrote a token (below): a one-time token, or an Allow for this turn token that lasts to the turn's end. That covers the forms the text
-    // gate cannot read (a symlink to bin/factory, a hidden verb word). One residual stays: a command that unsets the marker.
+    // each gated kind unless the person's Allow wrote a token (below): a one-time token, or an Allow for this turn token that lasts to the turn's end.
+    // claude-factory-6tl1, claude-factory-5yme: gatedCommand also matches a read with each quote and backslash
+    // removed, and it asks or denies a verb with $, a backtick or a glob. The text gate cannot read a command
+    // whose text holds no literal factory or cli word and verb: an alias, function or symlink for bin/factory,
+    // a script file, or a verb from stdin (`echo decide | xargs factory`). The two CLI-side markers cover
+    // these. One residual stays: such a command that also unsets the marker.
     const prefix =
       (e.agentId ? 'export FACTORY_PATROL=1\n' : 'export FACTORY_MAIN_CHAT=1\n') +
       (rt.home ? `export FACTORY_HOME='${rt.home}'\n` : '') +
