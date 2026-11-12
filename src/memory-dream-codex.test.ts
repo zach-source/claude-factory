@@ -77,11 +77,23 @@ function fake(name: string, body: string[]) {
 }
 
 /** the fake codex: records argv, cwd, CODEX_HOME and stdin, then files x.md with a plain mv */
-function fakeCodex(opt: { boom?: boolean; extras?: boolean; link?: boolean } = {}) {
+function fakeCodex(
+  opt: { boom?: boolean; extras?: boolean; link?: boolean; version?: string; adversary?: boolean } = {},
+) {
   const roll = join(dir, 'rollout.jsonl')
   writeFileSync(roll, ROLLOUT + '\n')
   return fake('fake-codex.sh', [
+    `if [ "$1" = --version ]; then`,
+    `  { printf '%s' "$CODEX_HOME"; env | cut -d= -f1 | while read -r k; do printf ' %s' "$k"; done; printf '\\n'; } >> "$m/version.log"`,
+    `  echo 'codex-cli ${opt.version ?? '0.160.1'}'; exit 0`,
+    `fi`,
     `printf '%s\\n' "$@" > "$m/codex.argv"`,
+    `cp "$CODEX_HOME/config.toml" "$m/codex.toml"`,
+    // jbfv.4: the adversary obeys its profile and copies every zq string it can read
+    `rd() { r=$(realpath "$1" 2>/dev/null) || return 0; sed -n 's/^"\\(.*\\)" = "\\(read\\|write\\)"$/\\1/p' "$CODEX_HOME/config.toml" | while IFS= read -r root; do case "$r" in "$root"|"$root"/*) cat "$1"; break;; esac; done; }`,
+    opt.adversary
+      ? `L=$(for f in "$CODEX_HOME/auth.json" '${userCodex}/auth.json' inbox/x.md; do rd "$f"; done | grep -o 'zq[a-z0-9-]*' | tr '\\n' ' ') || true`
+      : `L=`,
     `pwd > "$m/codex.pwd"`,
     `echo "$CODEX_HOME" > "$m/codex.home"`,
     `cat > "$m/codex.stdin"`,
@@ -103,6 +115,7 @@ function fakeCodex(opt: { boom?: boolean; extras?: boolean; link?: boolean } = {
       : []),
     ...(opt.boom ? ['exit 3'] : []),
     `mkdir -p topic && mv inbox/x.md topic/x.md`,
+    `[ -n "$L" ] && { echo "$L" >> topic/x.md; echo "$L"; } || true`,
     `echo "filed x.md under topic/x.md"`,
   ])
 }
@@ -133,13 +146,15 @@ function seed() {
 
 // the codex dream child gets a minimal env, so FAKE_BOOM and FAKE_EXTRAS become script text
 const bothFakes = (env: Record<string, string> = {}) => {
-  const { FAKE_BOOM, FAKE_EXTRAS, FAKE_LINK, ...rest } = env
+  const { FAKE_BOOM, FAKE_EXTRAS, FAKE_LINK, FAKE_VERSION, FAKE_ADVERSARY, ...rest } = env
   return {
     FACTORY_CLAUDE: fakeClaude(),
     FACTORY_CODEX: fakeCodex({
       boom: FAKE_BOOM === '1',
       extras: FAKE_EXTRAS === '1',
       link: FAKE_LINK === '1',
+      version: FAKE_VERSION,
+      adversary: FAKE_ADVERSARY === '1',
     }),
     ...rest,
   }
@@ -190,23 +205,14 @@ test(
     expect(existsSync(mark('claude.argv'))).toBe(false)
     const memReal = Bun.spawnSync(['realpath', memory]).stdout.toString().trim()
     expect(read('codex.argv').trimEnd().split('\n')).toEqual([
-      'exec',
-      '-s',
-      'workspace-write',
-      '-c',
-      'approval_policy="never"',
-      '-c',
-      'sandbox_workspace_write.network_access=false',
-      '-c',
-      'sandbox_workspace_write.exclude_slash_tmp=true',
-      '-c',
-      'sandbox_workspace_write.exclude_tmpdir_env_var=true',
-      '-C',
-      memory,
-      '-m',
-      'gpt-6-astra',
-      '-',
+      ...['exec', '--disable', 'view_image', '-c', 'approval_policy="never"'],
+      ...['-C', memory, '-m', 'gpt-6-astra', '-'],
     ])
+    // one --version call, with the pass home and the allowlist env
+    const [vh, ...vkeys] = read('version.log').trim().split(' ')
+    expect(vh).toBe(join(home, 'codex-dream'))
+    for (const k of vkeys)
+      expect(['PATH', 'HOME', 'TERM', 'LANG', 'CODEX_HOME', 'PWD', 'OLDPWD', 'SHLVL', '_']).toContain(k)
     expect(read('codex.pwd').trim()).toBe(memReal)
 
     // AC4
@@ -215,9 +221,16 @@ test(
     expect(lstatSync(dh).mode & 0o777).toBe(0o700)
     expect(readlinkSync(join(dh, 'auth.json'))).toBe(join(userCodex, 'auth.json'))
     expect(existsSync(join(dh, 'hooks.json'))).toBe(false)
-    expect(readFileSync(join(dh, 'config.toml'), 'utf8')).toBe(
-      `[projects.${JSON.stringify(memory)}]\ntrust_level = "trusted"\n`,
-    )
+    expect(Bun.TOML.parse(read('codex.toml'))).toEqual({
+      default_permissions: 'factory',
+      projects: { [memory]: { trust_level: 'trusted' } },
+      permissions: {
+        factory: {
+          filesystem: { ':minimal': 'read', [memReal]: 'write', [`${memReal}/.git`]: 'read' },
+          network: { enabled: false },
+        },
+      },
+    })
 
     // AC6
     expect(
@@ -308,6 +321,45 @@ test(
     seed()
     expect(run(bothFakes({ FACTORY_DREAM_CODEX: 'gpt-5.1-codex:latest' })).code).toBe(0)
     expect(read('codex.argv')).toContain('-m\ngpt-5.1-codex:latest\n')
+  },
+  SLOW,
+)
+
+test(
+  'jbfv.4 AC5: an adversary dream cannot copy an opaque credential into the memory or the log',
+  () => {
+    seed()
+    writeFileSync(join(userCodex, 'auth.json'), '{"tokens":{"refresh_token":"zqopaque-jbfv4"}}')
+    writeFileSync(join(memory, 'inbox', 'x.md'), '---\nsummary: a fixture note\n---\nzqcontrol-jbfv4\n')
+    const r = run(bothFakes({ FACTORY_DREAM_CODEX: 'gpt-6-astra', FAKE_ADVERSARY: '1' }))
+    expect(r.out + r.err).not.toContain('zqopaque-jbfv4')
+    expect(readFileSync(join(home, 'dream.log'), 'utf8')).not.toContain('zqopaque-jbfv4')
+    expect(gitMemory('log', '-p')).not.toContain('zqopaque-jbfv4')
+    expect(gitMemory('log', '-p')).toContain('zqcontrol-jbfv4')
+    expect(readFileSync(join(memory, 'topic', 'x.md'), 'utf8')).toContain('zqcontrol-jbfv4')
+  },
+  SLOW,
+)
+
+test(
+  'jbfv.4 AC3: a read scope with a credential path or an old codex refuses the dream with no exec call',
+  () => {
+    seed()
+    mkdirSync(join(memory, 'h'))
+    let r = run(bothFakes({ FACTORY_DREAM_CODEX: 'gpt-6-astra', HOME: join(memory, 'h') }))
+    expect(r.out).toContain('dream: codex read scope holds a secret path, dream refused')
+    expect(readFileSync(join(home, 'dream.log'), 'utf8')).toContain(
+      'refused\ndream: codex read scope holds a secret path, dream refused',
+    )
+    expect(existsSync(mark('codex.argv'))).toBe(false)
+    expect(existsSync(mark('claude.argv'))).toBe(false)
+    expect(gitMemory('log', '--grep=^dream:', '--format=%H')).toBe('')
+    seed()
+    r = run(bothFakes({ FACTORY_DREAM_CODEX: 'gpt-6-astra', FAKE_VERSION: '0.159.9' }))
+    expect(r.out).toContain('dream: codex has no permission profiles, dream refused')
+    expect(existsSync(mark('codex.argv'))).toBe(false)
+    expect(existsSync(mark('claude.argv'))).toBe(false)
+    expect(gitMemory('log', '--grep=^dream:', '--format=%H')).toBe('')
   },
   SLOW,
 )

@@ -6272,7 +6272,18 @@ function groomAgent(
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT')
         return refuse('wiki groom: the wiki holds .codex, codex refused')
     }
-    const p = codexExec(dir, sandbox, model, codexPassHome('codex-groom', dir), stdin)
+    const home = codexPassHome(
+      'codex-groom',
+      dir,
+      sandbox === 'read-only' ? { read: [dir, ...addDirs] } : { read: [], write: dir },
+    )
+    if ('refused' in home)
+      return refuse(
+        home.refused === 'version'
+          ? 'wiki groom: codex has no permission profiles, codex refused'
+          : 'wiki groom: codex read scope holds a secret path, codex refused',
+      )
+    const p = codexExec(dir, model, home.dir, stdin)
     return { code: p.exitCode, out: p.stdout.toString() }
   }
   const settings = passSettings()
@@ -6760,59 +6771,147 @@ function compactMessage(
  * grooms the memory with a headless worker that can only edit inside it: files the inbox under topics,
  * merges and prunes, mines the journals since the last dream, reorders. Committed before and after.
  */
+/** the env of a codex pass child: an allowlist (6w0m), because the codex sandbox can run printenv. Add a key only when a live pass fails without it. */
+const codexEnv = (home: string) => ({
+  ...Object.fromEntries(
+    ['PATH', 'HOME', 'TERM', 'LANG'].flatMap(k =>
+      process.env[k] === undefined ? [] : [[k, process.env[k]!]],
+    ),
+  ),
+  CODEX_HOME: home,
+})
+
+/** codex 0.160.1 is the first release that reads `default_permissions` (measured); an older one falls back to a full-read sandbox */
+const CODEX_MIN = [0, 160, 1]
+
+/** the credential stores a codex pass must never read, whatever else it may read (jbfv.4) */
+function codexTokenDirs() {
+  const h = homedir()
+  const env = process.env
+  return [
+    ...[
+      join(h, '.codex'),
+      env.CODEX_HOME,
+      join(h, '.claude'),
+      env.CLAUDE_CONFIG_DIR,
+      join(h, '.claude.json'),
+    ],
+    ...[
+      join(h, '.cursor'),
+      join(h, '.config', 'cursor'),
+      env.CURSOR_CONFIG_DIR,
+      join(h, '.grok'),
+      env.GROK_HOME,
+    ],
+    ...[
+      '.config/factory',
+      '.config/gh',
+      '.ssh',
+      '.aws',
+      '.kube',
+      '.docker',
+      '.netrc',
+      '.git-credentials',
+    ].map(p => join(h, p)),
+  ].filter((p): p is string => !!p)
+}
+
+const pathUnder = (p: string, root: string) =>
+  p === root || p.startsWith(root.endsWith(sep) ? root : root + sep)
+const pathForms = (p: string) => [
+  ...new Set([resolve(p), realPath(resolve(p))].filter((x): x is string => !!x)),
+]
+
 /**
  * Make a private CODEX_HOME `HOME/<name>` for a codex pass (the dream, wiki groom). It holds a trust line for
- * `trusted` and a link to the person's auth.json (one token store, as codexWorker does). It copies nothing else.
+ * `trusted`, a link to the person's auth.json (one token store, as codexWorker does) and a closed filesystem
+ * profile: the shell of the pass reads `:minimal` and `roots`, and writes only `roots.write`. Nothing else is
+ * readable, so a credential outside the roots cannot reach the output (jbfv.4). It refuses, and writes no
+ * profile, when codex is older than CODEX_MIN or a root covers or sits in a credential path.
  */
-function codexPassHome(name: string, trusted: string) {
+function codexPassHome(
+  name: string,
+  trusted: string,
+  roots: { read: string[]; write?: string },
+): { dir: string } | { refused: 'scope' | 'version' } {
   const dir = join(HOME, name)
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   chmodSync(dir, 0o700)
-  writeFileSync(join(dir, 'config.toml'), `[projects.${JSON.stringify(trusted)}]\ntrust_level = "trusted"\n`)
+  try {
+    const v = Bun.spawnSync([process.env.FACTORY_CODEX ?? 'codex', '--version'], {
+      cwd: trusted,
+      env: codexEnv(dir),
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: 10_000,
+    })
+    const m = /^codex-cli (\d+)\.(\d+)\.(\d+)/.exec(v.stdout.toString().trim())
+    if (v.exitCode !== 0 || !m) return { refused: 'version' }
+    for (const [i, min] of CODEX_MIN.entries()) {
+      const got = Number(m[i + 1])
+      if (got !== min) {
+        if (got < min) return { refused: 'version' }
+        break
+      }
+    }
+  } catch {
+    return { refused: 'version' }
+  }
   const auth = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'auth.json')
+  const protectedPaths = [homedir(), HOME, dir, auth].flatMap(pathForms)
+  const tokenDirs = codexTokenDirs().flatMap(pathForms)
+  const keys = new Map<string, 'read' | 'write'>()
+  for (const [root, mode] of [
+    ...roots.read.map(r => [r, 'read'] as const),
+    ...(roots.write ? [[roots.write, 'write'] as const] : []),
+  ]) {
+    const real = realPath(resolve(root))
+    if (!real) return { refused: 'scope' }
+    const forms = pathForms(root)
+    if (
+      forms.some(r => protectedPaths.some(p => pathUnder(p, r))) ||
+      forms.some(r => tokenDirs.some(t => pathUnder(r, t)))
+    )
+      return { refused: 'scope' }
+    if (keys.get(real) !== 'write') keys.set(real, mode)
+  }
+  if (roots.write) keys.set(`${realPath(resolve(roots.write))}/.git`, 'read')
+  writeFileSync(
+    join(dir, 'config.toml'),
+    [
+      'default_permissions = "factory"',
+      `[projects.${JSON.stringify(trusted)}]`,
+      'trust_level = "trusted"',
+      '[permissions.factory.filesystem]',
+      '":minimal" = "read"',
+      ...[...keys].map(([p, m]) => `${JSON.stringify(p)} = "${m}"`),
+      '[permissions.factory.network]',
+      'enabled = false',
+      '',
+    ].join('\n'),
+  )
   const link = join(dir, 'auth.json')
   rmSync(link, { force: true })
   if (existsSync(auth)) symlinkSync(auth, link)
-  return dir
+  return { dir }
 }
 
 /**
- * One `codex exec` call in `dir` with the prompt on stdin. Returns the raw spawn result.
+ * One `codex exec` call in `dir` with the prompt on stdin, under the profile that codexPassHome wrote in `home`.
+ * It passes no `-s`: that flag overrides the profile with a full-read sandbox. Returns the raw spawn result.
  * ponytail: spawnSync kills only the direct child, so a codex grandchild can write after the caller's guards.
  * The callers undo what a pass leaves behind. Upgrade path: spawn in its own process group and kill the group.
  */
-function codexExec(
-  dir: string,
-  sandbox: 'read-only' | 'workspace-write',
-  model: string,
-  home: string,
-  stdin: string,
-) {
+function codexExec(dir: string, model: string, home: string, stdin: string) {
   return Bun.spawnSync(
     [
       process.env.FACTORY_CODEX ?? 'codex',
-      ...['exec', '-s', sandbox, '-c', 'approval_policy="never"'],
-      ...(sandbox === 'workspace-write'
-        ? [
-            ...['-c', 'sandbox_workspace_write.network_access=false'],
-            ...['-c', 'sandbox_workspace_write.exclude_slash_tmp=true'],
-            ...['-c', 'sandbox_workspace_write.exclude_tmpdir_env_var=true'],
-          ]
-        : []),
+      ...['exec', '--disable', 'view_image', '-c', 'approval_policy="never"'],
       ...['-C', dir, '-m', model, '-'],
     ],
     {
       cwd: dir,
-      // 6w0m: the codex sandbox can run printenv, so pass an allowlist, not the tick env.
-      // Add a key only when the live pass fails without it.
-      env: {
-        ...Object.fromEntries(
-          ['PATH', 'HOME', 'TERM', 'LANG'].flatMap(k =>
-            process.env[k] === undefined ? [] : [[k, process.env[k]!]],
-          ),
-        ),
-        CODEX_HOME: home,
-      },
+      env: codexEnv(home),
       stdin: Buffer.from(stdin),
       stdout: 'pipe',
       stderr: 'pipe',
@@ -6930,7 +7029,14 @@ async function dream() {
       }
       if (hasCodexDir || codexLinked)
         return refuse('the memory holds .codex, which would add codex project config')
-      codexHome = codexPassHome('codex-dream', MEMORY)
+      const ph = codexPassHome('codex-dream', MEMORY, { read: [], write: MEMORY })
+      if ('refused' in ph)
+        return refuse(
+          ph.refused === 'version'
+            ? 'dream: codex has no permission profiles, dream refused'
+            : 'dream: codex read scope holds a secret path, dream refused',
+        )
+      codexHome = ph.dir
     }
     const gitPre = gitDirPre(MEMORY)
     if ('why' in gitPre) return refuse(gitPreLine('dream', gitPre.why))
@@ -6938,7 +7044,7 @@ async function dream() {
     // and the writers refuse it, and the next dream removes it.
     // claude: edits auto-accepted inside the memory only; -p has nobody to ask, so anything else is refused
     const p = codexHome
-      ? codexExec(MEMORY, 'workspace-write', model!, codexHome, prompt + DREAM_CODEX_NOTE)
+      ? codexExec(MEMORY, model!, codexHome, prompt + DREAM_CODEX_NOTE)
       : Bun.spawnSync(
           [
             ...claudeCommand().split(/\s+/),

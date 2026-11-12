@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   rmSync,
   statSync,
@@ -118,14 +119,28 @@ esac
     join(dir, 'bin', 'codex'),
     `#!/bin/sh
 F='${fake}'
+if [ "$1" = --version ]; then
+  { printf '%s' "$CODEX_HOME"; env | cut -d= -f1 | while read -r k; do printf ' %s' "$k"; done; printf '\\n'; } >> "$F/version.log"
+  if [ -f "$F/version" ]; then cat "$F/version"; else echo 'codex-cli 0.160.1'; fi
+  [ -f "$F/version.exit" ] && exit "$(cat "$F/version.exit")"
+  exit 0
+fi
 n=$(( $(cat "$F/cn" 2>/dev/null || echo 0) + 1 )); echo $n > "$F/cn"
+cp "$CODEX_HOME/config.toml" "$F/ctoml$n"
+# jbfv.4: with $F/adversary the agent obeys its profile and copies every zq string it can read
+rd() { r=$(realpath "$1" 2>/dev/null) || return 0; sed -n 's/^"\\(.*\\)" = "\\(read\\|write\\)"$/\\1/p' "$CODEX_HOME/config.toml" | while IFS= read -r root; do case "$r" in "$root"|"$root"/*) cat "$1"; break;; esac; done; }
+L=; [ -f "$F/adversary" ] && L=$(for f in "$CODEX_HOME/auth.json" '${dir}/user-codex/auth.json' '${join(home, 'wiki')}/topics/a.md'; do rd "$f"; done | grep -o 'zq[a-z0-9-]*' | tr '\\n' ' ')
 { printf '%s|%s|' "$(pwd)" "$(git symbolic-ref HEAD)"; sep=; for a in "$@"; do printf '%s%s' "$sep" "$a"; sep=$(printf '\\037'); done; printf '\\n'; } >> "$F/codex-calls.log"
 cat > "$F/cstdin$n"
 env > "$F/cenv$n"
-case "$*" in
-*workspace-write*) sh "$F/apply.sh"; rc=$?; [ -f "$F/apply.exit" ] && exit "$(cat "$F/apply.exit")"; exit $rc ;;
-*) [ -f "$F/plan.mkcodex" ] && mkdir -p .codex; [ -f "$F/plan.exit" ] && exit "$(cat "$F/plan.exit")"; cat "$F/plan" ;;
-esac
+if grep -q '= "write"$' "$CODEX_HOME/config.toml"; then
+  sh "$F/apply.sh"; rc=$?
+  [ -n "$L" ] && for p in $(git diff --name-only); do echo "$L" >> "$p"; done
+  [ -f "$F/apply.exit" ] && exit "$(cat "$F/apply.exit")"; exit $rc
+else
+  [ -f "$F/plan.mkcodex" ] && mkdir -p .codex; [ -f "$F/plan.exit" ] && exit "$(cat "$F/plan.exit")"
+  if [ -n "$L" ]; then sed "s/\\$/ $L/" "$F/plan"; else cat "$F/plan"; fi
+fi
 `,
   )
   for (const b of ['gh', 'claude', 'codex']) chmodSync(join(dir, 'bin', b), 0o755)
@@ -164,6 +179,7 @@ const factory = (args: string[], env: Record<string, string> = {}) => {
     FAKE_DIR: fake,
     FACTORY_CLAUDE: join(dir, 'bin', 'claude'),
     FACTORY_CODEX: join(dir, 'bin', 'codex'),
+    CODEX_HOME: join(dir, 'user-codex'),
     ...env,
   })
 }
@@ -917,14 +933,10 @@ test(
     for (const [i, call] of [planCall, applyCall].entries()) {
       expect(call.cwd).toBe(wiki())
       expect(call.head).toBe(`refs/heads/${br}`)
-      expect(call.argv.slice(0, 5)).toEqual([
-        'exec',
-        '-s',
-        i ? 'workspace-write' : 'read-only',
-        '-c',
-        'approval_policy="never"',
+      expect(call.argv).toEqual([
+        ...['exec', '--disable', 'view_image', '-c', 'approval_policy="never"'],
+        ...['-C', wiki(), '-m', MODEL, '-'],
       ])
-      expect(call.argv.slice(-5)).toEqual(['-C', wiki(), '-m', MODEL, '-'])
       const env = cfile(`cenv${i + 1}`)
       expect(env).toContain(`CODEX_HOME=${join(home, 'codex-groom')}\n`)
       for (const l of env.trim().split('\n')) {
@@ -934,9 +946,19 @@ test(
       expect(env).not.toContain('zqsecret')
       expect(env).not.toContain('FAKE_DIR')
     }
-    expect(planCall.argv.join(' ')).not.toContain('sandbox_workspace_write')
-    for (const k of ['network_access=false', 'exclude_slash_tmp=true', 'exclude_tmpdir_env_var=true'])
-      expect(applyCall.argv).toContain(`sandbox_workspace_write.${k}`)
+    for (const c of [planCall, applyCall]) {
+      expect(c.argv).not.toContain('-s')
+      expect(c.argv.join(' ')).not.toContain('sandbox_workspace_write')
+    }
+    // AC2: each codex call has a --version call before it, with the allowlist env and the pass home
+    const vlog = readFileSync(join(fake, 'version.log'), 'utf8').trim().split('\n')
+    expect(vlog).toHaveLength(2)
+    for (const l of vlog) {
+      const [h, ...keys] = l.split(' ')
+      expect(h).toBe(join(home, 'codex-groom'))
+      for (const k of keys)
+        expect(['PATH', 'HOME', 'TERM', 'LANG', 'CODEX_HOME', 'PWD', 'OLDPWD', 'SHLVL', '_']).toContain(k)
+    }
     const pin = cfile('cstdin1')
     expect(pin).toContain(JSON.stringify(repo))
     expect(pin.endsWith('Do only step 1 now. Print the plan and change no file.\n')).toBe(true)
@@ -945,9 +967,17 @@ test(
     expect(ain).not.toContain(repo)
     const ch = join(home, 'codex-groom')
     expect(statSync(ch).mode & 0o777).toBe(0o700)
-    expect(readFileSync(join(ch, 'config.toml'), 'utf8')).toBe(
-      `[projects.${JSON.stringify(wiki())}]\ntrust_level = "trusted"\n`,
-    )
+    // AC1: the profile of each call
+    const prof = (i: number) => Bun.TOML.parse(cfile(`ctoml${i}`))
+    const want = (filesystem: Record<string, string>) => ({
+      default_permissions: 'factory',
+      projects: { [wiki()]: { trust_level: 'trusted' } },
+      permissions: { factory: { filesystem, network: { enabled: false } } },
+    })
+    expect(prof(1)).toEqual(want({ ':minimal': 'read', [wiki()]: 'read', [repo]: 'read' }))
+    expect(prof(2)).toEqual(want({ ':minimal': 'read', [wiki()]: 'write', [`${wiki()}/.git`]: 'read' }))
+    // AC6: the test never links the machine's own auth.json
+    expect(existsSync(join(ch, 'auth.json'))).toBe(false)
     expect(wikiLog()).not.toContain('FOO_BAR')
   },
   SLOW,
@@ -1095,3 +1125,125 @@ for (const harness of ['claude', 'codex'] as const)
     },
     SLOW,
   )
+
+// claude-factory-jbfv.4: a codex pass reads only its pass dirs, so a credential outside them cannot reach the output
+const SCOPE = 'wiki groom: codex read scope holds a secret path, codex refused'
+const NOPROFILE = 'wiki groom: codex has no permission profiles, codex refused'
+const setRepos = (...repos: string[]) =>
+  writeFileSync(
+    join(home, 'rigs.json'),
+    JSON.stringify(repos.map((r, i) => ({ name: `acme${i}`, repo: r, factory: join(dir, 'f.ts') }))),
+  )
+
+test(
+  'jbfv.4 AC4 AC6 an adversary agent cannot copy an opaque credential into any output',
+  () => {
+    setup()
+    const secret = 'zqopaque-jbfv4'
+    mkdirSync(join(dir, 'user-codex'), { recursive: true })
+    writeFileSync(join(dir, 'user-codex', 'auth.json'), `{"tokens":{"refresh_token":"${secret}"}}`)
+    writeFileSync(join(wiki(), 'topics', 'a.md'), page('A', 'zqcontrol-jbfv4'))
+    git('add', '-A')
+    commit('control')
+    git('push', '-q', URL_, 'HEAD:main')
+    writeFileSync(join(fake, 'adversary'), '')
+    const d = cgroom(['--dry-run'])
+    expect(d.out).toContain('zqcontrol-jbfv4')
+    expect(d.out + d.err).not.toContain(secret)
+    const r = cgroom()
+    expect(r.out).toContain(`wiki groom: PR ${PR}`)
+    expect(r.out + r.err).not.toContain(secret)
+    expect(wikiLog()).not.toContain(secret)
+    expect(ghCalls().flat().join('\n')).not.toContain(secret)
+    expect(ghCalls().flat().join('\n')).toContain('zqcontrol-jbfv4')
+    const patch = bareGit('log', '-p', '--all')
+    expect(patch).not.toContain(secret)
+    expect(patch).toContain('zqcontrol-jbfv4')
+    expect(readlinkSync(join(home, 'codex-groom', 'auth.json'))).toStartWith(join(dir, 'user-codex'))
+  },
+  SLOW,
+)
+
+test(
+  'jbfv.4 AC3 a read scope that holds a credential path refuses the pass with no exec call',
+  () => {
+    const none = (line: string, dry = false) => {
+      expect(wikiLog()).toContain(line)
+      expect(codexCalls()).toHaveLength(0)
+      expect(claudeCalls()).toHaveLength(0)
+      expect(creates()).toHaveLength(0)
+      if (!dry) mainClean()
+    }
+    const rows: [string, () => Record<string, string> | void][] = [
+      ['root /', () => setRepos('/')],
+      ['factory home', () => setRepos(home)],
+      ['ancestor of home', () => setRepos(dir)],
+      [
+        'link to home',
+        () => {
+          symlinkSync(home, join(dir, 'lnk'))
+          setRepos(join(dir, 'lnk'))
+        },
+      ],
+      [
+        'inside the codex home',
+        () => {
+          mkdirSync(join(dir, 'user-codex', 'sub'), { recursive: true })
+          setRepos(join(dir, 'user-codex', 'sub'))
+        },
+      ],
+      [
+        'homedir inside a repo',
+        () => {
+          mkdirSync(join(repo, 'h'))
+          return { HOME: join(repo, 'h') }
+        },
+      ],
+    ]
+    for (const [label, mk] of rows) {
+      setup()
+      const env = mk() ?? {}
+      expect(groom([], { FACTORY_DREAM_CODEX: MODEL, ...env }).code, label).toBe(0)
+      none(SCOPE)
+    }
+    setup()
+    expect(groom(['--dry-run'], { FACTORY_DREAM_CODEX: MODEL, CODEX_HOME: join(wiki(), 'cx') }).code).toBe(0)
+    none(SCOPE, true)
+    for (const [label, mk] of [
+      ['old version', () => writeFileSync(join(fake, 'version'), 'codex-cli 0.159.9\n')],
+      ['no semver', () => writeFileSync(join(fake, 'version'), 'codex 1.0.0\n')],
+      ['exit 1', () => writeFileSync(join(fake, 'version.exit'), '1')],
+    ] as const) {
+      setup()
+      mk()
+      expect(cgroom().code, label).toBe(0)
+      none(NOPROFILE)
+    }
+    setup()
+    expect(groom([], { FACTORY_DREAM_CODEX: MODEL, FACTORY_CODEX: join(dir, 'bin', 'nope') }).code).toBe(0)
+    none(NOPROFILE)
+  },
+  { timeout: 300_000 },
+)
+
+test(
+  'jbfv.4 AC3 AC1 near misses pass: a sibling repo, a prefix sibling, two rigs on one repo, a version suffix',
+  () => {
+    const keys = (i: number) =>
+      Object.keys((Bun.TOML.parse(cfile(`ctoml${i}`)) as any).permissions.factory.filesystem).sort()
+    for (const [label, mk, repos] of [
+      ['sibling', () => mkdirSync(join(dir, 'repo2')), () => [join(dir, 'repo2')]],
+      ['prefix', () => mkdirSync(`${home}-x`), () => [`${home}-x`]],
+      ['two rigs', () => {}, () => [repo, repo]],
+      ['suffix', () => writeFileSync(join(fake, 'version'), 'codex-cli 0.160.1-alpha\n'), () => [repo]],
+    ] as const) {
+      setup()
+      mk()
+      setRepos(...repos())
+      expect(cgroom().out, label).toContain(`wiki groom: PR ${PR}`)
+      expect(codexCalls(), label).toHaveLength(2)
+      expect(keys(1), label).toEqual([':minimal', wiki(), realpathSync(repos()[0]!)].sort())
+    }
+  },
+  { timeout: 300_000 },
+)
