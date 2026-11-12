@@ -78,6 +78,7 @@ import {
   launch,
   laptopSandbox,
   userPluginDirs,
+  harnessPluginNames,
   workerSettings,
   workerSkills,
   warnSkillsOff,
@@ -2785,6 +2786,20 @@ test('userPluginDirs finds an on worker plugin at its installPath or in its dire
   expect(userPluginDirs([], c)).toEqual([]) // a station with no skills gets no plugin dir
 })
 
+test('harnessPluginNames drops Claude-only names from FACTORY_WORKER_PLUGINS for codex and pi', () => {
+  const old = process.env.FACTORY_WORKER_PLUGINS
+  process.env.FACTORY_WORKER_PLUGINS = 'egm, pony'
+  try {
+    for (const h of ['codex', 'pi'] as const)
+      expect(harnessPluginNames(h, ['asd-ste100'])).toEqual(['asd-ste100', 'pony'])
+    for (const h of ['claude', null] as const)
+      expect(harnessPluginNames(h, ['asd-ste100'])).toEqual(['asd-ste100', 'egm', 'pony'])
+  } finally {
+    if (old === undefined) delete process.env.FACTORY_WORKER_PLUGINS
+    else process.env.FACTORY_WORKER_PLUGINS = old
+  }
+})
+
 // claude-factory-hg9o: a pi worker gets the worker rules a Claude worker gets, and the plugins' skills
 test('piWorker appends the worker rules to pi and passes each plugin skill', () => {
   const home = mkdtempSync(join(tmpdir(), 'pi-home-'))
@@ -3567,4 +3582,50 @@ test('launch wraps the worker in the sandbox', () => {
   const t = run('throw')
   expect(t.out).toEqual(['threw boom'])
   expect(readdirSync(t.home).filter(f => f !== '.bun')).toEqual([])
+})
+
+test('launch gives codex and pi no Claude-only plugin dir from FACTORY_WORKER_PLUGINS', () => {
+  const home = mkdtempSync(join(tmpdir(), 'launch-egm-'))
+  const cfg = join(home, 'claude')
+  const egm = join(home, 'egm-plugin')
+  mkdirSync(join(egm, 'skills', 'egm-x'), { recursive: true })
+  writeFileSync(join(egm, 'skills', 'egm-x', 'SKILL.md'), '---\nname: egm-x\ndescription: x\n---\n')
+  mkdirSync(join(cfg, 'plugins'), { recursive: true })
+  writeFileSync(join(cfg, 'settings.json'), JSON.stringify({ enabledPlugins: { 'egm@m': true } }))
+  writeFileSync(
+    join(cfg, 'plugins', 'installed_plugins.json'),
+    JSON.stringify({ plugins: { 'egm@m': [{ installPath: egm }] } }),
+  )
+  // a fake codex answers `features list`, so the test needs no codex binary (CI has none)
+  const bin = join(home, 'bin')
+  mkdirSync(bin)
+  writeFileSync(
+    join(bin, 'codex'),
+    "#!/bin/sh\nprintf 'hooks stable true\\n'\nfor x in unified_exec shell_snapshot multi_agent code_mode; do printf '%s stable false\\n' \"$x\"; done\n",
+    { mode: 0o755 },
+  )
+  const script = `
+    import { launch } from ${JSON.stringify(join(import.meta.dir, 'cli'))}
+    const run = { id: 'r', ws: 'w', worktree: ${JSON.stringify(home)}, repo: ${JSON.stringify(home)}, branch: 'b' }
+    const out = {}
+    for (const agent of ['claude', 'codex', 'pi'])
+      out[agent] = launch(run, { name: 'x', start: 'a', agent, nodes: { a: { prompt: '', next: { ok: 'done' } } } }, 'a', { attempt: 1, seq: 1, mail: {} }, 'p.md')
+    console.log(JSON.stringify(out))
+  `
+  const p = Bun.spawnSync(['bun', '-e', script], {
+    env: {
+      ...process.env,
+      HOME: home,
+      FACTORY_HOME: home,
+      CLAUDE_CONFIG_DIR: cfg,
+      FACTORY_WORKER_PLUGINS: 'egm',
+      PATH: `${bin}:${process.env.PATH}`,
+    },
+  })
+  expect(p.exitCode, p.stderr.toString()).toBe(0)
+  const out = JSON.parse(p.stdout.toString()) as Record<string, string>
+  expect(out.pi).not.toContain(egm)
+  expect(out.codex).toContain('CODEX_HOME')
+  const files = readdirSync(home, { recursive: true }).map(String)
+  expect(files.filter(f => f.includes('egm-x') && !f.startsWith('egm-plugin'))).toEqual([])
 })
