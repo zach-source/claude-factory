@@ -1185,9 +1185,9 @@ export function overwritten(out: string) {
 }
 
 function syncRigBeads(
-  run: Pick<Run, 'repo' | 'worktree'>,
+  run: Pick<Run, 'id' | 'repo' | 'worktree'>,
   way: 'push' | 'pull',
-  r = rigOf(run.repo)?.beadsRemote,
+  r = runRig(run)?.beadsRemote,
 ) {
   const show =
     r && !ownsClones()
@@ -1246,7 +1246,7 @@ async function syncAsRemoteUser(rig: Rig) {
 
 const NO_SUSPEND_MS = 24 * 3_600_000
 const noSuspendFile = (run: Run) =>
-  join(HOME, `ax-no-suspend-${(rigOf(run.repo)?.name ?? basename(run.repo)).replace(/[^\w.-]/g, '_')}.json`)
+  join(HOME, `ax-no-suspend-${(runRig(run)?.name ?? basename(run.repo)).replace(/[^\w.-]/g, '_')}.json`)
 /**
  * True when AX failed to restore a worker of this run's rig less than 24 h ago. A suspended worker of
  * that rig can fail to restore. So the reconciler keeps it running (claude-factory-x500).
@@ -1258,7 +1258,7 @@ function noSuspend(run: Run) {
 }
 /** write the marker; the text of the one mail that tells the manager */
 function markNoSuspend(run: Run, why: string) {
-  const rig = rigOf(run.repo)?.name ?? basename(run.repo)
+  const rig = runRig(run)?.name ?? basename(run.repo)
   writeJson(noSuspendFile(run), { at: Date.now(), why: cleanText(why, 500) })
   return `AX could not restore a ${rig} worker (${cleanText(why, 300)}). For 24 h the factory does not suspend ${rig} workers that wait on the manager, so no more of them fail the same way.`
 }
@@ -1266,7 +1266,7 @@ function markNoSuspend(run: Run, why: string) {
 const SKEW_PROBE_MS = 60 * 60_000
 const SKEW_HOLD_MAX_MS = 3 * SKEW_PROBE_MS
 const bdSkewFile = (run: Run) =>
-  join(HOME, `bd-skew-${(rigOf(run.repo)?.name ?? basename(run.repo)).replace(/[^\w.-]/g, '_')}.json`)
+  join(HOME, `bd-skew-${(runRig(run)?.name ?? basename(run.repo)).replace(/[^\w.-]/g, '_')}.json`)
 /**
  * The bd error of an outbox line whose VM could not sync beads (schema skew), else undefined. The VM agent
  * writes the line, so a field of the wrong type, over 300 chars or without the skew text counts as absent.
@@ -1474,7 +1474,7 @@ function taskInfo(run: Run, pane: string): WorkerInfo | null {
         const file = join(HOME, 'starts.jsonl')
         const have = existsSync(file) ? parseStartLines(readFileSync(file, 'utf8')) : []
         if (start && !have.some(l => l.run === run.id && l.node === side!.node && l.seq === side!.seq)) {
-          const rig = rigOf(run.repo)
+          const rig = runRig(run)
           const row = {
             at: Date.now(),
             run: run.id,
@@ -1966,7 +1966,7 @@ export function brief(
   const committed = run.base ? git(run.worktree, 'log', '--oneline', '-n', '30', `${run.base}..HEAD`) : ''
   const prior = node === def.start ? priorWork(run) : ''
   const origin = originRef(run.repo)
-  const rig = rigOf(run.repo)
+  const rig = runRig(run)
   // only base_branch fills prompts: other {names} in a prompt stay as written
   const prm: Record<string, string> =
     def.params?.base_branch === undefined ? {} : { base_branch: baseBranchOf(def, rig, run.repo) }
@@ -1975,13 +1975,8 @@ export function brief(
     `You are the "${node}" station of the software factory "${def.name}" (run ${run.id}, attempt ${c.attempt} of ${1 + (n.retries ?? 2)}).`,
     `You work in the git worktree ${run.worktree} on branch ${run.branch}. Commit your work there and touch no other checkout.`,
     `This run follows the factory pinned when it started (${run.factoryFrom ?? run.factory}): changes to ${OWN}/ on any branch reach only runs that start after they merge. Check an edited factory file with ${CLI} check <file>.`,
-    ...ruleLines(
-      def,
-      rigOf(run.repo)?.goal,
-      personOnlyContexts(rigOf(run.repo)),
-      !!mergeAuthority(rigOf(run.repo)),
-    ),
-    ...skillLines(skillsFor(harnessOf(agentOfNode(run, def, node)), workerSkills(def, n, rigOf(run.repo)))),
+    ...ruleLines(def, runRig(run)?.goal, personOnlyContexts(runRig(run)), !!mergeAuthority(runRig(run))),
+    ...skillLines(skillsFor(harnessOf(agentOfNode(run, def, node)), workerSkills(def, n, runRig(run)))),
     '',
     ...remembered(run, node, notes),
     ...forgeNote(origin?.forge === 'gitlab' ? origin.host : undefined),
@@ -2111,7 +2106,7 @@ export const helpedHint = (run: Run, node: string) =>
 
 /** the memory's top two levels, and how to reach the third: search before, add what was learned */
 function remembered(run: Run, node: string, notes = '') {
-  const rig = rigOf(run.repo)?.name
+  const rig = runRig(run)?.name
   const { core, topics } = memory.outline(MEMORY, rig)
   return [
     '## Factory memory',
@@ -2173,7 +2168,7 @@ const runnerOfStation = (run: Run, def: Factory, node: string) =>
     stationRunnerName(
       inAx(),
       def.nodes[node]?.runner,
-      rigOf(run.repo)?.runner,
+      runRig(run)?.runner,
       DEFAULT_RUNNER,
       name => runners[name]?.local ?? true,
     )
@@ -2231,7 +2226,7 @@ function reviveWorktree(run: Run) {
 /** one line a launch in HOME/launches.jsonl, for `factory metrics`: a write error never blocks the launch */
 function logLaunch(run: Run, node: string, seq: number, agent: string, resume: boolean) {
   try {
-    const rig = rigOf(run.repo)?.name
+    const rig = runRig(run)?.name
     const harness = harnessOf(agent) ?? 'other'
     const model = ax.modelOf(agent) ?? 'default'
     const pick = node === 'plan' ? savedPlanPick(runDir(run.id)) : null
@@ -2259,7 +2254,7 @@ function logLaunch(run: Run, node: string, seq: number, agent: string, resume: b
  * ponytail: spawnSync blocks the tick up to 60 s per new brief; make it async if that shows in practice
  */
 export function launchNotes(run: Run, node: string) {
-  const rig = rigOf(run.repo)?.name
+  const rig = runRig(run)?.name
   try {
     const p = Bun.spawnSync(
       [
@@ -2457,7 +2452,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   if (inAx() && !existsSync(run.worktree)) reviveWorktree(run)
   const image =
     process.env.FACTORY_AX_IMAGE ?? fail('FACTORY_AX_IMAGE is not set: the worker image for AX tasks')
-  const rig = rigOf(run.repo)
+  const rig = runRig(run)
   const agent = agentOfNode(run, def, node)
   const harness = harnessOf(agent)
   const skills = workerSkills(def, def.nodes[node]!, rig)
@@ -2466,7 +2461,7 @@ function launchTask({ run, def, node, c, brief: text }: Job) {
   axCodexRefused(agent)
   axCursorRefused(agent)
   axGrokRefused(agent)
-  const hasRunBeads = vmBeads(run) && hasBeads(run.repo)
+  const hasRunBeads = vmBeads(run) && hasRigBeads(run.repo, rig ? [rig] : [])
   // the VM clones its beads from the rig's beadsRemote: its egress needs that Dolt rule
   const doltEgress = ax.withDoltEgress(
     harness === 'codex'
@@ -3081,7 +3076,7 @@ export const pickAgent = (
         : fill(params[h] ?? LAUNCHERS[h], params)
 }
 const agentOfNode = (run: Run, def: Factory, node: string) =>
-  pickAgent(run.id, def, node, rigOf(run.repo), runnerOfStation(run, def, node).name)
+  pickAgent(run.id, def, node, runRig(run), runnerOfStation(run, def, node).name)
 const promptOf = (run: Run, node: string, c: Ctx) => join(runDir(run.id), 'prompts', `${c.seq}-${node}.md`)
 /** the context of the last turn in a Claude transcript's tail, in tokens; 0 when it has none */
 export function lastContext(tail: string) {
@@ -4064,7 +4059,7 @@ const deadlineOf = (def: Factory, node: string, c: Ctx) =>
  * The tags are the ones of logLaunch.
  */
 export function otelFor(run: Run, node: string, c: Ctx, agent: string, endpoint: string | undefined) {
-  const rig = rigOf(run.repo)
+  const rig = runRig(run)
   return otelOf(
     endpoint,
     {
@@ -4147,7 +4142,7 @@ export function launch(
   session?: string,
   sb = laptopSandbox,
 ) {
-  const rig = rigOf(run.repo)
+  const rig = runRig(run)
   const agent = agentOfNode(run, def, node)
   // the clamp is Claude's: its Bash tool takes a timeout, codex's shell does not
   const h = harnessOf(agent)
@@ -4530,7 +4525,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       return 'awaiting trust'
     }
     if (n.mergeCheck) {
-      const base = baseBranchOf(def, rigOf(run.repo), run.repo)
+      const base = baseBranchOf(def, runRig(run), run.repo)
       const files = conflictsOf(run.repo, base, run.branch)
       if (files.length) {
         // the head names the pushed commit, so a new push with the same files is a new conflict (claude-factory-gclk)
@@ -4578,7 +4573,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       const file = bdSkewFile(run)
       const old = existsSync(file) ? readJson<{ at?: number; since?: number }>(file) : null
       const asked = old !== null
-      const rig = rigOf(run.repo)?.name ?? basename(run.repo)
+      const rig = runRig(run)?.name ?? basename(run.repo)
       const since = typeof old?.since === 'number' ? old.since : typeof old?.at === 'number' ? old.at : now
       writeJson(file, { since, at: now, runner: runner.name, error: info.bdSkew })
       if (!asked)
@@ -4597,7 +4592,7 @@ function reconcile(run: Run, def: Factory, c: Ctx, node: string, send: (e: Input
       // a bd bootstrap outage spends no attempt: 2 min for the first hit, the streak floor and one mail for the next
       const prev = c.log.at(-1)
       const again = prev?.node === node && prev.outcome === 'outage' && isBootstrapFail(prev.summary)
-      const text = `bd bootstrap fails on ${rigOf(run.repo)?.name ?? basename(run.repo)} VMs`
+      const text = `bd bootstrap fails on ${runRig(run)?.name ?? basename(run.repo)} VMs`
       if (again && !(c.mail.manager ?? []).some(m => m.from === 'factory' && m.text === text))
         send({ type: 'MAIL', from: 'factory', to: 'manager', text })
       send({
@@ -4940,7 +4935,7 @@ function row(run: Run, def: Factory, value: unknown, c: Ctx, agent?: string | nu
     error: error ?? c.error,
     ...(c.log.length && { last: { ...c.log.at(-1)!, summary: clip(c.log.at(-1)!.summary, 400) } }),
     bead: run.bead,
-    rig: rigOf(run.repo)?.name,
+    rig: runRig(run)?.name,
     trail: c.log.slice(-40).map(e => e.node),
     ...(c.startedAt && { since: c.startedAt }),
     ...(c.wakeAt && { wakeAt: c.wakeAt }),
@@ -5506,7 +5501,7 @@ const journalSince = (since: number) =>
       try {
         const run = loadRun(id)
         const { log } = readJson<Saved>(join(runDir(id), 'state.json')).snapshot.context
-        const rig = rigOf(run.repo)?.name ?? basename(run.repo)
+        const rig = runRig(run)?.name ?? basename(run.repo)
         return log
           .filter(e => e.at > since)
           .map(e => ({
@@ -8547,7 +8542,7 @@ function securityRouteOf(run: Run, def: Factory, c: Ctx): SecurityRoute {
     }
   }
   const plan = c.log.findLast(e => e.node === 'plan' && e.outcome === 'ready')?.summary
-  const rig = rigOf(run.repo)
+  const rig = runRig(run)
   return securityRoute({
     paths: changedPaths(run.repo, baseBranchOf(def, rig, run.repo), ref),
     plan,
@@ -9209,10 +9204,11 @@ async function createRun(
   },
 ) {
   const branch = `factory/${id}`
-  const base = from?.run.base ?? freshBase(repo)
+  const rig = rigOf(repo)
+  const base = from?.run.base ?? freshBase(repo, rig)
   const startPoint = from?.run.branch ?? onto ?? base
   // an AX rig needs no herdr: a plain git worktree at herdr's own layout, so `herdr worktree open` finds it later
-  const isAx = rigOf(repo)?.runner === 'ax'
+  const isAx = rig?.runner === 'ax'
   // claude-factory-1d9l: a run on a PR branch loads the factory the default branch holds, never the branch's own
   const checkout = onto && !from ? factoryDirAt(repo, base) : undefined
   let ws = ''
@@ -9240,6 +9236,7 @@ async function createRun(
       if (hasShipEdge(def) && !hasBeads(repo))
         throw new Error('it hands its beads to ship, which needs a repo with .beads')
       writeJson(pinned, def)
+      writeJson(join(runDir(id), 'rig.json'), rig ?? null) // claude-factory-06xp: the rig the run launched with
     } catch (err) {
       // fresh, nothing in it yet
       // a failed cleanup must not hide the factory error
@@ -9704,6 +9701,58 @@ function edit(fn: (list: Rig[]) => Rig[]) {
   }
 }
 const rigOf = (repo: string) => rigs().find(r => r.repo === repo)
+const GUARD_LISTS = ['personOnlyContexts', 'protectedBranches', 'sensitivePaths'] as const
+const strings = (v: unknown): string[] => (Array.isArray(v) && v.every(s => typeof s === 'string') ? v : [])
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+/**
+ * the rig settings this run launched with (claude-factory-06xp): createRun wrote the entry to `runs/<id>/rig.json`.
+ * A run with no readable file reads the live rig, as a run from before that change did.
+ * A live edit can only take access away: guard lists are the union of both rigs,
+ * and a grant (merge authority, egress, env, mcp) stays only while both rigs hold it.
+ * Every other field is the launch value.
+ */
+export function runRig(run: Pick<Run, 'id' | 'repo'>): Rig | undefined {
+  const live = rigOf(run.repo)
+  let snap: unknown
+  try {
+    snap = readJson<unknown>(join(runDir(run.id), 'rig.json'))
+  } catch {
+    return live
+  }
+  if (snap !== null && !isObj(snap)) return live
+  // null: the repo was no rig at launch, so a rig added later gives the run its guards and nothing else
+  const base = (snap ?? (live && { name: live.name, repo: live.repo, factory: live.factory })) as
+    Rig | undefined
+  if (!base) return undefined
+  const out: Rig = { ...base, repo: run.repo }
+  for (const k of GUARD_LISTS) {
+    const all = [...new Set([...strings(base[k]), ...strings(live?.[k])])]
+    if (all.length) out[k] = all
+    else delete out[k]
+  }
+  // a malformed sensitivePaths must stay malformed: the security route reads it as required
+  const bad = [base.sensitivePaths, live?.sensitivePaths].find(v => v !== undefined && rigPaths(v) === null)
+  if (bad !== undefined) out.sensitivePaths = bad as string[]
+  delete out.mergeAuthority
+  if (base.mergeAuthority === true && live?.mergeAuthority === true) out.mergeAuthority = true
+  delete out.egress
+  if (Array.isArray(base.egress)) {
+    const has = new Set((Array.isArray(live?.egress) ? live.egress : []).map(e => JSON.stringify(e)))
+    out.egress = base.egress.filter(e => has.has(JSON.stringify(e)))
+  }
+  delete out.env
+  if (isObj(base.env)) {
+    const liveEnv = isObj(live?.env) ? live.env : {}
+    const env = Object.fromEntries(
+      Object.entries(base.env).filter(([k, v]) => typeof v === 'string' && liveEnv[k] === v),
+    )
+    if (Object.keys(env).length) out.env = env
+  }
+  delete out.mcp
+  if (typeof base.mcp === 'string' && base.mcp === live?.mcp) out.mcp = base.mcp
+  if (live?.otelContent === false) out.otelContent = false
+  return out
+}
 /** in the AX task a rig with a beadsRemote has beads, with no .beads in git */
 const hasBeads = (repo: string) => hasRigBeads(repo, rigs())
 /** `rig.personOnlyContexts`, or undefined when it is absent or not an array of strings (a rigs.json written outside the CLI) */
@@ -12850,7 +12899,7 @@ async function gateBriefFacts(id: string | undefined) {
   )
   return {
     key: gatebrief.gateKey(run.id, c.startedAt),
-    rig: rigOf(run.repo)?.name,
+    rig: runRig(run)?.name,
     bead: run.bead,
     goal: clip(run.goal, 2000),
     gate: { question: n!.prompt.trim(), outcomes: Object.keys(n!.next) },
@@ -12960,7 +13009,7 @@ async function prs() {
       const ended = ['done', 'aborted'].includes(node)
       const def = await loadPinned(run.factory).catch(() => undefined)
       if (def) for (const k of Object.keys(def.nodes)) stations.add(k)
-      metas.push({ id, rig: rigOf(run.repo)?.name, bead: run.bead, node, ended, at: createdAt(id) })
+      metas.push({ id, rig: runRig(run)?.name, bead: run.bead, node, ended, at: createdAt(id) })
       const ref = cachedOriginRef(run.repo)
       const mail = inboxLines(id)
         .flatMap(l => {
@@ -13396,7 +13445,7 @@ function record(id: string): RunRecord {
   const { run, value, c } = current(id)
   return {
     id,
-    rig: rigOf(run.repo)?.name,
+    rig: runRig(run)?.name,
     node: where(value)[0],
     createdAt: createdAt(id),
     log: c.log,
