@@ -3605,7 +3605,13 @@ test('launch gives codex and pi no Claude-only plugin dir from FACTORY_WORKER_PL
     console.log(JSON.stringify(out))
   `
   const p = Bun.spawnSync(['bun', '-e', script], {
-    env: { ...process.env, HOME: home, FACTORY_HOME: home, CLAUDE_CONFIG_DIR: cfg, FACTORY_WORKER_PLUGINS: 'egm' },
+    env: {
+      ...process.env,
+      HOME: home,
+      FACTORY_HOME: home,
+      CLAUDE_CONFIG_DIR: cfg,
+      FACTORY_WORKER_PLUGINS: 'egm',
+    },
   })
   const out = JSON.parse(p.stdout.toString()) as Record<string, string>
   expect(out.pi).not.toContain(egm)
