@@ -6873,7 +6873,7 @@ function codexPassHome(
       forms.some(r => tokenDirs.some(t => pathUnder(r, t)))
     )
       return { refused: 'scope' }
-    if (keys.get(real) !== 'write') keys.set(real, mode)
+    keys.set(real, mode) // the write root comes last, so it wins over an equal read root
   }
   if (roots.write) keys.set(`${realPath(resolve(roots.write))}/.git`, 'read')
   writeFileSync(
