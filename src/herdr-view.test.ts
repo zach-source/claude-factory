@@ -491,3 +491,26 @@ test('the context view of the mod resolves to manager.context (claude-factory-hp
   expect(views['manager.context']?.rigs).toBeUndefined() // the brief lists rigs: that is a bd call per rig
   expect(herdr.parseContext(p.exitCode, p.stdout.toString())).toBeNull() // no manager session in a bare home
 })
+
+// claude-factory-hpmc.36: the board of a snapshot carries the halt state, and the header names it
+test('after factory stop the snapshot board has halt and the header says so (claude-factory-hpmc.36)', () => {
+  const env = {
+    ...process.env,
+    FACTORY_HOME: join(dir, 'halt-home'),
+    FACTORY_SELF_UPDATE: '0',
+    FACTORY_GC: '0',
+    FACTORY_NO_KICK: '1',
+  }
+  const cli = join(import.meta.dir, '..', 'bin', 'factory')
+  const board = () => {
+    const p = Bun.spawnSync([cli, 'snapshot', '--views', 'board'], { env })
+    return herdr.parseSnapshot(p.exitCode, p.stdout.toString(), p.stderr.toString()).tick
+  }
+  expect(herdr.headerText(board(), null)).not.toMatch(/paused|stopping/)
+  expect(Bun.spawnSync([cli, 'stop'], { env }).exitCode).toBe(0)
+  const halted = board()
+  expect(['paused', 'stopping']).toContain(halted.halt)
+  expect(herdr.headerText(halted, null)).toMatch(/^(paused|stopping)/)
+  expect(Bun.spawnSync([cli, 'resume'], { env }).exitCode).toBe(0)
+  expect(board().halt).toBeUndefined()
+})
