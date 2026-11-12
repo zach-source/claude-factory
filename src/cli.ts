@@ -6010,6 +6010,10 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
       .replace(/\p{Cc}/gu, ' ')
       .slice(0, 200)
   if (!repoConfigOk(dir)) return (wikiLog('wiki: repo config not allowed, nothing committed'), false)
+  // the commit is built on a private index with HEAD pinned before the staging:
+  // a page staged outside `paths` stays out of it, and a person commit after the pin makes update-ref fail
+  const head = wikiGit(dir, ['rev-parse', '--verify', '-q', 'HEAD'])
+  const old = head.code === 0 ? head.out.toString().trim() : ''
   if (wikiGit(dir, ['add', '-A', '--', ...(paths ?? [])]).code !== 0)
     return (wikiLog('wiki: stage failed, nothing committed'), false)
   const list = wikiGit(dir, [
@@ -6071,10 +6075,10 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
     if (wikiGit(dir, ['cat-file', '-e', `HEAD:${path}`]).code === 0)
       wikiGit(dir, ['restore', '--staged', '--worktree', '--source=HEAD', '--', path])
     else wikiGit(dir, ['rm', '--cached', '-f', '-q', '--', path])
-    const old = moved.get(path)
-    if (old !== undefined) {
-      refused.push(old)
-      wikiGit(dir, ['restore', '--staged', '--worktree', '--source=HEAD', '--', old])
+    const src = moved.get(path)
+    if (src !== undefined) {
+      refused.push(src)
+      wikiGit(dir, ['restore', '--staged', '--worktree', '--source=HEAD', '--', src])
     }
   }
   // a refused path that is still staged (an unstage that failed) must never reach a commit
@@ -6104,29 +6108,16 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
     keep = keep.filter(e => now.has(`${e.mode} ${e.sha} ${e.status} ${e.path}`))
   }
   if (!keep.length) return null
-  // the commit is built on a private index with HEAD pinned: a page staged outside `paths` stays out of it
-  const head = wikiGit(dir, ['rev-parse', '--verify', '-q', 'HEAD'])
-  const old = head.code === 0 ? head.out.toString().trim() : ''
   const tmp = mkdtempSync(join(tmpdir(), 'factory-wiki-index-'))
   const idx = { GIT_INDEX_FILE: join(tmp, 'index') }
   try {
     const steps = [old ? ['read-tree', old] : ['read-tree', '--empty']]
-    // deletes first: a directory that becomes a file needs its entries gone before the add
-    const adds = keep.filter(e => e.status !== 'D')
-    for (const e of keep.filter(e => e.status === 'D'))
-      steps.push(['update-index', '--force-remove', '--', e.path])
-    // a tracked file that becomes a directory above an added path: its entry stays in HEAD's index
-    const up = new Set<string>()
-    for (const e of adds) {
-      const parts = e.path.split('/')
-      for (let i = 1; i < parts.length; i++) up.add(parts.slice(0, i).join('/'))
-    }
-    for (const a of up) steps.push(['update-index', '--force-remove', '--', a])
-    for (const e of adds)
+    // --replace: git removes a file or directory entry that conflicts with the add, as git commit does
+    for (const e of keep)
       steps.push(
         e.status === 'D'
           ? ['update-index', '--force-remove', '--', e.path]
-          : ['update-index', '--add', '--cacheinfo', `${e.mode},${e.sha},${e.path}`],
+          : ['update-index', '--add', '--replace', '--cacheinfo', `${e.mode},${e.sha},${e.path}`],
       )
     for (const a of steps)
       if (wikiGit(dir, a, false, idx).code !== 0)
@@ -6158,14 +6149,7 @@ export function commitWiki(pass: string, summary: string, dir = join(HOME, 'wiki
     )
     if (c.code !== 0) return (wikiLog(`wiki: commit failed (exit ${c.code})`), false)
     // compare-and-swap: refuses when a person committed after the rev-parse
-    const u = wikiGit(dir, [
-      'update-ref',
-      '-m',
-      `wiki ${clean(pass)}`,
-      'HEAD',
-      c.out.toString().trim(),
-      old || '0'.repeat(40),
-    ])
+    const u = wikiGit(dir, ['update-ref', '-m', `wiki ${clean(pass)}`, 'HEAD', c.out.toString().trim(), old])
     if (u.code !== 0) return (wikiLog('wiki: HEAD moved, nothing committed'), false)
     return true
   } finally {
