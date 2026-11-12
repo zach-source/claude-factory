@@ -3685,6 +3685,10 @@ const workerPluginNames = (skills: string[] = ['asd-ste100']) => [
     .filter(Boolean),
 ]
 
+/** workerPluginNames for a codex or pi worker: Claude-only names drop out, also from FACTORY_WORKER_PLUGINS */
+export const harnessPluginNames = (h: Harness | null, skills: string[]) =>
+  skillsFor(h, workerPluginNames(skills))
+
 /**
  * the dirs of the person's worker plugins that are on, so a codex or pi worker gets the skills a Claude worker
  * gets from enabledPlugins (constitution I). Claude Code keeps a plugin at its installPath, or, from a directory
@@ -4153,9 +4157,12 @@ export function launch(
   warnSkillsForHarness(h, skills, node, process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'))
   const setup =
     h === 'codex'
-      ? codexWorker(run, def, node, agent, rig, { plugins: userPluginDirs(workerPluginNames(skills)), otel })
+      ? codexWorker(run, def, node, agent, rig, {
+          plugins: userPluginDirs(harnessPluginNames(h, skills)),
+          otel,
+        })
       : h === 'pi'
-        ? piWorker(HOME, userPluginDirs(workerPluginNames(skills)))
+        ? piWorker(HOME, userPluginDirs(harnessPluginNames(h, skills)))
         : h === 'cursor'
           ? cursorWorker(run, rig)
           : h === 'grok'
