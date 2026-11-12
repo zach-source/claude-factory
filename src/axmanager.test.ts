@@ -376,7 +376,7 @@ test('managerEgress lets the VM fetch a ghcr.io token: the gateway adds Basic, o
   expect(ax.managerEgress({})).toContainEqual({
     hosts: ['ghcr.io'],
     pathPrefixes: ['/token'],
-    key: 'GITHUB_BASIC_MANAGER',
+    key: 'GHCR_PULL',
     header: 'Authorization',
     prefix: 'Basic ',
   })

@@ -31,7 +31,7 @@ export async function show(ctx: Ctx, i: Input): Promise<RunResult> {
     const since = i.since as string | undefined
     const days = since === undefined ? Infinity : Number(since.replace(/d$/, ''))
     if (!(days > 0)) throw new Error('usage: factory metrics [--rig r] [--since <days>d] [--json] [--tokens]')
-    const picked = await port.refreshMerges(port.records().filter(r => inWindow(r, rig, days)))
+    const picked = await port.refreshMerges((await port.records()).filter(r => inWindow(r, rig, days)))
     const groups = rig ? [rig] : [...new Set(picked.map(r => r.rig ?? '(no rig)'))]
     const of = (g: string) => metrics(picked.filter(r => (r.rig ?? '(no rig)') === g))
     // claude-factory-6as.4: HOME/precheck.jsonl is dispatch's own trail of pre-check hits and
@@ -68,7 +68,7 @@ export async function show(ctx: Ctx, i: Input): Promise<RunResult> {
       ? ([
           picked.flatMap(r => (r.sessions ?? []).map(u => ({ ...u, run: r.id }))),
           new Set(picked.filter(r => fate(r) === 'shipped').map(r => r.id)),
-          port.managerUsage(since_),
+          await port.managerUsage(since_),
         ] as const)
       : null
     // the weekly Cursor pool as a gauge: the last reading and the cap, or null when the meter is unknown

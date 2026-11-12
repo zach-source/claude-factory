@@ -46,7 +46,6 @@ import {
   isValidPlan,
   line,
   mailKey,
-  openInterviews,
   patrol,
   patrolsText,
   pmDue,
@@ -108,6 +107,8 @@ const decisions = atom(
   { plugin: 'factory', key: 'decisions' } as const,
   { rigs: [], proposals: {} } as FactoryDecisions,
 )
+/** the open questions for the person: the core list (`factory interview`), the same for every front end */
+const interviewList = atom({ plugin: 'factory', key: 'interviewList' } as const, [] as Interview[])
 /** runs holding a worker, one sample a tick: the header's sparkline */
 const history = atom({ plugin: 'factory', key: 'history' } as const, [] as number[])
 /** the last patrol's log entry, drawn in the pane header and band; null before any patrol wrote one */
@@ -169,10 +170,12 @@ const patrolPrompt = ($: EngineInterface) =>
   stepPrompt($, 'patrol', { cli: rt.cli, factories: rt.cli.replace(/bin\/factory$/, 'factories/') })
 
 // runtime handles only: a hot reload starts them over, which ensureTicking allows for
-const rt = {
+export const rt = {
   cli: '',
   /** this session's factory: every command the model runs works it, wherever its shell has cd'd */
   home: '',
+  /** claude-factory-gogxc.14: FACTORY_SERVER is set, so the pod owns the state: no tick, no home, log rows go to /v1 */
+  isServer: false,
   /** claude-factory-d289.25: the person's "Allow for this turn" tokens; the turn's end or exp empties each file */
   turnAllows: [] as { token: string; file: string; kinds: string[]; until: number }[],
   timer: undefined as { cancel: () => void } | undefined,
@@ -296,6 +299,14 @@ async function factory($: EngineInterface, args: string[]) {
   return { isOk, out: (isOk ? r.stdout : `${r.stdout}${r.stderr}`).trim() }
 }
 
+/** server mode: post one log row to the pod. Returns false in local mode, so the caller writes its own file. A failure shows in the status line and never throws. */
+async function postLog($: EngineInterface, kind: string, entry: unknown) {
+  if (!rt.isServer) return false
+  const { isOk, out } = await factory($, ['manager', 'log', kind, JSON.stringify(entry)])
+  if (!isOk) $.ui.status(`factory: could not post the ${kind} log row: ${line(out, 160)}`)
+  return true
+}
+
 /** a failed tick: say why in full enough to act on, and mark the board stale until a tick succeeds */
 async function tickFailed($: EngineInterface, why: string) {
   const now = await $.clock.now()
@@ -304,6 +315,7 @@ async function tickFailed($: EngineInterface, why: string) {
 }
 
 async function tick($: EngineInterface) {
+  if (rt.isServer) return // the pod ticks (gogxc.14)
   if (rt.isTicking) {
     rt.isTickWanted = true
     return
@@ -435,6 +447,7 @@ async function readPatrolLog($: EngineInterface): Promise<FactoryPatrolLogEntry[
 
 /** appends one patrol's outcome, keeping only the newest PATROL_LOG_CAP lines */
 async function appendPatrolLog($: EngineInterface, entry: FactoryPatrolLogEntry) {
+  if (await postLog($, 'patrol', entry)) return
   if (!rt.home) return
   const log = [...(await readPatrolLog($)), entry].slice(-PATROL_LOG_CAP)
   await $.fs.write(`${rt.home}/patrol-log.jsonl`, `${log.map(e => JSON.stringify(e)).join('\n')}\n`)
@@ -444,7 +457,7 @@ async function appendPatrolLog($: EngineInterface, entry: FactoryPatrolLogEntry)
  * claude-factory-hr94: what a manager subagent's turn spent, kept by its name in `<home>/manager-usage.jsonl`.
  * The file has no line cap: `factory metrics --tokens` reads it. A write failure never reaches the caller.
  */
-async function appendManagerUsage(
+export async function appendManagerUsage(
   $: EngineInterface,
   name: 'patrol' | 'pm' | 'briefer' | 'reviewer',
   usage:
@@ -458,7 +471,7 @@ async function appendManagerUsage(
     | undefined,
 ) {
   try {
-    if (!rt.home || !usage) return
+    if (!usage || (!rt.home && !rt.isServer)) return
     const file = `${rt.home}/manager-usage.jsonl`
     const row = {
       name,
@@ -469,6 +482,7 @@ async function appendManagerUsage(
       cacheRead: usage.cache_read_input_tokens,
       output: usage.output_tokens,
     }
+    if (await postLog($, 'usage', row)) return
     await $.fs.write(file, (await $.fs.read(file).catch(() => '')) + JSON.stringify(row) + '\n')
   } catch {}
 }
@@ -502,6 +516,7 @@ async function readPmLog($: EngineInterface): Promise<FactoryPmLogEntry[]> {
 
 /** appends one pm turn's outcome, keeping only the newest PM_LOG_CAP lines */
 async function appendPmLog($: EngineInterface, entry: FactoryPmLogEntry) {
+  if (await postLog($, 'pm', entry)) return
   if (!rt.home) return
   const log = [...(await readPmLog($)), entry].slice(-PM_LOG_CAP)
   await $.fs.write(`${rt.home}/pm-log.jsonl`, `${log.map(e => JSON.stringify(e)).join('\n')}\n`)
@@ -537,6 +552,7 @@ async function readBriefLog($: EngineInterface): Promise<FactoryBriefLogEntry[]>
 
 /** appends one briefer attempt's outcome, keeping only the newest BRIEFER_LOG_CAP lines */
 async function appendBriefLog($: EngineInterface, entry: FactoryBriefLogEntry) {
+  if (await postLog($, 'brief', entry)) return
   if (!rt.home) return
   const log = [...(await readBriefLog($)), entry].slice(-BRIEFER_LOG_CAP)
   await $.fs.write(`${rt.home}/brief-log.jsonl`, `${log.map(e => JSON.stringify(e)).join('\n')}\n`)
@@ -554,6 +570,7 @@ async function isReviewerAgent($: EngineInterface, agentId: string) {
 
 /** appends one reviewer attempt's outcome to `<home>/review-log.jsonl`, keeping only the newest REVIEWER_LOG_CAP lines */
 async function appendReviewLog($: EngineInterface, entry: FactoryReviewLogEntry) {
+  if (await postLog($, 'review', entry)) return
   if (!rt.home) return
   const path = `${rt.home}/review-log.jsonl`
   const text = await $.fs.read(path).catch(() => '')
@@ -1047,6 +1064,9 @@ async function ensureTicking($: EngineInterface) {
   if (rt.timer) return
   const root = await $.fs.stat($.plugin.root, { resolve: true })
   rt.cli = `${root.realPath ?? $.plugin.root}/../bin/factory`
+  // claude-factory-gogxc.14: in server mode the pod ticks and owns the home; the mod only posts log rows
+  rt.isServer = (await $.process.run(['sh', '-c', 'printf %s "$FACTORY_SERVER"'])).stdout.startsWith('http')
+  if (rt.isServer) return
   // the session's directory decides its factory once; the model's Bash cd's freely after that
   const { isOk, out } = await factory($, ['home'])
   if (isOk) rt.home = out
@@ -1123,9 +1143,23 @@ async function refresh($: EngineInterface) {
  * with a status line instead of dropped silently, so the person knows the open list may be stale. */
 async function sweepDecisions($: EngineInterface) {
   rt.decisionsAt = await $.clock.now()
-  const { isOk, out } = await factory($, ['decisions'])
-  if (isOk) await update($, decisions, () => JSON.parse(out) as FactoryDecisions)
-  else $.ui.status(`factory decisions failed: ${cutText(out.split('\n')[0] ?? '', 80)}`)
+  // a failed call, or output that is not JSON, gets a status line: the open list may be stale
+  const told = (what: string, err: unknown) =>
+    $.ui.status(`factory ${what} failed: ${cutText((err as Error).message, 80)}`)
+  const dec = await factory($, ['decisions'])
+  try {
+    if (!dec.isOk) throw new Error(dec.out.split('\n')[0])
+    await update($, decisions, () => JSON.parse(dec.out) as FactoryDecisions)
+  } catch (err) {
+    told('decisions', err)
+  }
+  const iv = await factory($, ['interview'])
+  try {
+    if (!iv.isOk) throw new Error(iv.out.split('\n')[0])
+    await update($, interviewList, () => JSON.parse(iv.out) as Interview[])
+  } catch (err) {
+    told('interview', err)
+  }
 }
 
 /**
@@ -1140,10 +1174,7 @@ async function interviewMe($: EngineInterface) {
   await sweepDecisions($)
   if (rt.isInterviewing) return
   if (!(await isPaneSession($))) return
-  const [b, dec, d] = await Promise.all([read($, board), read($, decisions), read($, draft)])
-  const answered = Object.fromEntries((d.interviewed ?? []).map(x => [x.key, x.answer]))
-  const items = openInterviews(b.runs, dec.rigs, dec.proposals, answered)
-  const text = interviewPrompt(items)
+  const text = interviewPrompt(await read($, interviewList))
   if (!text) return
   rt.isInterviewing = true
   // not awaited: it resolves only once the session is idle and this round's turn starts, like a patrol
@@ -1161,6 +1192,8 @@ async function act($: EngineInterface, args: string[]) {
   const { isOk, out } = await factory($, args)
   $.ui.toast(out.split('\n').at(-1) || `${args.join(' ')}: queued`)
   rt.backlogAt = 0 // a queue or start changes the backlog: the next tick lists it again
+  // a decide or an answer changes the open list: read it from the core again
+  if (['decide', 'interview', 'decisions'].includes(args[0] ?? '')) await sweepDecisions($)
   void tick($)
   return isOk
 }
@@ -1173,6 +1206,7 @@ async function show($: EngineInterface, next: FactoryView, run?: string) {
     await update($, draft, d => ({ ...d, target: '', mail: '' }))
   }
   if (next === 'backlog') rt.backlogAt = 0 // opening the tab lists it now, not at the next throttle window
+  if (next === 'interview') rt.decisionsAt = -Infinity // the same: read the open list from the core now
   await update($, view, () => next)
   // columns: the dock's width beside a fullscreen transcript; rows: its height inline above the prompt
   await $.ui.open({ id: PANE, title: 'Factory', focus: true, rows: 40, columns: 100 })
@@ -1273,27 +1307,27 @@ async function interview($: EngineInterface, iv: Interview, choice?: string) {
         interviewed: [...(d.interviewed ?? []), ...entries].slice(-100),
       }
     })
-  for (const member of [iv, ...(iv.also ?? [])]) {
-    const text = interviewAnswer(member, choice, typed)
-    if (!text) {
-      await flush(false)
-      return $.ui.toast('factory: pick an option or type an answer')
-    }
-    if (member.kind === 'bead' || member.kind === 'owned') {
-      if (!(await act($, ['decisions', 'answer', member.rig!, member.bead!, text]))) return await flush(false)
-      if (member.kind === 'owned' && choice === 'start now') {
-        const row = (await read($, decisions)).rigs.find(r => r.rig === member.rig)
-        if (!(await act($, ['start', row?.factory ?? 'lifecycle', member.rig!, member.bead!, '--owned'])))
-          return await flush(false)
-      }
-    } else {
-      if (!(await act($, ['mail', member.run!, member.node!, '--wake', text]))) return await flush(false)
-      if (member.kind === 'stuck') await act($, [choice === 'abort' ? 'abort' : 'retry', member.run!])
-    }
+  if (!interviewAnswer(iv, choice, typed)) {
+    await flush(false)
+    return $.ui.toast('factory: pick an option or type an answer')
+  }
+  // hpmc.35: the core routes the answer (gate, bead, start now, mail, retry); `''` is no choice
+  const isOk = await act($, [
+    'interview',
+    'answer',
+    iv.key,
+    choice ?? '',
+    ...(typed.trim() ? [typed.trim()] : []),
+  ])
+  // a member that the core answered is no longer open (act read the list again); one that it did not stays
+  const stillOpen = new Set(
+    (await read($, interviewList)).flatMap(m => [m, ...(m.also ?? [])]).map(m => m.key),
+  )
+  for (const member of [iv, ...(iv.also ?? [])].filter(m => !stillOpen.has(m.key))) {
     rt.unsent.push({
       run: member.run ?? member.bead ?? member.key,
       from: 'person',
-      text: `answered ${member.node ?? member.rig ?? member.kind}'s question in the console: ${text}`,
+      text: `answered ${member.node ?? member.rig ?? member.kind}'s question in the console: ${interviewAnswer(member, choice, typed)}`,
       at,
     })
     // not named answer: the mod loader takes any second `answer` in the file for a redeclared hook function
@@ -1308,7 +1342,7 @@ async function interview($: EngineInterface, iv: Interview, choice?: string) {
       at,
     })
   }
-  await flush(true)
+  await flush(isOk)
 }
 
 /** herdr focuses the worker's pane: the person takes over that terminal */
@@ -1929,7 +1963,7 @@ export const register: Register = (on, options) => {
     const ui = $.ui.resolve(e) as unknown as UI
     const { Box } = ui
     // nothing here may be named h: JSX compiles to calls of the global h
-    const [b, rawShown, d, tail, bl, bt, pr, samples, dr, dec, now, sel, lp, pl] = await Promise.all([
+    const [b, rawShown, d, tail, bl, bt, pr, samples, dr, dec, ivs, now, sel, lp, pl] = await Promise.all([
       read($, board),
       read($, view),
       read($, detail),
@@ -1940,6 +1974,7 @@ export const register: Register = (on, options) => {
       read($, history),
       read($, draft),
       read($, decisions),
+      read($, interviewList),
       $.clock.now(),
       read($, selected),
       read($, lastPatrol),
@@ -1965,7 +2000,7 @@ export const register: Register = (on, options) => {
             : shown === 'rigs'
               ? rigsView(p, b, pl, rt.pmBlocked, rt.patrolFallback)
               : shown === 'interview'
-                ? interviewView(p, b, dr, dec)
+                ? interviewView(p, b, dr, dec, ivs)
                 : shown === 'runners'
                   ? runnersView(p, b)
                   : boardView(p, b, dr, sel, d, tail)

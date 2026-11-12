@@ -53,42 +53,35 @@ test('blocked workers toast once', () => {
   expect(herdr.newlyBlocked(runs, herdr.agentsOf(runs))).toEqual([])
 })
 
-test('the Interview lists gates first, then beads; each answer is the right factory command', () => {
-  const decisions = {
-    rigs: [
-      {
-        rig: 'api',
-        factory: 'lifecycle',
-        beads: [
-          { id: 'api-1', title: 'Pick a DB', kind: 'bead' },
-          { id: 'api-2', title: 'Big change', kind: 'owned' },
-        ],
-      },
-    ],
-    proposals: {
-      'bd:api:api-1': { question: 'Which DB?', options: ['postgres: safe', 'sqlite: small'], at: 1 },
+// hpmc.35: the list comes from the core (openInterviews); the mod only adds labels and the answer words
+test('the Interview shows the core list; each answer is one `factory interview answer` command', () => {
+  const decisions = [
+    {
+      rig: 'api',
+      factory: 'lifecycle',
+      beads: [
+        { id: 'api-1', title: 'Pick a DB', kind: 'bead' },
+        { id: 'api-2', title: 'Big change', kind: 'owned' },
+      ],
     },
-  }
-  const items = herdr.interviewItems(runs, decisions)
-  expect(items.map((i: { key: string }) => i.key)).toEqual([
-    'gate:lifecycle-cccc3333',
-    'bd:api:api-1',
-    'own:api:api-2',
-  ])
-  expect(items[0].options).toEqual(['ok', 'no'])
-  expect(items[1].title).toBe('Which DB?')
-  expect(items[1].options).toEqual(['postgres', 'sqlite'])
-  expect(items[2].options).toEqual(['start now', 'not now'])
-  expect(herdr.answerArgs(items[0], 'ok')).toEqual(['decide', 'lifecycle-cccc3333', 'ok'])
-  expect(herdr.answerArgs(items[1], 'postgres')).toEqual(['decisions', 'answer', 'api', 'api-1', 'postgres'])
+  ]
+  const core = claude.openInterviews(runs as never, decisions as never)
+  const items = herdr.interviewItems(core)
+  expect(items.map((i: { key: string }) => i.key)).toEqual(core.map(i => i.key))
+  expect(items.map((i: { key: string }) => i.key)).toEqual(
+    expect.arrayContaining(['gate:lifecycle-cccc3333@3', 'bd:api:api-1', 'own:api:api-2']),
+  )
+  const own = items.find((i: { key: string }) => i.key === 'own:api:api-2')
+  expect(own.options).toEqual(['start now', 'not now'])
+  expect(herdr.answerArgs(own, 'start now')).toEqual(['interview', 'answer', 'own:api:api-2', 'start now'])
+  expect(herdr.interviewItems(undefined)).toEqual([])
 })
 
-test('parseTick reads a board, a read-only board, a busy tick and a failure', () => {
+test('parseTick reads a board, its lease and a failure', () => {
   expect(herdr.parseTick(0, JSON.stringify({ runs, manager: [] }), '').runs).toHaveLength(5)
-  expect(herdr.parseTick(0, JSON.stringify({ readOnly: 'x holds it', runs: [] }), '').readOnly).toBe(
-    'x holds it',
-  )
-  expect(herdr.parseTick(0, '{"busy":true}', '')).toEqual({ busy: true })
+  expect(herdr.parseTick(0, JSON.stringify({ lease: { holder: 'x' }, runs: [] }), '').lease).toEqual({
+    holder: 'x',
+  })
   expect(herdr.parseTick(1, '', 'boom').error).toBe('boom')
   expect(herdr.parseTick(0, 'not json', '').error).toContain('printed no JSON')
 })
@@ -219,41 +212,20 @@ test('a remote job runs direct in the foreground: no detached shell that hc exec
   ])
 })
 
-test('interviewItems counts the beads of `factory decisions` once each, plus the live gates (claude-factory-hpmc.22)', () => {
-  const decisions = {
-    rigs: [
-      {
-        rig: 'a',
-        beads: [
-          { id: 'a-1', title: 't', kind: 'bead' },
-          { id: 'a-2', title: 't', kind: 'owned' },
-        ],
-      },
-      { rig: 'b', beads: [{ id: 'b-1', title: 't', kind: 'owned' }] },
-    ],
-  }
-  expect(herdr.interviewItems([], decisions)).toHaveLength(3)
-  expect(herdr.interviewItems(runs, decisions).length - 3).toBe(
-    runs.filter((r: { gate?: unknown }) => r.gate).length,
-  )
-})
-
-test('parseSnapshot splits one snapshot into the board result and the decisions (claude-factory-hpmc.23)', () => {
-  const out = JSON.stringify({ views: { board: { runs: [], manager: [] }, decisions: { rigs: [] } } })
+test('parseSnapshot splits one snapshot into the board result and the interview (claude-factory-hpmc.23)', () => {
+  const out = JSON.stringify({ views: { board: { runs: [], manager: [] }, interview: [] } })
   expect(herdr.parseSnapshot(0, out, '')).toEqual({
     tick: {
       runs: [],
-      manager: [],
-      rigs: [],
       halt: undefined,
-      readOnly: undefined,
+      lease: null,
       managerLimited: null,
       managerCodexAuth: null,
     },
-    decisions: { rigs: [] },
+    interview: [],
   })
-  const bad = JSON.stringify({ views: { board: { error: 'no tick yet' }, decisions: { error: 'x' } } })
-  expect(herdr.parseSnapshot(0, bad, '')).toEqual({ tick: { error: 'no tick yet' }, decisions: undefined })
+  const bad = JSON.stringify({ views: { board: { error: 'no tick yet' }, interview: { error: 'x' } } })
+  expect(herdr.parseSnapshot(0, bad, '')).toEqual({ tick: { error: 'no tick yet' }, interview: undefined })
   expect(herdr.parseSnapshot(1, '', 'boom').tick.error).toBe('boom')
 })
 
@@ -404,15 +376,125 @@ test('the manager model and context use come from one core read and show in the 
   expect(herdr.managerContextText(null)).toBe('')
   expect(herdr.tokensText(950)).toBe('950')
   expect(herdr.tokensText(1_200_000)).toBe('1.2M')
-  expect(herdr.snapshotWords('manager', 4000)).toEqual([
-    'snapshot',
-    '--views',
-    'manager',
-    '--max-age',
-    '4000',
-  ])
-  expect(herdr.parseContext(0, JSON.stringify({ views: { manager: c } }))).toEqual(c)
-  expect(herdr.parseContext(0, JSON.stringify({ views: { manager: null } }))).toBeNull()
+  expect(herdr.parseContext(0, JSON.stringify({ views: { 'manager.context': c } }))).toEqual(c)
+  expect(herdr.parseContext(0, JSON.stringify(c))).toEqual(c) // server mode: GET /v1/manager/context
+  expect(herdr.parseContext(0, JSON.stringify({ views: { 'manager.context': null } }))).toBeNull()
   expect(herdr.parseContext(1, '')).toBeNull()
   expect(herdr.parseContext(0, 'nope')).toBeNull()
+})
+
+const srvCfg = { server: 'https://pod.example:8444/', cert: '/c/p.crt', key: '/c/p.k', ca: '/c/ca.crt' }
+
+test('server mode config: all four keys, and never both modes', () => {
+  expect(herdr.parseConfig(JSON.stringify(srvCfg))).toEqual(srvCfg)
+  expect(herdr.parseConfig(JSON.stringify({ ...srvCfg, cli: 'x', home: '/h' }))).toBeNull()
+  expect(herdr.parseConfig(JSON.stringify({ server: 'https://x' }))).toBeNull()
+  expect(herdr.parseConfig(JSON.stringify({ cli: 'x', home: '/h' }))).not.toBeNull()
+})
+
+test('server mode: one snapshot GET with maxAge, actions with an Idempotency-Key', () => {
+  const [cmd, args] = herdr.serverCall(srvCfg, 'GET', herdr.snapshotPath(4000))
+  expect(cmd).toBe('curl')
+  expect(args.at(-1)).toBe('https://pod.example:8444/v1/snapshot?views=board,decisions,lease&maxAge=4000')
+  expect(args).toContain('--cert')
+  expect(args).not.toContain('Idempotency-Key')
+  const [, post] = herdr.serverCall(srvCfg, ...herdr.actionReq('stop'), 'abcd1234')
+  expect(post).toContain('Idempotency-Key: abcd1234')
+  expect(post).toContain('{"mode":"stop"}')
+  expect(herdr.idemKey()).toMatch(/^[A-Za-z0-9-]{8,128}$/)
+  expect(herdr.actionReq('abort', 'r-1')[1]).toBe('/v1/runs/r-1/abort')
+  expect(() => herdr.actionReq('rm', 'x')).toThrow()
+  expect(herdr.answerReq({ kind: 'gate', run: 'r-1' }, 'ok')[1]).toBe('/v1/runs/r-1/decide')
+  expect(herdr.screenPath('r-1')).toBe('/v1/runs/r-1/screen')
+  expect(herdr.chatArgv(srvCfg)).toBeNull()
+})
+
+test('factory herdr install --server writes a server config, and refuses a mix or http', () => {
+  const app = join(dir, 'app-srv')
+  const run = (...a: string[]) =>
+    Bun.spawnSync(
+      [join(import.meta.dir, '..', 'bin', 'factory'), 'herdr', 'install', '--app-home', app, ...a],
+      {
+        env: { ...process.env, FACTORY_HOME: join(dir, 'home'), FACTORY_SELF_UPDATE: '0' },
+      },
+    )
+  expect(run('--server', 'https://pod.example:8444').exitCode).toBe(0)
+  const c = JSON.parse(readFileSync(join(app, 'mods', 'factory', 'config.json'), 'utf8'))
+  expect(Object.keys(c).sort()).toEqual(['ca', 'cert', 'key', 'server'])
+  expect(c.cert.endsWith('person.crt')).toBe(true)
+  expect(run('--server', 'http://pod.example').exitCode).not.toBe(0)
+  expect(run('--server', 'https://pod.example', '--machine', 'm').exitCode).not.toBe(0)
+})
+
+// claude-factory-hpmc.31: the header reads the real `factory snapshot` output, with a live lease
+test('the header shows run counts and the lease, never read-only (claude-factory-hpmc.31)', () => {
+  const home = join(dir, 'snap-home')
+  const env = {
+    ...process.env,
+    FACTORY_HOME: home,
+    FACTORY_SELF_UPDATE: '0',
+    FACTORY_GC: '0',
+    FACTORY_NO_KICK: '1',
+  }
+  const cli = join(import.meta.dir, '..', 'bin', 'factory')
+  Bun.spawnSync([cli, 'tick'], {
+    env: { ...env, FACTORY_LEASE_HOLDER: 'herdr:one', FACTORY_LEASE_KIND: 'herdr' },
+  })
+  const p = Bun.spawnSync([cli, 'snapshot', '--views', 'board'], { env })
+  const { tick } = herdr.parseSnapshot(p.exitCode, p.stdout.toString(), p.stderr.toString())
+  expect(tick.error).toBeUndefined()
+  expect(tick.lease?.holder).toBe('herdr:one')
+  const head = herdr.headerText({ ...tick, runs }, null)
+  expect(head).toContain('working')
+  expect(head).toContain('lease: herdr:one (herdr)')
+  expect(head).not.toContain('read-only')
+})
+
+// claude-factory-hpmc.32: the mod's own snapshot words reach manager.context, not manager.brief
+test('the context view of the mod resolves to manager.context (claude-factory-hpmc.32)', () => {
+  const env = {
+    ...process.env,
+    FACTORY_HOME: join(dir, 'ctx-home'),
+    FACTORY_SELF_UPDATE: '0',
+    FACTORY_NO_KICK: '1',
+  }
+  const words = herdr.snapshotWords('manager.context', 4000)
+  const p = Bun.spawnSync([join(import.meta.dir, '..', 'bin', 'factory'), ...words], { env })
+  expect(p.exitCode).toBe(0)
+  const views = JSON.parse(p.stdout.toString()).views
+  expect(Object.keys(views)).toEqual(['manager.context'])
+  expect(views['manager.context']?.rigs).toBeUndefined() // the brief lists rigs: that is a bd call per rig
+  expect(herdr.parseContext(p.exitCode, p.stdout.toString())).toBeNull() // no manager session in a bare home
+})
+
+// claude-factory-hpmc.36: the board of a snapshot carries the halt state, and the header names it
+test('after factory stop the snapshot board has halt and the header says so (claude-factory-hpmc.36)', () => {
+  const env = {
+    ...process.env,
+    FACTORY_HOME: join(dir, 'halt-home'),
+    FACTORY_SELF_UPDATE: '0',
+    FACTORY_GC: '0',
+    FACTORY_NO_KICK: '1',
+  }
+  const cli = join(import.meta.dir, '..', 'bin', 'factory')
+  const board = () => {
+    const p = Bun.spawnSync([cli, 'snapshot', '--views', 'board'], { env })
+    return herdr.parseSnapshot(p.exitCode, p.stdout.toString(), p.stderr.toString()).tick
+  }
+  expect(herdr.headerText(board(), null)).not.toMatch(/paused|stopping/)
+  expect(Bun.spawnSync([cli, 'stop'], { env }).exitCode).toBe(0)
+  const halted = board()
+  expect(['paused', 'stopping']).toContain(halted.halt)
+  expect(herdr.headerText(halted, null)).toMatch(/^(paused|stopping)/)
+  expect(Bun.spawnSync([cli, 'resume'], { env }).exitCode).toBe(0)
+  expect(board().halt).toBeUndefined()
+})
+
+// claude-factory-hpmc.33: a board cache older than one beat hits at the next beat; a result draws when the call ends
+test('the board max age is over the beat, and a result is applied when its call ends (claude-factory-hpmc.33)', () => {
+  const main = readFileSync(join(import.meta.dir, '..', 'herdr', 'mods', 'factory', 'main.js'), 'utf8')
+  const beat = Number(/const TICK_MS = ([\d_]+)/.exec(main)![1]!.replaceAll('_', ''))
+  expect(herdr.BOARD_MAX_AGE).toBeGreaterThan(beat)
+  expect(main).toMatch(/\.then\(\(\) => this\.apply\(name\)\)/)
+  expect(main.slice(main.indexOf('  beat(cx)'), main.indexOf('  flowKey()'))).not.toContain('this.finished(')
 })

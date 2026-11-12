@@ -15,7 +15,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { compile, fill, validate } from './machine'
+import { compile, fill, splitsOf, validate } from './machine'
 import { watchDecide } from './watch'
 import {
   clip,
@@ -1091,6 +1091,71 @@ test('a refused grok pick moves to the next agent in the order; the other runs s
   } finally {
     log.mockRestore()
   }
+})
+
+// factory, station, model, effort, share param, default share
+const CODEX_STATIONS: [string, string, string, string, string, string][] = [
+  ['lifecycle', 'triage', 'gpt-6-luna', 'low', 'codex_triage_share', '0.4'],
+  ['lifecycle', 'plan', 'gpt-6-astra', 'high', 'codex_judge_share', '0'],
+  ['lifecycle', 'baseline', 'gpt-6.1-terra', 'medium', 'codex_baseline_share', '0.3'],
+  ['lifecycle', 'characterize', 'gpt-6.1-terra', 'medium', 'codex_characterize_share', '0.3'],
+  ['lifecycle', 'implement', 'gpt-6.1-sol', 'medium', 'codex_share', '0.3'],
+  ['lifecycle', 'verify', 'gpt-6.1-sol', 'low', 'codex_share', '0.3'],
+  ['lifecycle', 'review', 'gpt-6-astra', 'high', 'codex_judge_share', '0'],
+  ['lifecycle', 'security', 'gpt-6-astra', 'high', 'codex_security_share', '0.5'],
+  ['lifecycle', 'quick', 'gpt-6.1-sol', 'low', 'codex_quick_share', '0.4'],
+  ['sweeps', 'maintain', 'gpt-6.1-terra', 'medium', 'codex_maintain_share', '0.4'],
+  ['sweeps', 'flakes', 'gpt-6.1-sol', 'medium', 'codex_flakes_share', '0.4'],
+  ['sweeps', 'ci', 'gpt-6.1-sol', 'medium', 'codex_ci_share', '0.4'],
+  ['sweeps', 'drift', 'gpt-6.1-terra', 'medium', 'codex_drift_share', '0.4'],
+  ['sweeps', 'advisories', 'gpt-6.1-terra', 'medium', 'codex_advisories_share', '0.4'],
+  ['sweeps', 'improve', 'gpt-6.1-terra', 'medium', 'codex_improve_share', '0.4'],
+  ['rework', 'resolve', 'gpt-6.1-sol', 'medium', 'codex_resolve_share', '0.4'],
+  ['ship', 'queue', 'gpt-6-luna', 'low', 'codex_queue_share', '0.4'],
+  ['ship', 'release', 'gpt-6-luna', 'low', 'codex_release_share', '0.4'],
+  ['ship', 'postmortem', 'gpt-6-astra', 'medium', 'codex_postmortem_share', '0.3'],
+]
+const builtin = (f: string) =>
+  loadFactory(join(import.meta.dir, '..', 'factories', f === 'rework' ? 'rework.yaml' : `${f}.ts`))
+
+test('each codex station launches with its own model and reasoning effort', async () => {
+  for (const [f, node, model, effort, share, dflt] of CODEX_STATIONS) {
+    const def = await builtin(f)
+    expect(paramsOf(def)[share], `${node} share`).toBe(dflt)
+    const codex = splitsOf(def.nodes[node]!).find(sp => sp.agent.startsWith('{codex}'))
+    expect(codex?.share, `${node} split`).toBe(share)
+    const rig = { params: { [share]: '1', grok_maintain_share: '0', grok_resolve_share: '0' } }
+    const cmd = pickAgent('run-1', def, node, rig, 'herdr', {}, import.meta.path)
+    expect(cmd, node).toBe(
+      `codex --dangerously-bypass-approvals-and-sandbox -m '${model}' -c model_reasoning_effort='${effort}'`,
+    )
+  }
+})
+
+test('no codex split at a station that reads or changes production', async () => {
+  const none = ['check', 'rollback', 'incident']
+  const life = await builtin('lifecycle')
+  for (const n of none)
+    expect(splitsOf(life.nodes[n]!).filter(sp => sp.agent.includes('{codex}'))).toEqual([])
+  const ship = await builtin('ship')
+  for (const n of ['deploy', 'soak', 'rollback'])
+    expect(splitsOf(ship.nodes[n]!).filter(sp => sp.agent.includes('{codex}'))).toEqual([])
+  const sweeps = await builtin('sweeps')
+  for (const n of ['monitor', 'hygiene']) expect(splitsOf(sweeps.nodes[n]!)).toEqual([])
+})
+
+test('the old codex model params still set the model of the stations that used them', async () => {
+  const life = await builtin('lifecycle')
+  const rig = { params: { codex_exec_model: 'm-exec', codex_judge_model: 'm-judge' } }
+  const p = paramsOf(life, rig)
+  for (const n of ['implement', 'verify']) expect(p[`codex_${n}_model`]).toBe('m-exec')
+  for (const n of ['plan', 'review']) expect(p[`codex_${n}_model`]).toBe('m-judge')
+  // a station's own param wins over the fall-back
+  expect(paramsOf(life, { params: { ...rig.params, codex_verify_model: 'm-own' } }).codex_verify_model).toBe(
+    'm-own',
+  )
+  const rework = await builtin('rework')
+  expect(paramsOf(rework, rig).codex_resolve_model).toBe('m-exec')
 })
 
 test('the manager and the mod subagents name a full model id, never an alias', () => {
