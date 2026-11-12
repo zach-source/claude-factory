@@ -404,15 +404,9 @@ test('the manager model and context use come from one core read and show in the 
   expect(herdr.managerContextText(null)).toBe('')
   expect(herdr.tokensText(950)).toBe('950')
   expect(herdr.tokensText(1_200_000)).toBe('1.2M')
-  expect(herdr.snapshotWords('manager', 4000)).toEqual([
-    'snapshot',
-    '--views',
-    'manager',
-    '--max-age',
-    '4000',
-  ])
-  expect(herdr.parseContext(0, JSON.stringify({ views: { manager: c } }))).toEqual(c)
-  expect(herdr.parseContext(0, JSON.stringify({ views: { manager: null } }))).toBeNull()
+  expect(herdr.parseContext(0, JSON.stringify({ views: { 'manager.context': c } }))).toEqual(c)
+  expect(herdr.parseContext(0, JSON.stringify(c))).toEqual(c) // server mode: GET /v1/manager/context
+  expect(herdr.parseContext(0, JSON.stringify({ views: { 'manager.context': null } }))).toBeNull()
   expect(herdr.parseContext(1, '')).toBeNull()
   expect(herdr.parseContext(0, 'nope')).toBeNull()
 })
@@ -482,4 +476,21 @@ test('the header shows run counts and the lease, never read-only (claude-factory
   expect(head).toContain('working')
   expect(head).toContain('lease: herdr:one (herdr)')
   expect(head).not.toContain('read-only')
+})
+
+// claude-factory-hpmc.32: the mod's own snapshot words reach manager.context, not manager.brief
+test('the context view of the mod resolves to manager.context (claude-factory-hpmc.32)', () => {
+  const env = {
+    ...process.env,
+    FACTORY_HOME: join(dir, 'ctx-home'),
+    FACTORY_SELF_UPDATE: '0',
+    FACTORY_NO_KICK: '1',
+  }
+  const words = herdr.snapshotWords('manager.context', 4000)
+  const p = Bun.spawnSync([join(import.meta.dir, '..', 'bin', 'factory'), ...words], { env })
+  expect(p.exitCode).toBe(0)
+  const views = JSON.parse(p.stdout.toString()).views
+  expect(Object.keys(views)).toEqual(['manager.context'])
+  expect(views['manager.context']?.rigs).toBeUndefined() // the brief lists rigs: that is a bd call per rig
+  expect(herdr.parseContext(p.exitCode, p.stdout.toString())).toBeNull() // no manager session in a bare home
 })

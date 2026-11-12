@@ -170,7 +170,7 @@ export default class Factory extends View {
         this.start('snapshot', null, ['GET', snapshotPath(age)])
         return cx.notify()
       }
-      this.start('context', snapshotWords('manager', BOARD_MAX_AGE))
+      this.start('context', snapshotWords('manager.context', BOARD_MAX_AGE))
       this.start('snapshot', snapshotWords('board', age))
       if (Date.now() - this.decisionsAt >= DECISIONS_MS && !this.jobs.decisions) {
         this.decisionsAt = Date.now()
