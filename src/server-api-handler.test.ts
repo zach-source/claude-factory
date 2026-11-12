@@ -6,6 +6,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   statSync,
   symlinkSync,
@@ -21,11 +22,15 @@ let seq = 0
 const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
   const home = mkdtempSync(join(tmpdir(), 'sapi-h-'))
   const calls: Call[] = []
+  const files: string[] = []
   let lastEnv: Record<string, string | undefined> = {}
   const logs: string[] = []
   let boardCalls = 0
   const run = async (argv: string[], text?: string): Promise<RunResult> => {
     calls.push({ argv, text })
+    // a verb that reads a file: keep the text it would read, as the file is gone after the call
+    const last = argv[argv.length - 1]!
+    if (last.startsWith(join(home, 'text'))) files.push(readFileSync(last, 'utf8'))
     return { code: 0, out: '{"ok":1}\n', err: '', ...o.result }
   }
   // each port function logs into the same array as the runner, so a "zero calls" check counts both
@@ -84,7 +89,7 @@ const setup = (o: { board?: unknown; result?: Partial<RunResult> } = {}) => {
       board: () => (boardCalls++, o.board === undefined ? null : o.board),
       log: l => logs.push(l),
     })
-  return { home, calls, logs, h: make(), make, env: () => lastEnv, boards: () => boardCalls }
+  return { home, calls, files, logs, h: make(), make, env: () => lastEnv, boards: () => boardCalls }
 }
 type H = ReturnType<typeof setup>['h']
 
@@ -395,6 +400,31 @@ describe('DELETE and PATCH routes', () => {
     expect(r.status).toBe(200)
     expect((await post(t.h, '/v1/memory', { kind: 'joke', summary: 's' })).status).toBe(400)
     expect(t.calls).toEqual([{ argv: ['memory', 'add', '--kind', 'rule', '--anyway', 'use bun', 'not npm'] }])
+  })
+  const put = (h: H, path: string, body: unknown) =>
+    del(h, path, `key-put-${++seq}-xx`, 'PUT', JSON.stringify(body))
+  const withFile = (...argv: string[]) => ({
+    argv: [...argv.slice(0, -1), expect.stringContaining('/text/put-')],
+  })
+  test('PUT /v1/plan, PUT /v1/gate-brief/:run and PUT /v1/review give the text by file, then delete it', async () => {
+    const t = setup()
+    expect((await put(t.h, '/v1/plan', { answer: '{"rigs":{}}' })).status).toBe(200)
+    const gate = { startedAt: '1700', text: 'brief' }
+    expect((await put(t.h, '/v1/gate-brief/r1', gate)).status).toBe(200)
+    expect((await put(t.h, '/v1/review', { key: 'skill:a:0123abcd', text: 'keep' })).status).toBe(200)
+    expect(t.calls).toEqual([
+      withFile('plan', 'set', ''),
+      withFile('gate-brief', 'set', 'gate:r1@1700', ''),
+      withFile('review', 'set', 'skill:a:0123abcd', ''),
+    ])
+    expect(t.files).toEqual(['{"rigs":{}}', 'brief', 'keep'])
+    expect(readdirSync(join(t.home, 'text'))).toEqual([])
+  })
+  test('GET /v1/plan/facts and GET /v1/review run the facts verbs', async () => {
+    const t = setup()
+    expect((await get(t.h, '/v1/plan/facts')).status).toBe(200)
+    expect((await get(t.h, '/v1/review?key=skill%3Aa%3A0123abcd')).status).toBe(200)
+    expect(t.calls).toEqual([{ argv: ['plan', 'facts'] }, { argv: ['review', 'facts', 'skill:a:0123abcd'] }])
   })
   test('POST on the DELETE path gives 404', async () => {
     expect((await post(setup().h, '/v1/runs/r1', {})).status).toBe(404)

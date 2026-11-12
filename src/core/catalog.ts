@@ -1,5 +1,6 @@
 /** The operation catalog. It imports node: modules, ./chat, ./guards, the operation files in ./ops, and types from ../metrics and ../once. */
-import { readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { FlowRun } from '../flows'
 import type { Factory } from '../machine'
@@ -90,7 +91,7 @@ export type Op = {
   rights: 'read' | 'owner' | 'manager'
   mutates: boolean
   long: boolean
-  route: { method: 'GET' | 'POST' | 'DELETE' | 'PATCH'; path: string }
+  route: { method: 'GET' | 'POST' | 'DELETE' | 'PATCH' | 'PUT'; path: string }
   since: number
   run: (ctx: Ctx, input: Input) => Promise<RunResult>
 }
@@ -256,7 +257,7 @@ const id = (name: string) => f(name, 'id')
 type Spec = {
   name: string
   summary: string
-  method: 'GET' | 'POST' | 'DELETE' | 'PATCH'
+  method: 'GET' | 'POST' | 'DELETE' | 'PATCH' | 'PUT'
   path: string
   inputs?: Field[]
   rights?: Op['rights']
@@ -278,6 +279,20 @@ const bridge = (
   since: CATALOG_VERSION,
   run: (ctx, i) => ctx.cli(argv(i), text?.(i)),
 })
+/** Run a CLI verb that reads its input from a file: write the text to a file in the home, run, then delete the file. */
+const viaFile =
+  (argv: (path: string) => string[], text: (i: Input) => string): Op['run'] =>
+  async (ctx, i) => {
+    const dir = join(ctx.home, 'text')
+    mkdirSync(dir, { recursive: true })
+    const path = join(dir, `put-${randomUUID()}.json`)
+    writeFileSync(path, text(i), { mode: 0o600 })
+    try {
+      return await ctx.cli(argv(path))
+    } finally {
+      rmSync(path, { force: true })
+    }
+  }
 const local = (s: Spec, output: Op['output'], run: Op['run']): Op => ({ ...bridge(s, () => []), output, run })
 
 type Leaf = 'string' | 'number' | 'strings'
@@ -1091,6 +1106,86 @@ export const CATALOG: Op[] = makeCatalog([
       ...(i.body ? [i.body as string] : []),
     ],
   ),
+  bridge(
+    {
+      name: 'plan.facts',
+      summary: 'Gather the plan facts for the pm step. The CLI saves them for plan.set.',
+      method: 'GET',
+      path: '/v1/plan/facts',
+    },
+    () => ['plan', 'facts'],
+    'json',
+  ),
+  {
+    // the pm answer is JSON text; the CLI parses it and checks it against the saved facts
+    ...bridge(
+      {
+        name: 'plan.set',
+        summary: 'Set the plan from the answer of the pm step.',
+        method: 'PUT',
+        path: '/v1/plan',
+        inputs: [f('answer', 'text', true, 'the pm answer, JSON text')],
+      },
+      () => [],
+    ),
+    run: viaFile(
+      p => ['plan', 'set', p],
+      i => i.answer as string,
+    ),
+  } as Op,
+  {
+    ...bridge(
+      {
+        name: 'gates.setbrief',
+        summary: 'Set the brief of a live gate visit of a run.',
+        method: 'PUT',
+        path: '/v1/gate-brief/:run',
+        inputs: [
+          id('run'),
+          f('startedAt', 'id', true, 'the start time of the gate visit, from the facts'),
+          f('text', 'text', true, 'the brief'),
+        ],
+      },
+      () => [],
+    ),
+    run: (ctx, i) =>
+      viaFile(
+        p => ['gate-brief', 'set', `gate:${i.run}@${i.startedAt}`, p],
+        j => j.text as string,
+      )(ctx, i),
+  } as Op,
+  // ponytail: a review id holds ":". It cannot be a path segment, so it is a query or body field.
+  bridge(
+    {
+      name: 'review.facts',
+      summary: 'Show the facts of one pending skill or proposal for the reviewer.',
+      method: 'GET',
+      path: '/v1/review',
+      inputs: [f('key', 'text', true, 'the review id from the pending list')],
+    },
+    i => ['review', 'facts', i.key as string],
+    'json',
+  ),
+  {
+    ...bridge(
+      {
+        name: 'review.set',
+        summary: 'Set the recommendation of the reviewer for one pending item.',
+        method: 'PUT',
+        path: '/v1/review',
+        inputs: [
+          f('key', 'text', true, 'the review id from the pending list'),
+          f('text', 'text', true, 'the reviewer answer'),
+        ],
+      },
+      () => [],
+    ),
+    run: (ctx, i) =>
+      viaFile(
+        p => ['review', 'set', i.key as string, p],
+        j => j.text as string,
+      )(ctx, i),
+  } as Op,
   local(
     {
       name: 'decisions.answer',
