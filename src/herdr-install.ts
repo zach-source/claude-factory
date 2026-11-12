@@ -8,7 +8,17 @@ export const appHomeOf = (env: Record<string, string | undefined>) =>
   env.HERDR_APP_HOME || join(homedir(), '.config', 'herdr-app')
 
 /** what config.json holds. `machine` makes the mod a view and control client of a manager on that machine. */
-export type ModConfig = { cli: string; home: string; machine?: string }
+export type ModConfig =
+  | { cli: string; home: string; machine?: string }
+  | { server: string; cert: string; key: string; ca: string }
+
+/** the server mode config: the person certificate files in ~/.config/factory (client.ts tlsFor) */
+export const serverConfig = (server: string, dir = join(homedir(), '.config', 'factory')): ModConfig => ({
+  server,
+  cert: join(dir, 'person.crt'),
+  key: join(dir, 'person.key'),
+  ca: join(dir, 'ca.crt'),
+})
 
 /** the defaults of a remote install: the factory CLI on the machine, and the home of the AX manager */
 export const REMOTE_CLI = 'factory'

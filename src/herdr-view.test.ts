@@ -416,3 +416,46 @@ test('the manager model and context use come from one core read and show in the 
   expect(herdr.parseContext(1, '')).toBeNull()
   expect(herdr.parseContext(0, 'nope')).toBeNull()
 })
+
+const srvCfg = { server: 'https://pod.example:8444/', cert: '/c/p.crt', key: '/c/p.k', ca: '/c/ca.crt' }
+
+test('server mode config: all four keys, and never both modes', () => {
+  expect(herdr.parseConfig(JSON.stringify(srvCfg))).toEqual(srvCfg)
+  expect(herdr.parseConfig(JSON.stringify({ ...srvCfg, cli: 'x', home: '/h' }))).toBeNull()
+  expect(herdr.parseConfig(JSON.stringify({ server: 'https://x' }))).toBeNull()
+  expect(herdr.parseConfig(JSON.stringify({ cli: 'x', home: '/h' }))).not.toBeNull()
+})
+
+test('server mode: one snapshot GET with maxAge, actions with an Idempotency-Key', () => {
+  const [cmd, args] = herdr.serverCall(srvCfg, 'GET', herdr.snapshotPath(4000))
+  expect(cmd).toBe('curl')
+  expect(args.at(-1)).toBe('https://pod.example:8444/v1/snapshot?views=board,decisions,lease&maxAge=4000')
+  expect(args).toContain('--cert')
+  expect(args).not.toContain('Idempotency-Key')
+  const [, post] = herdr.serverCall(srvCfg, ...herdr.actionReq('stop'), 'abcd1234')
+  expect(post).toContain('Idempotency-Key: abcd1234')
+  expect(post).toContain('{"mode":"stop"}')
+  expect(herdr.idemKey()).toMatch(/^[A-Za-z0-9-]{8,128}$/)
+  expect(herdr.actionReq('abort', 'r-1')[1]).toBe('/v1/runs/r-1/abort')
+  expect(() => herdr.actionReq('rm', 'x')).toThrow()
+  expect(herdr.answerReq({ kind: 'gate', run: 'r-1' }, 'ok')[1]).toBe('/v1/runs/r-1/decide')
+  expect(herdr.screenPath('r-1')).toBe('/v1/runs/r-1/screen')
+  expect(herdr.chatArgv(srvCfg)).toBeNull()
+})
+
+test('factory herdr install --server writes a server config, and refuses a mix or http', () => {
+  const app = join(dir, 'app-srv')
+  const run = (...a: string[]) =>
+    Bun.spawnSync(
+      [join(import.meta.dir, '..', 'bin', 'factory'), 'herdr', 'install', '--app-home', app, ...a],
+      {
+        env: { ...process.env, FACTORY_HOME: join(dir, 'home'), FACTORY_SELF_UPDATE: '0' },
+      },
+    )
+  expect(run('--server', 'https://pod.example:8444').exitCode).toBe(0)
+  const c = JSON.parse(readFileSync(join(app, 'mods', 'factory', 'config.json'), 'utf8'))
+  expect(Object.keys(c).sort()).toEqual(['ca', 'cert', 'key', 'server'])
+  expect(c.cert.endsWith('person.crt')).toBe(true)
+  expect(run('--server', 'http://pod.example').exitCode).not.toBe(0)
+  expect(run('--server', 'https://pod.example', '--machine', 'm').exitCode).not.toBe(0)
+})
