@@ -303,6 +303,35 @@ test('a launch applies the task with the run branch, the brief and the CA in its
   expect(task.spec.capabilities).toEqual(['SETUID', 'SETGID', 'CHOWN'])
 })
 
+test('a grok launch with the vault sets the session provider by default, and XAI_API_KEY only in key mode', () => {
+  process.env.FACTORY_AX_VAULT = 'v'
+  try {
+    const envOf = (grokAuth?: 'session' | 'key') => {
+      ax.launch({
+        name: 'f-g',
+        repo: 'r',
+        branch: 'b',
+        image: 'i',
+        brief: 'x',
+        env: {},
+        harness: 'grok',
+        grokAuth,
+      })
+      const task = JSON.parse(readFileSync(join(dir, 'applied'), 'utf8').split('\n---\n')[1]!)
+      return Object.fromEntries(task.spec.env.map((e: { name: string; value: string }) => [e.name, e.value]))
+    }
+    const session = envOf()
+    expect(session.GROK_AUTH_PROVIDER_COMMAND).toBe('echo placeholder')
+    expect(session.GROK_AUTH_TOKEN_TTL).toBe('3600')
+    expect(session.XAI_API_KEY).toBeUndefined()
+    const key = envOf('key')
+    expect(key.XAI_API_KEY).toBe('placeholder')
+    expect(key.GROK_AUTH_PROVIDER_COMMAND).toBeUndefined()
+  } finally {
+    delete process.env.FACTORY_AX_VAULT
+  }
+})
+
 test('FACTORY_AX_CAPABILITIES empty leaves spec.capabilities out, for an AX without the field', () => {
   process.env.FACTORY_AX_CAPABILITIES = ''
   try {
@@ -2627,7 +2656,7 @@ test('a grok task has a placeholder API key, its hooks in the env and no codex o
   process.env.FACTORY_AX_VAULT = 'factory'
   try {
     ax.launch({
-      ...{ name: 't6', repo: 'r', branch: 'b', image: 'i', brief: 'x', harness: 'grok' },
+      ...{ name: 't6', repo: 'r', branch: 'b', image: 'i', brief: 'x', harness: 'grok', grokAuth: 'key' },
       grokHooks: '{"hooks":{}}',
       env: {},
     })

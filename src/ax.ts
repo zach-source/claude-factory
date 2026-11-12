@@ -114,6 +114,8 @@ export type Launch = {
   privatePatterns?: string
   /** a codex worker logs in with an API key (placeholder env keys) or with ChatGPT (auth.json, no key in the env) */
   codexAuth?: 'apikey' | 'chatgpt'
+  /** a grok worker's login: session sends the plan's token to the chat proxy, key sends XAI_API_KEY to api.x.ai (cli.ts grokAuth) */
+  grokAuth?: 'session' | 'key'
   /** a cursor worker's hooks.json text (cli.ts vmCursorHooks); serve writes it to ~/.cursor before each turn */
   cursorHooks?: string
   /** a grok worker's hook file text (cli.ts vmGrokHooks); serve writes it to $GROK_HOME/hooks before each turn */
@@ -698,8 +700,14 @@ export const launch = (l: Launch) => {
         l.codexAuth !== 'chatgpt' && { OPENAI_API_KEY: 'placeholder', CODEX_API_KEY: 'placeholder' }),
       // cursor-agent swaps this key for an access token at api2.cursor.sh; the rig's cursor rule injects the real one there
       ...(l.harness === 'cursor' && { CURSOR_API_KEY: 'placeholder' }),
-      // grok sends this key as a bearer token to api.x.ai; the rig's grok rule injects the real one there
-      ...(l.harness === 'grok' && { XAI_API_KEY: 'placeholder' }),
+      // grok key mode: the CLI sends this key as a bearer token to api.x.ai; the rig's grok rule injects the real one there
+      ...(l.harness === 'grok' && l.grokAuth === 'key' && { XAI_API_KEY: 'placeholder' }),
+      // grok session mode: the CLI asks this command for its token, then sends it to the chat proxy; the gateway swaps in the real one
+      ...(l.harness === 'grok' &&
+        l.grokAuth !== 'key' && {
+          GROK_AUTH_PROVIDER_COMMAND: 'echo placeholder',
+          GROK_AUTH_TOKEN_TTL: '3600',
+        }),
       GH_TOKEN: 'placeholder',
       // git's config from the env, so every git in the VM sends the header
       GIT_CONFIG_COUNT: l.gitlabHost ? '2' : '1',
@@ -1201,11 +1209,12 @@ export const OPENAI_RULE: Egress = {
 /**
  * The devenv build in the VM (buildctl) fetches its own ghcr.io registry token: the VM sends a placeholder Basic login
  * to ghcr.io/token and the gateway puts the real login there (claude-factory-kraoa). Only /token gets the key.
+ * GHCR_PULL holds base64(username:credential) of a classic token: an App installation token cannot pull from ghcr.
  */
 export const GHCR_TOKEN_RULE: Egress = {
   hosts: ['ghcr.io'],
   pathPrefixes: ['/token'],
-  key: 'GITHUB_BASIC_MANAGER',
+  key: 'GHCR_PULL',
   header: 'Authorization',
   prefix: 'Basic ',
 }

@@ -56,7 +56,9 @@ test('4px5z AC1: all 20 front-end gaps name their source tasks', () => {
     ['runs.screen', 20, 'AX worker screens'],
   ] as const
   expect(
-    parseGaps(readFileSync(GAPS_FILE, 'utf8')).filter(g => g.op !== 'gc.run' && g.op !== 'manager.context'),
+    parseGaps(readFileSync(GAPS_FILE, 'utf8')).filter(
+      g => !['gc.run', 'manager.context', 'manager.show', 'memory.search'].includes(g.op),
+    ),
   ).toEqual([
     row('cli', 'claude-factory-hpmc.8'),
     row('claude-mod', 'claude-factory-hpmc.9'),
@@ -86,7 +88,7 @@ test('4px5z AC1: all 20 front-end gaps name their source tasks', () => {
       reason,
     })),
   ])
-  expect(parseGaps(readFileSync(GAPS_FILE, 'utf8'))).toHaveLength(20)
+  expect(parseGaps(readFileSync(GAPS_FILE, 'utf8'))).toHaveLength(25)
   const mc = parseGaps(readFileSync(GAPS_FILE, 'utf8')).filter(g => g.op === 'manager.context')
   expect(mc.map(g => [g.frontEnd, g.bead])).toEqual([
     ['cli', 'claude-factory-97msz'],
@@ -371,7 +373,7 @@ printf '[{"id":"%s","status":"%s"}]' "$2" "$PARITY_STATUS"
     })
   const open = run('open')
   expect(open.exitCode).toBe(0)
-  expect(open.stdout.toString()).toContain('20 gaps, all beads open')
+  expect(open.stdout.toString()).toContain('25 gaps, all beads open')
   rmSync(join(dir, 'parity-gaps.json'))
   writeFileSync(join(dir, 'calls'), '')
   expect(run('open').exitCode).toBe(1)
@@ -381,3 +383,20 @@ printf '[{"id":"%s","status":"%s"}]' "$2" "$PARITY_STATUS"
   expect(closed.exitCode).toBe(1)
   expect(closed.stdout.toString()).toContain('status closed')
 }, 30_000)
+
+test('gogxc.16: the web page shows manager.show, and each new person-facing read op has a gap or a view', () => {
+  const page = readFileSync(resolve(import.meta.dir, 'web', 'index.html'), 'utf8')
+  expect(page).toContain(`'${CATALOG.find(o => o.name === 'manager.show')!.route.path}'`)
+  const gaps = parseGaps(readFileSync(GAPS_FILE, 'utf8'))
+  for (const [op, fe] of [
+    ['manager.show', 'claude-mod'],
+    ['manager.show', 'herdr-mod'],
+    ['memory.search', 'claude-mod'],
+    ['memory.search', 'herdr-mod'],
+    ['memory.search', 'web'],
+  ] as const)
+    expect(
+      gaps.some(g => g.op === op && g.frontEnd === fe && g.bead.startsWith('claude-factory-gogxc.')),
+    ).toBe(true)
+  expect(gaps.some(g => g.op === 'manager.show' && g.frontEnd === 'web')).toBe(false)
+})
