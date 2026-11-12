@@ -12366,6 +12366,23 @@ function stdinValue(what: string): string {
   return v
 }
 
+/**
+ * the params a rig's `--param` can name: its factory's, and those of the factories it also runs (its sweeps, rework
+ * and ship). The rig's own factory wins when two share a name. A factory that fails to load adds none.
+ */
+async function rigParamDef(
+  def: Awaited<ReturnType<typeof loadFactory>>,
+  repo: string,
+  sweepsFactory?: string,
+) {
+  const others = await Promise.all(
+    [sweepsFactory ?? 'sweeps', 'rework', 'ship'].map(n =>
+      loadFactory(factorySource(n, repo)).catch(() => undefined),
+    ),
+  )
+  return { ...def, params: Object.assign({}, ...others.map(d => d?.params), def.params) }
+}
+
 /** Check `--param name=value` pairs against the factory's params. A value `-` is read from stdin. Return them merged over `base`, or `base`. */
 function checkParams(
   def: Awaited<ReturnType<typeof loadFactory>>,
@@ -12503,7 +12520,11 @@ async function defineRig(
   } else if (linearProjects !== undefined || linearLabels !== undefined) {
     fail('--linear-projects and --linear-labels need --linear <team_id[,team_id]> too')
   }
-  const merged = checkParams(def, params ?? [], rig.params)
+  const merged = checkParams(
+    params?.length ? await rigParamDef(def, rig.repo, rig.sweepsFactory) : def,
+    params ?? [],
+    rig.params,
+  )
   if (merged) rig.params = merged
   return rig
 }
@@ -15628,7 +15649,11 @@ if (import.meta.main && !outboxCmd)
           }
           if (params.length) {
             const def = await loadFactory(factorySource(target!.factory, target!.repo))
-            set.params = checkParams(def, params, target!.params)
+            set.params = checkParams(
+              await rigParamDef(def, target!.repo, target!.sweepsFactory),
+              params,
+              target!.params,
+            )
           }
           if (!Object.keys(set).length && !unset.length) fail(usage)
           edit(list =>

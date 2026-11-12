@@ -181,6 +181,9 @@ test('rig set changes one field and leaves every other byte equal (by name and b
     [['--sweeps', 'none'], { sweeps: [] }, []],
     [['--agent', 'claude'], { agent: 'claude' }, []],
     [['--param', 'base_branch=main'], { params: { base_branch: 'main' } }, []],
+    // the params of the sweeps, rework and ship factories too (claude-factory-0r2rw)
+    [['--param', 'grok_maintain_share=1'], { params: { base_branch: 'dev', grok_maintain_share: '1' } }, []],
+    [['--param', 'grok_resolve_share=1'], { params: { base_branch: 'dev', grok_resolve_share: '1' } }, []],
     [['--runner', 'herdr'], {}, ['runner']],
   ]
   for (const [flags, set, unset] of rows) {
