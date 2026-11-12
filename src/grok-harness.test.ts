@@ -2,7 +2,15 @@ import { expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { axGrokRefused, grokEgress, grokWorker, limitPagedFile, vmGrokHooks } from './cli'
+import {
+  axGrokRefused,
+  grokAllowed,
+  grokAuth,
+  grokEgress,
+  grokWorker,
+  limitPagedFile,
+  vmGrokHooks,
+} from './cli'
 import { command, harnessOf, skillsFor } from './harness'
 import { grokUsageOf, validUsage } from './metrics'
 import { tokenPathReason, tokenReason } from './token-guard'
@@ -61,7 +69,10 @@ test('grokLimit reads a quota or rate error as the last event, and nothing else'
   const err = (message: string) => jl({ type: 'error', message })
   expect(grokLimit(err('HTTP 429: rate limit reached'), 5)).toEqual({ at: 5, kind: 'usage', resetsAt: 0 })
   expect(grokLimit(err('402 Payment Required: your credits are used up'))?.kind).toBe('usage')
-  expect(grokLimit(err('Not signed in'))).toBeNull()
+  expect(grokLimit(err('Subscription usage limit reached'))?.kind).toBe('usage')
+  expect(grokLimit(err('401 Unauthorized'), 5)).toEqual({ at: 5, kind: 'auth', resetsAt: 0 })
+  expect(grokLimit(err('Not signed in'))?.kind).toBe('auth')
+  expect(grokLimit(err('disk full'))).toBeNull()
   expect(grokLimit(err('rate limit') + '\n' + jl(end('s', 0, 1)))).toBeNull() // a later success
   expect(grokLimit(jl({ type: 'text', data: 'rate limit' }))).toBeNull()
   expect(grokLimit('rate limit"}\n' + jl({ type: 'text' }))).toBeNull()
@@ -85,12 +96,27 @@ test('grokUsageOf sums the end event of each turn, one row for each session, wit
   expect(validUsage([{ ...rows[0], costMicro: -1 }], 'plan', 3)[0]).not.toHaveProperty('costMicro')
 })
 
-test('the grok egress injects the vault key as a bearer token on api.x.ai, and keeps a rig rule of its own', () => {
+test('the grok session egress injects GROK_SESSION on the chat proxy, and keeps a rig rule of its own', () => {
   expect(grokEgress([{ hosts: ['example.com'] }]).slice(1)).toEqual([
+    { hosts: ['cli-chat-proxy.grok.com'], key: 'GROK_SESSION', header: 'Authorization', prefix: 'Bearer ' },
+  ])
+  const own = [{ hosts: ['cli-chat-proxy.grok.com'], key: 'K' }]
+  expect(grokEgress(own)).toBe(own)
+})
+
+test('grokAuth defaults to session, and the dollar gate applies only in key mode', () => {
+  expect(grokAuth({})).toBe('session')
+  expect(grokAuth({ FACTORY_GROK_AUTH: 'key' })).toBe('key')
+  expect(grokAuth({ FACTORY_GROK_AUTH: 'x' })).toBe('session')
+  expect(grokAllowed('r', 'n', { FACTORY_GROK_WEEKLY_BUDGET_USD: '0.01' }, 0, tmpdir())).toBe(true)
+})
+
+test('the grok key egress injects the vault key as a bearer token on api.x.ai, and keeps a rig rule of its own', () => {
+  expect(grokEgress([{ hosts: ['example.com'] }], 'key').slice(1)).toEqual([
     { hosts: ['api.x.ai'], key: 'XAI_API_KEY', header: 'Authorization', prefix: 'Bearer ' },
   ])
   const own = [{ hosts: ['api.x.ai'], key: 'K' }]
-  expect(grokEgress(own)).toBe(own)
+  expect(grokEgress(own, 'key')).toBe(own)
 })
 
 test('the ax runner runs grok only with FACTORY_AX_GROK=1', () => {
