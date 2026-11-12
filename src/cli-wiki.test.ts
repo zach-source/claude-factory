@@ -926,6 +926,18 @@ test('commitWiki does not commit over a person commit made during the pass', () 
   expect(wikiLog()).toContain('wiki: HEAD moved, nothing committed')
 })
 
+test('cr8o a person commit before the staged list is not overwritten', () => {
+  setup()
+  expect(factory(['wiki', 'init']).code).toBe(0)
+  const base = commits()
+  writeFileSync(join(wiki(), 'a.md'), page('topic', 'A'))
+  const shim = `case "$*" in *"diff --cached --raw --no-renames"*) [ -e '${dir}/moved' ] || { : > '${dir}/moved'; '${Bun.which('git')}' -C '${wiki()}' -c user.name=p -c user.email=p@x.test commit -q --only --allow-empty -m person; };; esac`
+  expect(commitPass('x', shim).exitCode).toBe(1)
+  expect(git('log', '-1', '--format=%s')).toBe('person')
+  expect(commits()).toBe(base + 1)
+  expect(wikiLog()).toContain('wiki: HEAD moved, nothing committed')
+})
+
 test('cr8o a directory that becomes a page file is committed', () => {
   setup()
   expect(factory(['wiki', 'init']).code).toBe(0)
