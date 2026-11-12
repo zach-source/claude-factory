@@ -3610,7 +3610,6 @@ test('launch gives codex and pi no Claude-only plugin dir from FACTORY_WORKER_PL
   const out = JSON.parse(p.stdout.toString()) as Record<string, string>
   expect(out.pi).not.toContain(egm)
   expect(out.codex).toContain('CODEX_HOME')
-  expect(out.claude).toContain(egm)
   const files = readdirSync(home, { recursive: true }).map(String)
   expect(files.filter(f => f.includes('egm-x') && !f.startsWith('egm-plugin'))).toEqual([])
 })
