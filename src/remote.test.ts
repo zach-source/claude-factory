@@ -3847,7 +3847,9 @@ const COST_CASES: [string, string, number, boolean][] = [
 test('53r2x cost grammar keeps costMicro only for an integer 1..1e8 on a grok model', () => {
   const cost = (model: string, costMicro: unknown) => {
     const r = validUsage([usageRow({ model, costMicro })], 'a', 7)
-    expect(r).toHaveLength(1)
+    expect(r).toEqual([
+      { node: 'a', seq: 7, ...usageRow({ model }), ...(r[0]?.costMicro === undefined ? {} : { costMicro }) },
+    ])
     return r[0]!.costMicro
   }
   for (const m of ['grok', 'grok-4.7']) for (const c of [1, 100_000_000]) expect(cost(m, c)).toBe(c)
@@ -3886,8 +3888,7 @@ test.each(COST_CASES.map(c => [...c] as const))(
     expect(factory(['tick']).code).toBe(0)
     expect(inbox(id)).toContain('"outcome":"ready"')
     const rows = storedRows(id)
-    expect(rows).toHaveLength(1)
-    expect('costMicro' in rows[0]!).toBe(kept)
+    expect(rows).toEqual([{ node: 'a', seq, ...usageRow({ model }), ...(kept ? { costMicro } : {}) }])
     expect(meterLines()).toBe(kept ? 1 : 0)
     expect(grokSpent(home)).toBe(kept ? 100 : 0)
     expect(grokVerdict(grokSpent(home), 1).use).toBe(!kept)
@@ -3909,9 +3910,7 @@ test.each(COST_CASES.map(c => [...c] as const))(
     const out = JSON.stringify([usageRow({ model, costMicro })])
     const { rows, seq, code, log } = timeoutTick('rg2', { out, code: 0 })
     expect(code).toBe(0)
-    expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatchObject({ node: 'a', seq, session: 's1', model, input: 1, output: 4 })
-    expect('costMicro' in rows[0]!).toBe(kept)
+    expect(rows).toEqual([{ node: 'a', seq, ...usageRow({ model }), ...(kept ? { costMicro } : {}) }])
     expect(meterLines()).toBe(kept ? 1 : 0)
     expect(grokSpent(home)).toBe(kept ? 100 : 0)
     expect(grokVerdict(grokSpent(home), 1).use).toBe(!kept)
