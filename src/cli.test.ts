@@ -78,6 +78,7 @@ import {
   launch,
   laptopSandbox,
   userPluginDirs,
+  harnessPluginNames,
   workerSettings,
   workerSkills,
   warnSkillsOff,
@@ -2783,6 +2784,20 @@ test('userPluginDirs finds an on worker plugin at its installPath or in its dire
   expect(userPluginDirs(['pony', 'ste', 'off'], c)).toEqual([cached, join(market, 'claude', 'ste')])
   expect(userPluginDirs(['pony'], join(c, 'none'))).toEqual([])
   expect(userPluginDirs([], c)).toEqual([]) // a station with no skills gets no plugin dir
+})
+
+test('harnessPluginNames drops Claude-only names from FACTORY_WORKER_PLUGINS for codex and pi', () => {
+  const old = process.env.FACTORY_WORKER_PLUGINS
+  process.env.FACTORY_WORKER_PLUGINS = 'egm, pony'
+  try {
+    for (const h of ['codex', 'pi'] as const)
+      expect(harnessPluginNames(h, ['asd-ste100'])).toEqual(['asd-ste100', 'pony'])
+    for (const h of ['claude', null] as const)
+      expect(harnessPluginNames(h, ['asd-ste100'])).toEqual(['asd-ste100', 'egm', 'pony'])
+  } finally {
+    if (old === undefined) delete process.env.FACTORY_WORKER_PLUGINS
+    else process.env.FACTORY_WORKER_PLUGINS = old
+  }
 })
 
 // claude-factory-hg9o: a pi worker gets the worker rules a Claude worker gets, and the plugins' skills
