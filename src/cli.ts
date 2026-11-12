@@ -7342,11 +7342,13 @@ function runFact(id: string): gc.RunFact {
   const entries: gc.FileFact[] = readdirSync(dir).map(name => {
     const st = lstatSync(join(dir, name))
     const { bytes, files } = st.isDirectory() ? dirSize(join(dir, name)) : { bytes: st.size, files: 1 }
-    return { name, isDir: st.isDirectory(), bytes, files }
+    return { name, isDir: st.isDirectory(), bytes, files, mtimeMs: st.mtimeMs }
   })
   const { run, value, c } = current(id)
   if (run.id !== id) throw new Error('run.json names run "' + run.id + '", not "' + id + '"')
-  return { id, node: where(value)[0], finishedAt: c.log.at(-1)?.at ?? createdAt(id), entries }
+  const node = where(value)[0]
+  const task = ['done', 'aborted'].includes(node) ? undefined : ax.taskName(id, c.seq)
+  return { id, node, finishedAt: c.log.at(-1)?.at ?? createdAt(id), entries, ...(task && { task }) }
 }
 function launchFacts(): gc.LaunchFact[] {
   const dir = launchDir()
@@ -7401,6 +7403,8 @@ function removeRun(id: string): Run {
  * It follows the rules in gc.gcPlan(). If removeRun() throws, the run directory stays. Earlier steps can remove
  * the worktree. gc.log and the caller output name the refusal. The pass continues with the next run.
  *
+ * It also removes the `<task>.memory.tgz` files of earlier tasks of any run, when they are 1 h old or more (claude-factory-sris).
+ *
  * `--dry-run` prints the runs it would reap. It deletes nothing (claude-factory-503.1, claude-factory-lt4u).
  */
 function gcPass(days: number, dryRun: boolean, print: Print, error: Print) {
@@ -7424,11 +7428,13 @@ function gcPass(days: number, dryRun: boolean, print: Print, error: Print) {
     plan.totals.prompts.bytes +
     plan.totals.briefs.bytes +
     plan.totals.backups.bytes +
+    plan.totals.memory.bytes +
     plan.totals.launch.bytes
   const totalFiles =
     plan.totals.prompts.files +
     plan.totals.briefs.files +
     plan.totals.backups.files +
+    plan.totals.memory.files +
     plan.totals.launch.files
   print(
     [
@@ -7436,11 +7442,13 @@ function gcPass(days: number, dryRun: boolean, print: Print, error: Print) {
       `briefs: ${plan.totals.briefs.files} files, ${fmtBytes(plan.totals.briefs.bytes)}`,
       `backups: ${plan.totals.backups.files} files, ${fmtBytes(plan.totals.backups.bytes)}`,
       `launch: ${plan.totals.launch.files} files, ${fmtBytes(plan.totals.launch.bytes)}`,
+      `memory: ${plan.totals.memory.files} files, ${fmtBytes(plan.totals.memory.bytes)}`,
       `total: ${totalFiles} files, ${fmtBytes(totalBytes)} across ${plan.totals.runs} run(s)`,
       ...(livePanes === null ? ['herdr pane list did not answer: removed no launch script'] : []),
     ].join('\n'),
   )
   if (dryRun) {
+    for (const m of plan.memory) print(`would remove ${m.id}/${m.name}`)
     for (const id of plan.reap) print(`would reap ${id}`)
     return
   }
@@ -7455,6 +7463,14 @@ function gcPass(days: number, dryRun: boolean, print: Print, error: Print) {
     }
   }
   for (const line of skipped) say(line)
+  for (const m of plan.memory) {
+    try {
+      rmSync(join(runDir(m.id), m.name), { force: true })
+      say(`removed memory snapshot ${m.id}/${m.name}`)
+    } catch (err) {
+      say(`cannot remove memory snapshot ${m.id}/${m.name}: ${(err as Error).message}`)
+    }
+  }
   for (const id of plan.reap) {
     let line: string
     try {
