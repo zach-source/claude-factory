@@ -761,6 +761,7 @@ test('factory image asks the person; memory commands that name image do not', SL
   }
   const before = asked
   await run('/repo/bin/factory memory search image')
+  await run("/repo/bin/factory memory search 'image'")
   expect(asked).toBe(before)
 })
 
@@ -787,6 +788,9 @@ test('factory token use and best ask the person; token list does not', SLOW, asy
   const before = asked
   await run('/repo/bin/factory token')
   await run('/repo/bin/factory token list')
+  await run("/repo/bin/factory 'token' list")
+  await run("/repo/bin/factory token 'list'")
+  await run("/repo/bin/factory memory search 'token use'")
   await run('/repo/bin/factory memory search token use')
   expect(asked).toBe(before)
 })
@@ -796,6 +800,9 @@ const PHRASE = {
   answer: "answer a person's bd decision",
   start: "start a bead carrying its owner's decisions",
   wiki: 'create the factory wiki and set its remote',
+  image: 'build and push a factory image to a registry',
+  token: 'change the live Claude token slot',
+  settings: 'change a factory setting that sets what a worker runs, reaches or spends',
 }
 
 // claude-factory-6tl1: a hidden caller word or verb word still gets the Allow question
@@ -820,6 +827,25 @@ const HIDDEN_ROWS: [string, string][] = [
   ['{/repo/bin/f*y,decide} r1 ship', PHRASE.decide],
   ['bun {src/cli.ts,decide} r1 ship', PHRASE.decide],
   ['bun run /x/src/cli.ts decide r1 ship', PHRASE.decide],
+  ['/repo/bin/factory "decide" r1 ship', PHRASE.decide],
+  ['/repo/bin/factory de\\cide r1 ship', PHRASE.decide],
+  ["/repo/bin/factory 'decisions' answer api api-7 x", PHRASE.answer],
+  ['/repo/bin/factory decisions an\\swer api api-7 x', PHRASE.answer],
+  ["/repo/bin/factory 'start' lifecycle api w-2 --owned", PHRASE.start],
+  ['/repo/bin/factory st\\art lifecycle api w-2 --owned', PHRASE.start],
+  ["/repo/bin/factory 'wiki' init", PHRASE.wiki],
+  ['/repo/bin/factory "wiki" init', PHRASE.wiki],
+  ['/repo/bin/factory wi\\ki init', PHRASE.wiki],
+  ["/repo/bin/factory 'image' build", PHRASE.image],
+  ['/repo/bin/factory "image" build', PHRASE.image],
+  ['/repo/bin/factory i\\mage build', PHRASE.image],
+  ["/repo/bin/factory 'token' use 2", PHRASE.token],
+  ['/repo/bin/factory token "best"', PHRASE.token],
+  ['/repo/bin/factory to\\ken use 2', PHRASE.token],
+  ['/repo/bin/factory "settings" set ax.image x', PHRASE.settings],
+  ["/repo/bin/factory settings 'set' ax.image x", PHRASE.settings],
+  ['/repo/bin/factory settings s\\et ax.image x', PHRASE.settings],
+  ['/repo/bin/factory settings un\\set ax.image', PHRASE.settings],
 ]
 
 function askHarness(on: any, answer: () => string) {
@@ -926,6 +952,7 @@ test('factory settings set and unset ask the person; settings list does not', SL
   }
   const before = asked
   await run('/repo/bin/factory settings list')
+  await run("/repo/bin/factory 'settings' list")
   await run('/repo/bin/factory settings')
   expect(asked).toBe(before)
 })
