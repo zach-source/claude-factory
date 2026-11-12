@@ -39,6 +39,8 @@ const fake = () => {
     abort: id => void calls.push(['abort', id]),
     screen: async id => (calls.push(['screen', id]), 'screen text'),
     say: text => void calls.push(['say', text]),
+    managerImage: async image => void calls.push(['managerImage', image]),
+    managerSuspend: async on => void calls.push(['managerSuspend', on]),
     mail: async (m, who, print) => (calls.push(['mail', m, who]), print('mailed')),
     chatRun: async () => ({ code: 0, out: '' }),
     chatModel: async () => ({

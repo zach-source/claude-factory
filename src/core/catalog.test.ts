@@ -205,10 +205,10 @@ describe('CATALOG', () => {
     ])
     expect(CATALOG.filter(o => o.name === 'image.build')).toHaveLength(1)
   })
-  test('has 52 operations: 26 GET, 21 POST, 1 DELETE, 1 PATCH and 3 PUT', () => {
-    expect(CATALOG.length).toBe(52)
+  test('has 54 operations: 26 GET, 23 POST, 1 DELETE, 1 PATCH and 3 PUT', () => {
+    expect(CATALOG.length).toBe(54)
     expect(CATALOG.filter(o => o.route.method === 'GET').length).toBe(26)
-    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(21)
+    expect(CATALOG.filter(o => o.route.method === 'POST').length).toBe(23)
     expect(CATALOG.filter(o => o.route.method === 'DELETE').map(o => o.name)).toEqual(['runs.remove'])
     expect(CATALOG.filter(o => o.route.method === 'PATCH').map(o => o.name)).toEqual(['rigs.set'])
     expect(CATALOG.filter(o => o.route.method === 'PUT').map(o => o.name)).toEqual([
@@ -226,7 +226,15 @@ describe('CATALOG', () => {
       expect(o.rights).toBe(
         get
           ? 'read'
-          : ['factory.halt', 'gc.run', 'image.build', 'chat.send', 'manager.say'].includes(o.name)
+          : [
+                'factory.halt',
+                'gc.run',
+                'image.build',
+                'chat.send',
+                'manager.say',
+                'manager.image',
+                'manager.suspend',
+              ].includes(o.name)
             ? 'owner'
             : 'manager',
       )
@@ -306,9 +314,11 @@ describe('CATALOG', () => {
       'mail.list GET /v1/mail',
       'manager.brief GET /v1/manager/brief',
       'manager.context GET /v1/manager/context',
+      'manager.image POST /v1/manager/image',
       'manager.log POST /v1/manager/log/:kind',
       'manager.say POST /v1/manager/say',
       'manager.show GET /v1/manager',
+      'manager.suspend POST /v1/manager/suspend',
       'memory.add POST /v1/memory',
       'memory.search GET /v1/memory/search',
       'metrics.show GET /v1/metrics',

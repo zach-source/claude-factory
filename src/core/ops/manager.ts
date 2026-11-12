@@ -121,6 +121,22 @@ export async function brief(ctx: Ctx, _i: Input): Promise<RunResult> {
   })
 }
 
+/** `manager.image`: the pod replaces the manager task with one from the new image. The person only. */
+export async function image(ctx: Ctx, i: Input): Promise<RunResult> {
+  return inProc(async print => {
+    await ctx.port.managerImage(i.image as string)
+    print('manager task replaced')
+  })
+}
+
+/** `manager.suspend`: suspend the manager task, or resume it with `resume`. The person only. */
+export async function suspend(ctx: Ctx, i: Input): Promise<RunResult> {
+  return inProc(async print => {
+    await ctx.port.managerSuspend(i.resume !== true)
+    print(i.resume === true ? 'resumed' : 'suspended')
+  })
+}
+
 /** `manager.say`: type text into the manager pane. The person only (the catalog marks it owner). */
 export async function say(ctx: Ctx, i: Input): Promise<RunResult> {
   return inProc(async print => {

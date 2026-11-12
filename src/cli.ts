@@ -232,6 +232,7 @@ import { REASON, boundedRun } from './screen'
 import * as client from './client'
 import { backupAge, backupError, backupWanted } from './homebackup'
 import * as managerhost from './managerhost'
+import * as managersup from './managersup'
 import { drainHaltQueue, haltLine, runHaltCmd } from './halt-order'
 import * as leases from './lease'
 import * as herdrApp from './herdr-install'
@@ -13941,6 +13942,30 @@ if (import.meta.main && !outboxCmd && client.serverMode(process.env)) {
   if (sent !== null) process.exit(sent)
 }
 
+/** the pod's supervisor of the manager task; it needs the pod address for the task (FACTORY_SERVER_MANAGER_URL) */
+const podSupervisor = (() => {
+  let s: ReturnType<typeof managersup.supervisor> | undefined
+  return () => {
+    if (!inServer() || !process.env.FACTORY_SERVER_MANAGER_URL)
+      throw new Error('this factory does not run a manager task: set FACTORY_SERVER_MANAGER_URL on the pod')
+    const task = ax.managerTask()
+    const apply = (image: string) =>
+      ax.launchManager(image, [], rawRigs(), { session: true, launch: crypto.randomUUID() })
+    return (s ??= managersup.supervisor({
+      home: HOME,
+      image: process.env.FACTORY_AX_MANAGER_IMAGE,
+      log: m => console.log(m),
+      ax: {
+        phase: () => ax.read(task).phase,
+        apply,
+        remove: ws => ax.remove(task, ws ? undefined : ['task']),
+        suspend: () => ax.suspend(task),
+        resume: () => ax.resume(task),
+      },
+    }))
+  }
+})()
+
 /** the helpers of this file that the catalog operations call (src/core/ops) */
 export const corePort: Port = {
   gcPass,
@@ -13987,6 +14012,8 @@ export const corePort: Port = {
   screen: screenRun,
   mail: mailRun,
   say: ax.say,
+  managerImage: image => podSupervisor().setImage(image),
+  managerSuspend: on => podSupervisor().suspend(on),
   chatModel: runModelAsync,
   chatRun: runApproved,
 }
@@ -14176,7 +14203,14 @@ if (import.meta.main && !outboxCmd)
           if (other) throw new Error(`no tick: ${leases.leaseLine(other, Date.now())}`)
           return tick()
         }
-        server.main(args, HOME, podTick, corePort, backup)
+        server.main(
+          args,
+          HOME,
+          podTick,
+          corePort,
+          backup,
+          process.env.FACTORY_SERVER_MANAGER_URL ? () => podSupervisor().check() : undefined,
+        )
         break
       case 'cert': {
         refuseWorker('cert', true)
